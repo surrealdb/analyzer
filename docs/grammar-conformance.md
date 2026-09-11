@@ -5,15 +5,16 @@
 
 | corpus | entries | result |
 | --- | --- | --- |
-| valid set (`crates/syntax/examples/conformance_corpus.json`) | 320 | 320 parse, 0 fail |
-| rejected set (`crates/syntax/examples/conformance_rejected.json`) | 8 | 8 refused, 0 wrongly accepted |
+| valid set (`crates/syntax/examples/conformance_corpus.json`) | 319 | 319 parse, 0 fail |
+| rejected set (`crates/syntax/examples/conformance_rejected.json`) | 11 | 11 refused, 0 wrongly accepted |
 | upstream `surrealql-tree-sitter` `test/corpus/*.txt` (head `22feaab`) | 396 | 396 parse |
 
-Both sets are extracted from SurrealDB's own test suites, except for six
-entries (five valid, one rejected) added here to pin the `ORDER BY count`
-work below. Those six were each run against a live 3.2.3 first; an entry
-that is not from SurrealDB's suites earns its place by engine evidence, not
-by assertion.
+Both sets are extracted from SurrealDB's own test suites, except for eight
+entries (seven valid, one rejected) added here to pin the `ORDER BY count`
+work and the INSERT modifier order below. Those eight were each run against
+a live 3.2.3 first; an entry that is not from SurrealDB's suites earns its
+place by engine evidence, not by assertion. Three entries that claimed to
+come from those suites did not — see "RATELIMIT was never SurrealQL".
 
 Runner: `cargo run -p surrealql-analyzer-syntax --example conformance`
 (add a path to check one file as a valid set only).
@@ -114,22 +115,35 @@ bring the committed sets to their current 320 and 8.
 
 Three upstream corpus cases are forms SurrealDB 3.2.3 refuses outright:
 
-| form | engine error |
-| --- | --- |
-| `KILL "plain-string"` | ``Unexpected token `a strand`, expected a UUID or a parameter`` |
-| `SHOW CHANGES FOR TABLE person` | ``Unexpected token `;`, expected SINCE`` |
-| `SHOW CHANGES FOR TABLE person LIMIT 10` | ``Unexpected token `LIMIT`, expected SINCE`` |
+| form | engine error | diagnosed as |
+| --- | --- | --- |
+| `KILL "plain-string"` | ``Unexpected token `a strand`, expected a UUID or a parameter`` | E2020 |
+| `SHOW CHANGES FOR TABLE person` | ``Unexpected token `;`, expected SINCE`` | E2021 |
+| `SHOW CHANGES FOR TABLE person LIMIT 10` | ``Unexpected token `LIMIT`, expected SINCE`` | E2021 |
+| `INSERT IGNORE RELATION INTO likes {…}` | ``Unexpected token `INTO`, expected Eof`` | E4030 |
+| `SELECT … PARALLEL` and the five other statements that took the clause | ``Unexpected token `PARALLEL`, expected Eof`` | E8002, with a target |
 
 We used to refuse them too. For a language server that is the wrong trade: a
 parse error is fatal to the whole source, so refusing one statement silences
 the analyzer on the entire file, and all the user gets is a token-level
-syntax error. The grammar now accepts all three and the analyzer names the
+syntax error. The grammar now accepts them and the analyzer names the
 contract at the span that is actually wrong — **E2020** ("KILL takes a
-live-query uuid") and **E2021** ("SHOW SINCE takes a versionstamp or
-datetime"), each quoting the engine's own error text in its help so the user
-sees what SurrealDB will say. `crates/workspace/tests/engine_refused_syntax.rs`
-pins that every one of them fires, and that the correctly-spelled neighbour
-(`KILL u'…'`, `KILL $id`, `SHOW … SINCE …`) stays silent.
+live-query uuid"), **E2021** ("SHOW SINCE takes a versionstamp or
+datetime") and **E4030** ("INSERT's RELATION and IGNORE modifiers are in the
+order the engine parses"), each quoting the engine's own error text in its
+help so the user sees what SurrealDB will say.
+`crates/workspace/tests/engine_refused_syntax.rs` pins that every one of them
+fires, and that the correctly-spelled neighbour (`KILL u'…'`, `KILL $id`,
+`SHOW … SINCE …`, `INSERT RELATION IGNORE …`) stays silent.
+
+`PARALLEL` is the one entry in that table whose diagnostic is *conditional*:
+8002 is a version-compatibility code and, like every other check in
+`analyzer/version.rs`, it is gated on a configured
+`analysis.surrealdb_version`. With no target set, `PARALLEL` parses and
+nothing is said — the same position `<future>`, `DEFINE SCOPE`/`TOKEN`,
+`SEARCH ANALYZER` and the fuzzy operators have been in. Whether an unset
+target (documented as "the latest") should fire every known removal is a
+live question for all six constructs at once, not a `PARALLEL` question.
 
 Uuid *shape* makes no difference: 3.2.3 rejects
 `KILL "018e0f3a-1234-7abc-8def-0123456789ab"` exactly as it rejects
@@ -176,3 +190,81 @@ conflict; no precedence annotation and no `conflicts` entry were needed. The
 lowering test `lowers_order_by_count_as_a_field_not_a_call` pins that the
 order key is the field path, not a call, and
 `order_by_bare_rand_stays_a_parse_error` pins the other half.
+
+## RATELIMIT was never SurrealQL
+
+Three corpus entries claimed `DEFINE TABLE`/`DEFINE FIELD` take a
+`RATELIMIT FOR <action> [WHERE …] [BY …] LIMIT n PER <duration> [MAX n]`
+clause, and the grammar had a `RatelimitClause` to match. Nothing in
+SurrealDB has ever had it.
+
+Checked against surrealdb/surrealdb at rev `c7eac9022` (2026-08-28, newer
+than the extraction that produced the entries):
+
+- A pickaxe over **every ref** — `git log --all -i -G"ratelimit"` — returns
+  four commits, all of them HTTP/WebSocket transport limiting under
+  `server/` plus a `RateLimit` API error kind in
+  `types/tests/error_types.rs`. No commit on any branch contains the token
+  `RATELIMIT`.
+- It is in no keyword table (`core/src/syn/lexer/keywords.rs`,
+  `core/src/syn/token/keyword.rs`) at any tag from v1.0.0 to
+  v3.3.0-beta.3.
+- Live 3.2.3 does not lex it as a keyword at all:
+  `DEFINE TABLE post RATELIMIT …` is ``Unexpected token `an identifier`,
+  expected Eof`` underlining `RATELIMIT`, and `INFO FOR DB` has no bucket
+  for it.
+
+So it is not unreleased and not removed — 8003 and 8002 both have nothing
+to name. The clause is gone from the grammar and the three entries moved to
+the rejected set with that reason, which turns them from a claim the
+grammar had to satisfy into one it must refuse. Valid 320 → 317, rejected
+8 → 11.
+
+## PARALLEL was real, and is gone
+
+`ParallelClause` is wired into six statements (SELECT through
+`_modifierClause`, plus CREATE/UPDATE/UPSERT/DELETE/RELATE). 3.2.3 refuses
+every one: ``Unexpected token `PARALLEL`, expected Eof``, verified live on
+all six.
+
+Unlike RATELIMIT the clause existed. `sql/statements/{create,delete,insert,
+relate,select,update,upsert}.rs` carry `parallel: bool` at every 1.x and
+2.x tag, and from 2.0 the token parser eats it in
+`syn/parser/stmt/<statement>.rs`. It was deleted by 6d8302029, *"Remove
+unused `PARALLEL` clause. (#6768)"*, which landed between `v3.0.0-beta.2`
+(seven parser files still `self.eat(t!("PARALLEL"))`) and `v3.0.0-beta.3`
+(none do) — so the removal ships in **3.0.0**, with no replacement: the
+commit removed it because it did nothing.
+
+That is what 8002 is for, so the clause keeps parsing and the version
+registry names the removal. Deleting the rule would answer a 2.x user
+migrating to 3.x with a token error that kills analysis of the whole file
+and explains nothing. The five non-SELECT statements dropped the clause
+during lowering and so had no span to report on; they now carry
+`parallel: Option<ByteRange>` like `SelectStmt` does.
+
+No corpus entry moved — neither set contained a `PARALLEL` statement. It is
+pinned instead by `lowers_parallel_on_every_statement_that_took_it`
+(crates/syntax) and `parallel_on_every_statement_that_took_it_is_8002`
+(crates/workspace).
+
+## INSERT takes RELATION before IGNORE
+
+The grammar had `optional(IGNORE) optional(RELATION)` — the engine's order
+backwards — so the only spelling SurrealDB accepts did not parse, and the
+one it refuses did.
+
+`syn/parser/stmt/insert.rs` reads
+`let relation = self.eat(t!("RELATION")); let ignore = self.eat(t!("IGNORE"));`
+and has since v2.0.5, where `RELATION` arrived; v1.5.6's `syn/v1/stmt/insert.rs`
+has `IGNORE` and no `RELATION` at all. So the reversed order is not old
+syntax for a version diagnostic to name — it is simply wrong, in every
+release.
+
+On 3.2.3, `INSERT RELATION IGNORE INTO likes {…}` inserts the edge and
+`INSERT IGNORE RELATION INTO likes {…}` is ``Unexpected token `INTO`,
+expected Eof`` — an error pointing at the word *after* the mistake, naming
+neither keyword. The grammar takes both orders and **E4030** reports the
+order, spanning both keywords. Valid corpus 317 → 319:
+`INSERT RELATION IGNORE INTO likes {…}` and `INSERT RELATION INTO likes {…}`,
+both run on 3.2.3, ratchet the order the grammar must keep accepting.
