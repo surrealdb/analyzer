@@ -1,5 +1,17 @@
 [
  [
+  "DEFINE TABLE post RATELIMIT FOR SELECT WHERE $auth IS NONE BY $session.ip LIMIT 2 PER 1s MAX 4",
+  "`RATELIMIT` is not SurrealQL: it appears in no released SurrealDB and in no commit of surrealdb/surrealdb on any branch (pickaxe over every ref at rev c7eac9022 finds only the HTTP transport rate limiter and a `RateLimit` API error kind). 3.2.3 does not even lex it as a keyword \u2014 `DEFINE TABLE post RATELIMIT ...` is \"Unexpected token `an identifier`, expected Eof\" \u2014 and `INFO FOR DB` has no bucket for it"
+ ],
+ [
+  "DEFINE TABLE knows RATELIMIT FOR SELECT BY $auth.id LIMIT 100 PER 1m, FOR UPDATE BY $auth.id LIMIT 100 PER 1h",
+  "`RATELIMIT` is not SurrealQL: it appears in no released SurrealDB and in no commit of surrealdb/surrealdb on any branch (pickaxe over every ref at rev c7eac9022 finds only the HTTP transport rate limiter and a `RateLimit` API error kind). 3.2.3 does not even lex it as a keyword \u2014 `DEFINE TABLE post RATELIMIT ...` is \"Unexpected token `an identifier`, expected Eof\" \u2014 and `INFO FOR DB` has no bucket for it"
+ ],
+ [
+  "DEFINE FIELD name ON post RATELIMIT FOR DELETE BY $auth.id LIMIT 1 PER 1s",
+  "`RATELIMIT` is not SurrealQL: it appears in no released SurrealDB and in no commit of surrealdb/surrealdb on any branch (pickaxe over every ref at rev c7eac9022 finds only the HTTP transport rate limiter and a `RateLimit` API error kind). 3.2.3 does not even lex it as a keyword \u2014 `DEFINE TABLE post RATELIMIT ...` is \"Unexpected token `an identifier`, expected Eof\" \u2014 and `INFO FOR DB` has no bucket for it"
+ ],
+ [
   "DEFINE USER user ON ROOT PASSHASH .* ROLES VIEWER",
   "regex output assertion from surrealdb/core/tests/info.rs (`.*` matches the password hash), not a query; the real input query it asserts on is in the valid set"
  ],

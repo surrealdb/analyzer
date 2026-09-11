@@ -1237,7 +1237,7 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
             "PermissionsBasicClause" | "PermissionsForClause" => {
                 lower_permission_predicates(child, text, &mut def.permissions);
             }
-            "CommentClause" | "TableViewClause" | "RatelimitClause" => {
+            "CommentClause" | "TableViewClause" => {
                 // Recognized but not modeled for type inference.
             }
             _ if is_broken(child) => {}

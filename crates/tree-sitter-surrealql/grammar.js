@@ -983,7 +983,6 @@ export default grammar({
 						$.CommentClause,
 						$.ReferenceClause,
 						$.ComputedClause,
-						$.RatelimitClause,
 					),
 				),
 			),
@@ -1078,34 +1077,9 @@ export default grammar({
 						$.TableViewClause,
 						$.ChangefeedClause,
 						$.PermissionsForClause,
-						$.RatelimitClause,
 						$.CommentClause,
 					),
 				),
-			),
-
-		// RATELIMIT FOR <actions> [WHERE cond] [BY key] LIMIT n PER duration
-		// [MAX n], comma-separated per action group.
-		RatelimitClause: ($) =>
-			seq(alias($._kw_ratelimit, $.Keyword), csep($.RatelimitGroup)),
-		RatelimitGroup: ($) =>
-			seq(
-				alias($._kw_for, $.Keyword),
-				csep(
-					choice(
-						alias($._kw_select, $.Keyword),
-						alias($._kw_create, $.Keyword),
-						alias($._kw_update, $.Keyword),
-						alias($._kw_delete, $.Keyword),
-					),
-				),
-				optional($.WhereClause),
-				optional(seq(alias($._kw_by, $.Keyword), $._value)),
-				alias($._kw_limit, $.Keyword),
-				$.Number,
-				alias($._kw_per, $.Keyword),
-				$.Duration,
-				optional(seq(alias($._kw_max, $.Keyword), $.Number)),
 			),
 
 		_defineConfigOptions: ($) =>
@@ -3404,9 +3378,6 @@ export default grammar({
 		_kw_revoked: ($) => kw('revoked'),
 		_kw_expired: ($) => kw('expired'),
 		_kw_prepare: ($) => kw('prepare'),
-		_kw_ratelimit: ($) => kw('ratelimit'),
-		_kw_per: ($) => kw('per'),
-		_kw_max: ($) => kw('max'),
 		_kw_sequence: ($) => kw('sequence'),
 		_kw_batch: ($) => kw('batch'),
 		_kw_matches: ($) => kw('matches'),
