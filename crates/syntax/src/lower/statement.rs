@@ -650,8 +650,8 @@ fn lower_delete(node: Node<'_>, text: &str) -> DeleteStmt {
 
 fn lower_insert(node: Node<'_>, text: &str) -> InsertStmt {
     let mut stmt = InsertStmt {
-        ignore: false,
-        relation: false,
+        ignore: None,
+        relation: None,
         target: None,
         data: InsertData::Values(Vec::new()),
         on_duplicate_update: Vec::new(),
@@ -676,9 +676,9 @@ fn lower_insert(node: Node<'_>, text: &str) -> InsertStmt {
                 if keyword.eq_ignore_ascii_case("into") {
                     saw_into = true;
                 } else if keyword.eq_ignore_ascii_case("ignore") {
-                    stmt.ignore = true;
+                    stmt.ignore = Some(node_range(child));
                 } else if keyword.eq_ignore_ascii_case("relation") {
-                    stmt.relation = true;
+                    stmt.relation = Some(node_range(child));
                 } else if keyword.eq_ignore_ascii_case("values") {
                     saw_values = true;
                 }
@@ -2072,7 +2072,7 @@ mod tests {
             _ => None,
         });
 
-        assert!(stmt.ignore);
+        assert!(stmt.ignore.is_some());
         assert!(matches!(
             stmt.target.as_ref().map(|t| &t.node),
             Some(Expr::Table(t)) if t.node == "person"

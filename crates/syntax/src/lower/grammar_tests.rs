@@ -292,7 +292,7 @@ fn insert_accepts_param_targets_subquery_payloads_and_duplicate_key_updates() {
     else {
         panic!("expected INSERT");
     };
-    assert!(insert.ignore);
+    assert!(insert.ignore.is_some());
     assert!(matches!(insert.target.map(|t| t.node), Some(Expr::Param(p)) if p == "tb"));
 
     let Statement::Insert(insert) =

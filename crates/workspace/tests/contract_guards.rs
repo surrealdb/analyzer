@@ -223,6 +223,11 @@ const GUARDS: &[Guard] = &[
         "SELECT math::sum(age) FROM user;",
         "SELECT math::sum(age) FROM user GROUP ALL;",
     ),
+    guard(
+        4030,
+        "INSERT IGNORE RELATION INTO wrote { in: user:a, out: post:b };",
+        "INSERT RELATION IGNORE INTO wrote { in: user:a, out: post:b };",
+    ),
     // 5xxx — functions
     guard(5001, "RETURN ghost::fn(1);", "RETURN string::len('a');"),
     guard(

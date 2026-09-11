@@ -1259,8 +1259,27 @@ export default grammar({
 		InsertStatement: ($) =>
 			seq(
 				alias($._kw_insert, $.Keyword),
-				optional(alias($._kw_ignore, $.Keyword)),
-				optional(alias($._kw_relation, $.Keyword)),
+				// The engine's order is RELATION then IGNORE
+				// (`syn/parser/stmt/insert.rs` eats them in that order, and
+				// has since 2.0 when RELATION arrived): 3.2.3 runs
+				// `INSERT RELATION IGNORE INTO likes {…}` and answers
+				// `INSERT IGNORE RELATION INTO likes {…}` with
+				// ``Unexpected token `INTO`, expected Eof``. Both orders are
+				// accepted here so the reversed one earns E4030 — a message
+				// about the order — instead of a token error that would
+				// collapse the whole file.
+				optional(
+					choice(
+						seq(
+							alias($._kw_relation, $.Keyword),
+							optional(alias($._kw_ignore, $.Keyword)),
+						),
+						seq(
+							alias($._kw_ignore, $.Keyword),
+							optional(alias($._kw_relation, $.Keyword)),
+						),
+					),
+				),
 				optional(
 					seq(
 						alias($._kw_into, $.Keyword),

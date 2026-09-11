@@ -218,10 +218,14 @@ pub struct DeleteStmt {
 /// `INSERT` — bulk row insertion with its own payload forms.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsertStmt {
-    /// `INSERT IGNORE`.
-    pub ignore: bool,
-    /// `INSERT RELATION` (row payloads describe edges).
-    pub relation: bool,
+    /// `INSERT IGNORE` — the keyword's span, when present.
+    pub ignore: Option<ByteRange>,
+    /// `INSERT RELATION` (row payloads describe edges) — the keyword's span,
+    /// when present. The engine takes the two in the order
+    /// `RELATION IGNORE`; the spans are kept so the reversed spelling, which
+    /// the grammar also accepts, can be reported as an order error rather
+    /// than a token error.
+    pub relation: Option<ByteRange>,
     /// `INTO <target>`.
     pub target: Option<Spanned<Expr>>,
     /// The rows/values to insert.

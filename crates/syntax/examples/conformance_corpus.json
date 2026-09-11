@@ -293,6 +293,8 @@
  "DEFINE NS test",
  "DEFINE DB test",
  "INSERT INTO person (id) VALUES ('id')",
+ "INSERT RELATION IGNORE INTO likes { in: person:1, out: post:1 }",
+ "INSERT RELATION INTO likes { in: person:1, out: post:1 }",
  "CREATE |user:40000| SET\n\t\t\t\t\t\t   email = string::concat('user', rand::string(8), '@example.com'),\n\t\t\t\t\t\t   created_at = time::now() RETURN NONE;",
  "ALTER INDEX test ON user PREPARE REMOVE",
  "CREATE test:3;",
