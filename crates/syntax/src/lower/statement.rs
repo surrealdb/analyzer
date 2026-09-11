@@ -29,6 +29,7 @@ use crate::ast::{
     Statement, ThrowStmt, UpdateStmt, UpsertStmt, UseStmt,
 };
 use crate::ast::{Expr, Literal};
+use crate::span::ByteRange;
 
 /// Lowers one statement-position CST node.
 ///
@@ -554,6 +555,7 @@ struct MutationParts {
     data: Option<DataClause>,
     where_clause: Option<Spanned<crate::ast::Expr>>,
     ret: Option<Spanned<ReturnMode>>,
+    parallel: Option<ByteRange>,
 }
 
 fn mutation_parts(node: Node<'_>, text: &str) -> MutationParts {
@@ -587,6 +589,7 @@ fn mutation_parts(node: Node<'_>, text: &str) -> MutationParts {
             "ReplaceClause" => parts.data = data_value_clause(child, text, DataClause::Replace),
             "WhereClause" => parts.where_clause = clause_expr(child, text),
             "ReturnClause" => parts.ret = Some(lower_return_mode(child, text)),
+            "ParallelClause" => parts.parallel = Some(node_range(child)),
             _ if is_source_node(child) => parts.targets.push(lower_source(child, text)),
             _ => {}
         }
@@ -604,6 +607,7 @@ fn lower_create(node: Node<'_>, text: &str) -> CreateStmt {
         targets: parts.targets,
         data: parts.data,
         ret: parts.ret,
+        parallel: parts.parallel,
     }
 }
 
@@ -615,6 +619,7 @@ fn lower_update(node: Node<'_>, text: &str) -> UpdateStmt {
         data: parts.data,
         where_clause: parts.where_clause,
         ret: parts.ret,
+        parallel: parts.parallel,
     }
 }
 
@@ -626,6 +631,7 @@ fn lower_upsert(node: Node<'_>, text: &str) -> UpsertStmt {
         data: parts.data,
         where_clause: parts.where_clause,
         ret: parts.ret,
+        parallel: parts.parallel,
     }
 }
 
@@ -638,6 +644,7 @@ fn lower_delete(node: Node<'_>, text: &str) -> DeleteStmt {
         targets: parts.targets,
         where_clause: parts.where_clause,
         ret: parts.ret,
+        parallel: parts.parallel,
     }
 }
 
@@ -749,6 +756,7 @@ fn lower_relate(node: Node<'_>, text: &str) -> RelateStmt {
         to: None,
         data: None,
         ret: None,
+        parallel: None,
     };
     let mut lookups_seen = 0usize;
 
@@ -769,6 +777,7 @@ fn lower_relate(node: Node<'_>, text: &str) -> RelateStmt {
             "SetClause" => stmt.data = Some(lower_set_clause(child, text)),
             "ContentClause" => stmt.data = data_value_clause(child, text, DataClause::Content),
             "ReturnClause" => stmt.ret = Some(lower_return_mode(child, text)),
+            "ParallelClause" => stmt.parallel = Some(node_range(child)),
             _ if is_source_node(child) => {
                 let source = lower_source(child, text);
                 match lookups_seen {
@@ -1762,6 +1771,42 @@ mod tests {
             };
             assert_eq!(table.node, "person");
             assert!(range, "`{query}` is a record-id range");
+        }
+    }
+
+    /// `PARALLEL` is gone from the engine's parser since 3.0 (surrealdb#6768)
+    /// but still parses here so 8002 can name it. Every statement that took
+    /// the clause must carry its span, or the analyzer would see nothing to
+    /// report: the span is the whole diagnostic.
+    #[test]
+    fn lowers_parallel_on_every_statement_that_took_it() {
+        for (query, kind) in [
+            ("CREATE person:1 PARALLEL;", "CreateStatement"),
+            ("UPDATE person:1 SET a = 1 PARALLEL;", "UpdateStatement"),
+            ("UPSERT person:1 SET a = 1 PARALLEL;", "UpsertStatement"),
+            ("DELETE person:1 PARALLEL;", "DeleteStatement"),
+            (
+                "RELATE person:1->likes:1->post:1 PARALLEL;",
+                "RelateStatement",
+            ),
+        ] {
+            let parsed = parse(query);
+            let node =
+                find_first(parsed.tree().root_node(), kind).unwrap_or_else(|| panic!("{query}"));
+            let span = match lower_statement(node, parsed.text()).node {
+                Statement::Create(stmt) => stmt.parallel,
+                Statement::Update(stmt) => stmt.parallel,
+                Statement::Upsert(stmt) => stmt.parallel,
+                Statement::Delete(stmt) => stmt.parallel,
+                Statement::Relate(stmt) => stmt.parallel,
+                other => panic!("unexpected statement for `{query}`: {other:?}"),
+            };
+            let span = span.unwrap_or_else(|| panic!("`{query}` lost its PARALLEL span"));
+            assert_eq!(
+                &parsed.text()[span.start() as usize..span.end() as usize],
+                "PARALLEL",
+                "`{query}` span covers the clause"
+            );
         }
     }
 

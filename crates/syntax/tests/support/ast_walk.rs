@@ -29,6 +29,12 @@ impl Collected {
         self.spans.push((what, span));
     }
 
+    fn opt_span(&mut self, what: &'static str, span: Option<ByteRange>) {
+        if let Some(span) = span {
+            self.span(what, span);
+        }
+    }
+
     fn partial(&mut self, what: &'static str, node: &PartialNode) {
         self.span(what, node.span);
         self.partials.push(node.clone());
@@ -130,23 +136,27 @@ impl Collected {
                 self.exprs(&create.targets);
                 self.data_clause(create.data.as_ref());
                 self.return_mode(create.ret.as_ref());
+                self.opt_span("parallel", create.parallel);
             }
             Statement::Update(update) => {
                 self.exprs(&update.targets);
                 self.data_clause(update.data.as_ref());
                 self.opt_expr(update.where_clause.as_ref());
                 self.return_mode(update.ret.as_ref());
+                self.opt_span("parallel", update.parallel);
             }
             Statement::Upsert(upsert) => {
                 self.exprs(&upsert.targets);
                 self.data_clause(upsert.data.as_ref());
                 self.opt_expr(upsert.where_clause.as_ref());
                 self.return_mode(upsert.ret.as_ref());
+                self.opt_span("parallel", upsert.parallel);
             }
             Statement::Delete(delete) => {
                 self.exprs(&delete.targets);
                 self.opt_expr(delete.where_clause.as_ref());
                 self.return_mode(delete.ret.as_ref());
+                self.opt_span("parallel", delete.parallel);
             }
             Statement::Insert(insert) => self.insert(insert),
             Statement::Relate(relate) => {
@@ -155,6 +165,7 @@ impl Collected {
                 self.opt_expr(relate.to.as_ref());
                 self.data_clause(relate.data.as_ref());
                 self.return_mode(relate.ret.as_ref());
+                self.opt_span("parallel", relate.parallel);
             }
             Statement::Define(define) => self.define(define),
             Statement::Remove(remove) => match &remove.target {
@@ -251,9 +262,7 @@ impl Collected {
             self.span("explain", span);
         }
         self.opt_expr(select.timeout.as_ref());
-        if let Some(span) = select.parallel {
-            self.span("parallel", span);
-        }
+        self.opt_span("parallel", select.parallel);
     }
 
     fn insert(&mut self, insert: &InsertStmt) {

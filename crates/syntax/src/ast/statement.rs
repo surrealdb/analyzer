@@ -137,7 +137,9 @@ pub struct SelectStmt {
     pub explain: Option<ByteRange>,
     /// `TIMEOUT <duration>`.
     pub timeout: Option<Spanned<Expr>>,
-    /// `PARALLEL` — the clause's span, when present.
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
     pub parallel: Option<ByteRange>,
 }
 
@@ -152,6 +154,10 @@ pub struct CreateStmt {
     pub data: Option<DataClause>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `UPDATE` — modifies existing rows.
@@ -167,6 +173,10 @@ pub struct UpdateStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `UPSERT` — updates rows, creating them when absent.
@@ -182,6 +192,10 @@ pub struct UpsertStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `DELETE` — removes rows.
@@ -195,6 +209,10 @@ pub struct DeleteStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `INSERT` — bulk row insertion with its own payload forms.
@@ -256,6 +274,10 @@ pub struct RelateStmt {
     pub data: Option<DataClause>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// DEFINE family. Tier 1 kinds are modeled; the long tail
