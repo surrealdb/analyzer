@@ -1,9 +1,8 @@
-//! The watch loop behind `surrealql-analyzer watch`, `check --watch` and
-//! `generate --watch`.
+//! The watch loop behind `surrealql-analyzer watch` and `check --watch`.
 //!
-//! Generated types go stale silently: you edit a `.surql` file or a host file
-//! and nothing re-runs. Watching closes that loop — run once, then re-run on
-//! every change to an input the analysis actually consumes.
+//! A report goes stale silently: you edit a `.surql` file or a host file and
+//! nothing re-runs. Watching closes that loop — run once, then re-run on every
+//! change to an input the analysis actually consumes.
 //!
 //! # Output
 //!
@@ -14,7 +13,7 @@
 //!
 //! # What is watched
 //!
-//! Exactly the inputs `check`/`generate` read:
+//! Exactly the inputs `check` reads:
 //!
 //! * every `.surql` / `.surrealql` file under the workspace root,
 //! * every host file ([`crate::is_host_source`]: `.ts`/`.tsx`/`.js`/`.jsx`/
@@ -27,8 +26,6 @@
 //! ignored top-level directories are never handed to the watcher at all (so
 //! `target/`, `node_modules/` and `.git/` cost nothing), and every delivered
 //! event is re-checked against the ignore patterns before it can trigger a run.
-//! The generated registry is excluded too: `generate` writes it, so watching it
-//! would make the process re-trigger itself forever.
 //!
 //! # Debounce
 //!
@@ -129,18 +126,7 @@ pub(crate) enum Watched {
 ///
 /// This is deliberately path-only: a deleted file cannot be stat'd, and a
 /// deletion must be as watchable as a write.
-///
-/// `exclude` is the generated registry — `generate` writes it, so treating it
-/// as an input would make every run trigger the next one.
-pub(crate) fn classify(
-    root: &Path,
-    path: &Path,
-    ignore: &[String],
-    exclude: Option<&Path>,
-) -> Option<Watched> {
-    if exclude.is_some_and(|excluded| excluded == path) {
-        return None;
-    }
+pub(crate) fn classify(root: &Path, path: &Path, ignore: &[String]) -> Option<Watched> {
     // A path the watcher reported from outside the root cannot be an input.
     let relative = path.strip_prefix(root).ok()?;
     if relative.as_os_str().is_empty() {
@@ -162,36 +148,6 @@ pub(crate) fn classify(
         return Some(Watched::Host);
     }
     None
-}
-
-/// The absolute, symlink-resolved form of a path the command is going to
-/// write, so it can be compared against the paths the watcher reports.
-///
-/// Getting this wrong is a feedback loop, not a cosmetic bug: `generate` writes
-/// the registry, the watcher sees the write, `generate` runs again. So every
-/// way the path can differ from the watcher's spelling is handled here —
-/// `--out` may be relative (it is resolved against the working directory the
-/// command writes through), may contain `..`, and on macOS the watcher reports
-/// `/private/tmp/...` for a working directory spelled `/tmp/...`.
-///
-/// The file usually does not exist yet on the first run, so the *parent* is
-/// canonicalized and the file name re-attached.
-pub(crate) fn resolve_output(root: &Path, out: &Path) -> PathBuf {
-    let absolute = if out.is_absolute() {
-        out.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| root.to_path_buf())
-            .join(out)
-    };
-    match (absolute.parent(), absolute.file_name()) {
-        (Some(parent), Some(name)) => parent
-            .canonicalize()
-            .map_or_else(|_| absolute.clone(), |resolved| resolved.join(name)),
-        // A path with no parent or no file name is not something `fs::write`
-        // will succeed on either; leave it alone and let the run report it.
-        _ => absolute,
-    }
 }
 
 /// The immediate subdirectories of `root` that the watcher should follow
@@ -374,9 +330,6 @@ fn sync_watches(
 /// Runs `run` once, then again on every change to a watched input, until the
 /// process is interrupted.
 ///
-/// `exclude` is the file the command writes (the generated registry), kept out
-/// of the input set so a run cannot trigger itself.
-///
 /// The config is re-read on every burst: it decides the ignore patterns and
 /// therefore the watch set, so editing `surrealql-analyzer.toml` re-targets the
 /// watcher on the next tick. A config that stops parsing keeps the previous
@@ -384,7 +337,6 @@ fn sync_watches(
 /// until the file is fixed.
 pub(crate) fn watch_loop(
     root: &Path,
-    exclude: Option<&Path>,
     styles: Styles,
     mut run: impl FnMut() -> RunOutcome,
 ) -> Result<(), Box<dyn Error>> {
@@ -424,7 +376,7 @@ pub(crate) fn watch_loop(
 
         let mut changes: ChangeSet = batch
             .into_iter()
-            .filter(|path| classify(root, path, ignore, exclude).is_some())
+            .filter(|path| classify(root, path, ignore).is_some())
             .collect();
         // A directory that appeared complete (a checkout, a `mv`) emits no
         // per-file events once it is watched, so treat its arrival as a change.
@@ -528,7 +480,7 @@ mod tests {
             ("/w/surrealql-analyzer.toml", Watched::Config),
         ] {
             assert_eq!(
-                classify(root, Path::new(path), &ignore, None),
+                classify(root, Path::new(path), &ignore),
                 Some(expected),
                 "{path} should classify as {expected:?}"
             );
@@ -541,7 +493,7 @@ mod tests {
         let ignore = ignore();
         for path in ["/w/README.md", "/w/Cargo.toml", "/w/src/styles.css", "/w"] {
             assert_eq!(
-                classify(root, Path::new(path), &ignore, None),
+                classify(root, Path::new(path), &ignore),
                 None,
                 "{path} is not an analysis input"
             );
@@ -562,19 +514,14 @@ mod tests {
             "/w/.git/COMMIT_EDITMSG.surql",
         ] {
             assert_eq!(
-                classify(root, Path::new(path), &ignore, None),
+                classify(root, Path::new(path), &ignore),
                 None,
                 "{path} is ignored and must not trigger a run"
             );
         }
         // ...while the same extension outside them still counts.
         assert_eq!(
-            classify(
-                root,
-                Path::new("/w/packages/app/src/q.surql"),
-                &ignore,
-                None
-            ),
+            classify(root, Path::new("/w/packages/app/src/q.surql"), &ignore),
             Some(Watched::Surql)
         );
     }
@@ -585,73 +532,10 @@ mod tests {
             classify(
                 Path::new("/w"),
                 Path::new("/elsewhere/schema.surql"),
-                &ignore(),
-                None
+                &ignore()
             ),
             None
         );
-    }
-
-    #[test]
-    fn the_generated_registry_is_not_an_input() {
-        // `generate` writes this file. If a write to it counted as a change the
-        // watcher would re-trigger itself forever.
-        let root = Path::new("/w");
-        let out = PathBuf::from("/w/surrealql-analyzer.generated.ts");
-        assert_eq!(classify(root, &out, &ignore(), Some(&out)), None);
-        // It is a plain host file to any other command.
-        assert_eq!(
-            classify(root, &out, &ignore(), None),
-            Some(Watched::Host),
-            "excluding it is the watch loop's job, not the extension check's"
-        );
-    }
-
-    #[test]
-    fn a_relative_output_path_still_resolves_to_the_path_the_watcher_reports() {
-        // The loop that this prevents: `generate` writes the registry, the
-        // watcher reports the write under its absolute, symlink-resolved name,
-        // an exclusion spelled `src/registry.ts` fails to match, `generate`
-        // runs again — forever. Exercised with `--out` *inside* a watched
-        // directory, which is the common case.
-        let root = crate::tests::temp_project_dir("watch-out-relative");
-        std::fs::create_dir_all(root.join("src")).expect("dir");
-        let canonical_root = root.canonicalize().expect("canonical root");
-
-        let resolved = {
-            // `resolve_output` reads the working directory for a relative path,
-            // exactly as `generate` does when it writes.
-            let previous = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(&root).expect("enter project");
-            let resolved = resolve_output(&root, Path::new("src/registry.ts"));
-            std::env::set_current_dir(previous).expect("restore cwd");
-            resolved
-        };
-
-        assert!(resolved.is_absolute(), "must be absolute: {resolved:?}");
-        assert_eq!(resolved, canonical_root.join("src/registry.ts"));
-        // And with that spelling, the write is no longer an input.
-        assert_eq!(
-            classify(
-                &canonical_root,
-                &canonical_root.join("src/registry.ts"),
-                &ignore(),
-                Some(&resolved),
-            ),
-            None,
-            "the registry `generate` writes must never trigger the next run"
-        );
-    }
-
-    #[test]
-    fn an_output_path_with_parent_traversal_resolves_to_the_same_file() {
-        let root = crate::tests::temp_project_dir("watch-out-traversal");
-        std::fs::create_dir_all(root.join("src")).expect("dir");
-        let canonical_root = root.canonicalize().expect("canonical root");
-
-        let direct = resolve_output(&root, &canonical_root.join("src/registry.ts"));
-        let traversed = resolve_output(&root, &canonical_root.join("src/../src/registry.ts"));
-        assert_eq!(direct, traversed);
     }
 
     #[test]
