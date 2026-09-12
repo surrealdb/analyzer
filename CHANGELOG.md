@@ -4,16 +4,16 @@
 
 ## 0.6.0 — 2026-09-12
 
-The rename to the SurrealQL Analyzer landed after 0.5.3 had already shipped, so
-every name in this release is new to its registry and this is the first release
-to carry any of them. The crates publish to crates.io as `surrealql-analyzer`
-and `surrealql-analyzer-*`, replacing the `surrealguard-*` crates that stop at
-0.5.3, and the TypeScript packages publish to npm as `@surrealdb/analyzer-*`,
-replacing the `@surrealguard/*` scope. There is no fallback and no shim: the old
-names are frozen where they are, and anything depending on them has to move. The
-standalone command line moves too — `surrealql-analyzer` is a library now, and
-the `check`, `generate` and `watch` verbs belong to
-[SurrealKit](https://github.com/surrealdb/surrealkit).
+Nothing in this release goes to a registry. The analyzer is consumed as a
+library and its one consumer,
+[SurrealKit](https://github.com/surrealdb/surrealkit), depends on this
+repository directly, so the version names a commit rather than a published
+artifact. It moves to 0.6.0 because what the commit contains is breaking twice
+over. The rename to the SurrealQL Analyzer means the `surrealguard-*` crates and
+the `@surrealguard/*` npm scope stop at 0.5.3 and carry nothing forward — there
+is no fallback and no shim, and anything still on those names has to move. And
+the standalone command line is gone: `surrealql-analyzer` is a library, and
+`check`, `generate` and `watch` are SurrealKit's verbs to spell.
 
 ### Fixed — a watch could re-trigger itself forever
 
