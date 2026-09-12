@@ -76,6 +76,16 @@ pub struct Document {
     /// upsert (see [`is_schema_relevant`]). Only meaningful for `.surql`
     /// documents; host files never contribute.
     schema_relevant: bool,
+    /// The client's version for `text`, when the client owns this document —
+    /// the number it stamped on the `didOpen`/`didChange` that produced it.
+    /// `None` for a document read from disk by a workspace scan, which no
+    /// editor has opened and which therefore has no version at all.
+    ///
+    /// It is the document's *edit order*: it decides which of two concurrently
+    /// handled edits is the newer one (see [`Workspace::upsert_versioned`]),
+    /// and it is what the server stamps on the diagnostics it publishes, so a
+    /// client can tell which text an answer describes.
+    pub version: Option<i32>,
     /// The line index over `text`, built on the first conversion this version
     /// of the document needs and reused by every later one. An edit replaces
     /// the whole `Document`, so this can never outlive the text it indexes.
@@ -83,7 +93,7 @@ pub struct Document {
 }
 
 impl Document {
-    fn new(uri: Url, text: String) -> Self {
+    fn new(uri: Url, text: String, version: Option<i32>) -> Self {
         let text_hash = {
             let mut hasher = DefaultHasher::new();
             text.hash(&mut hasher);
@@ -95,6 +105,7 @@ impl Document {
             text: Arc::from(text),
             text_hash,
             schema_relevant,
+            version,
             index: OnceLock::new(),
         }
     }
@@ -313,10 +324,41 @@ impl Workspace {
         &self.config
     }
 
-    /// Update a document's content on open or change. The next analysis
-    /// request recomputes because the input hash changes.
+    /// Track text that came from disk — a workspace scan, not an editor. The
+    /// document gets no version, and replaces whatever was there: the scan
+    /// runs once at `initialize`, before any document is open.
     pub fn upsert(&mut self, uri: Url, text: String) {
-        self.documents.insert(uri.clone(), Document::new(uri, text));
+        self.documents
+            .insert(uri.clone(), Document::new(uri, text, None));
+    }
+
+    /// Update a document the client owns, at the version it stamped on the
+    /// notification. Returns whether the edit was applied.
+    ///
+    /// A *stale* edit is refused. tower-lsp serves incoming messages
+    /// concurrently (`buffer_unordered`), so two notifications for the same
+    /// document can be handled in either order — a `didOpen` and the
+    /// `didChange` that follows it a keystroke later are routinely in flight
+    /// together. Whichever handler takes the write lock last used to win, so
+    /// the loser could put the *older* text back for good: every later hover,
+    /// completion and diagnostic then described a buffer the user had already
+    /// moved past, until the next keystroke happened to land in order.
+    /// Versions decide it instead, which is what they are for.
+    pub fn upsert_versioned(&mut self, uri: Url, text: String, version: i32) -> bool {
+        if let Some(current) = self.documents.get(&uri).and_then(|doc| doc.version) {
+            if version < current {
+                return false;
+            }
+        }
+        self.documents
+            .insert(uri.clone(), Document::new(uri, text, Some(version)));
+        true
+    }
+
+    /// The client's version for a tracked document, or `None` for one read
+    /// from disk (or not tracked at all).
+    pub fn document_version(&self, uri: &Url) -> Option<i32> {
+        self.documents.get(uri).and_then(|doc| doc.version)
     }
 
     /// Remove a document on close. Drops any cached host analysis for it; the
@@ -1446,6 +1488,29 @@ pub struct DiagnosticAnalysisResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_edit_is_refused_and_a_newer_one_applied() {
+        let mut workspace = Workspace::new();
+        let uri = Url::parse("file:///workspace/query.surql").expect("valid uri");
+
+        assert!(workspace.upsert_versioned(uri.clone(), "RETURN 1;".into(), 1));
+        assert!(workspace.upsert_versioned(uri.clone(), "RETURN 3;".into(), 3));
+        assert!(
+            !workspace.upsert_versioned(uri.clone(), "RETURN 2;".into(), 2),
+            "version 2 arriving after version 3 is the older text"
+        );
+
+        assert_eq!(workspace.document_text(&uri).as_deref(), Some("RETURN 3;"));
+        assert_eq!(workspace.document_version(&uri), Some(3));
+
+        // The same version again is a re-send, not a step backwards.
+        assert!(workspace.upsert_versioned(uri.clone(), "RETURN 3;".into(), 3));
+        // A document read from disk carries no version at all.
+        let scanned = Url::parse("file:///workspace/scanned.surql").expect("valid uri");
+        workspace.upsert(scanned.clone(), "RETURN 0;".into());
+        assert_eq!(workspace.document_version(&scanned), None);
+    }
 
     #[test]
     fn diagnostic_analysis_uses_workspace_finding_pipeline_for_target_document() {

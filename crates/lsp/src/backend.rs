@@ -50,6 +50,11 @@ pub struct Backend {
     /// The last semantic-token answer per document, keyed by the text it was
     /// computed from; see [`Self::semantic_tokens_full`].
     semantic_cache: Mutex<HashMap<Url, SemanticEntry>>,
+    /// The newest document version whose diagnostics have already been sent,
+    /// per document; see [`PublishedVersions`]. An async mutex because it is
+    /// held across the send itself, which is what makes the check and the
+    /// send one step.
+    published: tokio::sync::Mutex<PublishedVersions>,
     /// The `surrealql-analyzer.toml` the policy came from, when a workspace root has
     /// one. `None` leaves the workspace-wide suppression action unoffered:
     /// creating a config file is a resource operation not every client
@@ -67,6 +72,43 @@ pub struct Backend {
     /// Registration is a server->client *request*, so — like semantic-token
     /// refresh — it is only sent to a client that declared it accepts one.
     watched_files_support: AtomicBool,
+}
+
+/// The newest document version already published, per document — the gate
+/// that keeps a document's diagnostics moving forwards only.
+///
+/// Publishing is not instantaneous: a handler analyzes, then sends. tower-lsp
+/// serves messages concurrently, so the handler for an older edit can still be
+/// between those two steps when the handler for a newer one finishes, and its
+/// send would then overwrite fresh diagnostics with stale ones — squiggles for
+/// text the user has already replaced, left standing until the next edit. The
+/// version says which is which, so the older send is simply dropped: the newer
+/// publish it lost to already describes the document.
+///
+/// Unversioned publishes (a document read from disk, a cleared document) never
+/// gate and never move the mark: they have no place in that order.
+#[derive(Debug, Default)]
+struct PublishedVersions(HashMap<Url, i32>);
+
+impl PublishedVersions {
+    /// Whether diagnostics computed for `uri` at `version` may still be sent,
+    /// recording them as the newest published when they may.
+    fn accepts(&mut self, uri: &Url, version: Option<i32>) -> bool {
+        let Some(version) = version else {
+            return true;
+        };
+        if self.0.get(uri).is_some_and(|newest| *newest > version) {
+            return false;
+        }
+        self.0.insert(uri.clone(), version);
+        true
+    }
+
+    /// Forget a document, so a reopen (whose versions start over) is not
+    /// measured against the closed buffer's.
+    fn forget(&mut self, uri: &Url) {
+        self.0.remove(uri);
+    }
 }
 
 /// One document's encoded semantic tokens and the text they describe. The
@@ -132,6 +174,7 @@ impl Backend {
             policy: RwLock::new(PolicyConfig::default()),
             refresh: Arc::new(RefreshState::default()),
             semantic_cache: Mutex::new(HashMap::new()),
+            published: tokio::sync::Mutex::new(PublishedVersions::default()),
             config: RwLock::new(None),
             code_action_literal_support: AtomicBool::new(false),
             watched_files_support: AtomicBool::new(false),
@@ -222,9 +265,12 @@ impl Backend {
     /// analysis result shares the workspace's text by `Arc`, so this costs
     /// the document's findings and no copy of anything.
     async fn publish_document_diagnostics(&self, uri: &Url) {
-        let result = {
+        // The version is read under the same guard as the analysis, so it
+        // always names the exact text these diagnostics describe — never a
+        // newer one an edit installed in between.
+        let (result, version) = {
             let ws = self.workspace.read().await;
-            ws.diagnostic_analysis(uri)
+            (ws.diagnostic_analysis(uri), ws.document_version(uri))
         };
 
         let Some(result) = result else {
@@ -245,8 +291,25 @@ impl Backend {
             .collect();
         drop(policy);
 
+        self.publish(uri, lsp_diagnostics, version).await;
+    }
+
+    /// Send one document's diagnostics, stamped with the version of the text
+    /// they were computed from — unless a newer version's diagnostics have
+    /// already gone out, in which case this answer is obsolete and is dropped.
+    ///
+    /// The version is `PublishDiagnosticsParams.version` (LSP 3.15): it lets a
+    /// client discard an answer that no longer matches its buffer, and it is
+    /// how a test knows which edit a publish belongs to. The gate is held
+    /// across the send so the check and the send cannot interleave with
+    /// another publish of the same document; see [`PublishedVersions`].
+    async fn publish(&self, uri: &Url, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+        let mut published = self.published.lock().await;
+        if !published.accepts(uri, version) {
+            return;
+        }
         self.client
-            .publish_diagnostics(uri.clone(), lsp_diagnostics, None)
+            .publish_diagnostics(uri.clone(), diagnostics, version)
             .await;
     }
 
@@ -1036,7 +1099,11 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.clone();
         {
             let mut ws = self.workspace.write().await;
-            ws.upsert(params.text_document.uri, params.text_document.text);
+            ws.upsert_versioned(
+                params.text_document.uri,
+                params.text_document.text,
+                params.text_document.version,
+            );
         }
         self.publish_diagnostics(&uri).await;
     }
@@ -1057,7 +1124,7 @@ impl LanguageServer for Backend {
         };
         if let Some(change) = params.content_changes.into_iter().last() {
             let mut ws = self.workspace.write().await;
-            ws.upsert(uri.clone(), change.text);
+            ws.upsert_versioned(uri.clone(), change.text, params.text_document.version);
         }
         let started = std::time::Instant::now();
         self.publish_diagnostics(&uri).await;
@@ -1096,6 +1163,65 @@ impl LanguageServer for Backend {
         if let Ok(mut cache) = self.semantic_cache.lock() {
             cache.remove(&uri);
         }
+        // Forgetting the version mark and clearing the marks is one step: a
+        // reopened buffer starts its versions over, and must not be measured
+        // against the closed one's.
+        let mut published = self.published.lock().await;
+        published.forget(&uri);
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uri(name: &str) -> Url {
+        Url::parse(&format!("file:///workspace/{name}.surql")).expect("valid uri")
+    }
+
+    #[test]
+    fn a_publish_for_an_older_version_than_one_already_sent_is_dropped() {
+        let mut published = PublishedVersions::default();
+        let query = uri("query");
+
+        assert!(published.accepts(&query, Some(1)));
+        assert!(published.accepts(&query, Some(2)));
+        assert!(
+            !published.accepts(&query, Some(1)),
+            "version 1's diagnostics describe text the client has replaced"
+        );
+        // The same version twice is a re-publish of the current text (a config
+        // change sweeping every open document), not a step backwards.
+        assert!(published.accepts(&query, Some(2)));
+        // Documents are gated one by one.
+        assert!(published.accepts(&uri("other"), Some(1)));
+    }
+
+    #[test]
+    fn an_unversioned_publish_neither_gates_nor_moves_the_mark() {
+        let mut published = PublishedVersions::default();
+        let query = uri("query");
+
+        assert!(published.accepts(&query, None));
+        assert!(published.accepts(&query, Some(2)));
+        assert!(published.accepts(&query, None));
+        assert!(
+            !published.accepts(&query, Some(1)),
+            "an unversioned publish in between must not have cleared the mark"
+        );
+    }
+
+    #[test]
+    fn a_closed_document_is_forgotten_so_a_reopen_starts_over() {
+        let mut published = PublishedVersions::default();
+        let query = uri("query");
+
+        assert!(published.accepts(&query, Some(7)));
+        published.forget(&query);
+        assert!(
+            published.accepts(&query, Some(1)),
+            "a reopened buffer numbers its versions from the start again"
+        );
     }
 }

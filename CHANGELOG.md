@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed — the editor could be left holding diagnostics for text the user had replaced
+
+The LSP published diagnostics with no `version` and applied every edit in the
+order its handler happened to finish. tower-lsp serves incoming messages
+concurrently, so a `didOpen` and the `didChange` a keystroke later are routinely
+in flight together — and whichever handler took the workspace lock last won.
+The older one winning put the older text back for good: every later hover,
+completion and diagnostic then described a buffer the user had moved past, and
+a late publish could repaint squiggles for text that no longer existed.
+
+Document versions now decide all of it. An edit older than the text a document
+already holds is refused, every `publishDiagnostics` carries the version of the
+text it describes (`PublishDiagnosticsParams.version`, LSP 3.15), and a publish
+whose version is older than one already sent for that document is dropped rather
+than overwriting it — so a client can tell which edit an answer belongs to, and
+diagnostics for a document only ever move forwards.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

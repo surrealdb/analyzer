@@ -118,6 +118,12 @@ impl Server {
     }
 
     /// The next buffered or incoming publishDiagnostics notification.
+    ///
+    /// Unlike the stdio harness, this one may take the *next* publish without
+    /// matching a document or a version: [`Self::call`] drives one handler to
+    /// completion before the next notification is sent, so a publish is never
+    /// still in flight when the following one is asked for. Every publish's
+    /// `version` is asserted where it matters instead.
     async fn next_publish(&mut self) -> PublishDiagnosticsParams {
         loop {
             let message = if self.buffered.is_empty() {
@@ -212,6 +218,93 @@ async fn did_change_reanalyzes_with_the_new_text() {
             .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
         "defining the table fixes the error: {:?}",
         published.diagnostics
+    );
+}
+
+#[tokio::test]
+async fn every_publish_carries_the_version_of_the_text_it_describes() {
+    // `PublishDiagnosticsParams.version` (LSP 3.15) is how a client — and a
+    // test — knows which edit an answer belongs to. Without it, diagnostics
+    // arriving while the user keeps typing are indistinguishable from the
+    // ones for the buffer on screen.
+    let mut server = Server::started().await;
+    let uri = Url::parse("file:///workspace/query.surql").expect("valid url");
+
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&uri, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    assert_eq!(server.next_publish().await.version, Some(1));
+
+    server
+        .call(
+            "textDocument/didChange",
+            None,
+            did_change(&uri, 2, "SELECT * FROM persn WHERE id;\n"),
+        )
+        .await;
+    assert_eq!(server.next_publish().await.version, Some(2));
+
+    // A close clears the marks for no version in particular.
+    server
+        .call(
+            "textDocument/didClose",
+            None,
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+    let cleared = server.next_publish().await;
+    assert_eq!(cleared.version, None);
+    assert!(cleared.diagnostics.is_empty());
+}
+
+#[tokio::test]
+async fn an_edit_that_arrives_out_of_order_never_puts_the_older_text_back() {
+    // tower-lsp serves messages concurrently, so two notifications for one
+    // document can be handled in either order. The older one must not win:
+    // before versions decided it, the loser's text was installed for good and
+    // every later answer described a buffer the user had moved past.
+    let mut server = Server::started().await;
+    let uri = Url::parse("file:///workspace/query.surql").expect("valid url");
+
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&uri, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    assert_eq!(server.next_publish().await.diagnostics.len(), 1);
+
+    server
+        .call(
+            "textDocument/didChange",
+            None,
+            did_change(&uri, 3, "DEFINE TABLE persn;\nSELECT * FROM persn;\n"),
+        )
+        .await;
+    let current = server.next_publish().await;
+    assert_eq!(current.version, Some(3));
+    assert!(current.diagnostics.is_empty(), "{:?}", current.diagnostics);
+
+    // Version 2, delivered late: its text is older than what the document
+    // already holds, so it is dropped and the publish still describes 3.
+    server
+        .call(
+            "textDocument/didChange",
+            None,
+            did_change(&uri, 2, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    let late = server.next_publish().await;
+    assert_eq!(late.version, Some(3));
+    assert!(
+        late.diagnostics.is_empty(),
+        "a late edit must not resurrect the older text's findings: {:?}",
+        late.diagnostics
     );
 }
 
