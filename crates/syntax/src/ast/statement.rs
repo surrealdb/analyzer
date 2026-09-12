@@ -137,7 +137,9 @@ pub struct SelectStmt {
     pub explain: Option<ByteRange>,
     /// `TIMEOUT <duration>`.
     pub timeout: Option<Spanned<Expr>>,
-    /// `PARALLEL` — the clause's span, when present.
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
     pub parallel: Option<ByteRange>,
 }
 
@@ -152,6 +154,10 @@ pub struct CreateStmt {
     pub data: Option<DataClause>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `UPDATE` — modifies existing rows.
@@ -167,6 +173,10 @@ pub struct UpdateStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `UPSERT` — updates rows, creating them when absent.
@@ -182,6 +192,10 @@ pub struct UpsertStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `DELETE` — removes rows.
@@ -195,15 +209,23 @@ pub struct DeleteStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// `INSERT` — bulk row insertion with its own payload forms.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsertStmt {
-    /// `INSERT IGNORE`.
-    pub ignore: bool,
-    /// `INSERT RELATION` (row payloads describe edges).
-    pub relation: bool,
+    /// `INSERT IGNORE` — the keyword's span, when present.
+    pub ignore: Option<ByteRange>,
+    /// `INSERT RELATION` (row payloads describe edges) — the keyword's span,
+    /// when present. The engine takes the two in the order
+    /// `RELATION IGNORE`; the spans are kept so the reversed spelling, which
+    /// the grammar also accepts, can be reported as an order error rather
+    /// than a token error.
+    pub relation: Option<ByteRange>,
     /// `INTO <target>`.
     pub target: Option<Spanned<Expr>>,
     /// The rows/values to insert.
@@ -213,6 +235,10 @@ pub struct InsertStmt {
     pub on_duplicate_update: Vec<Assignment>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// INSERT's payload forms — distinct from the other mutations' `DataClause`
@@ -256,6 +282,10 @@ pub struct RelateStmt {
     pub data: Option<DataClause>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// DEFINE family. Tier 1 kinds are modeled; the long tail

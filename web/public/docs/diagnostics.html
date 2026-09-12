@@ -157,7 +157,7 @@
   <main class="docs-main">
     <span class="eyebrow-doc">// reference</span>
     <h1>Diagnostics &amp; lints</h1>
-    <p class="lead-p">Every construct in SurrealQL has a <strong>contract</strong> — what the author must mean for the statement to make sense. A diagnostic fires when that contract is provably violated, whether or not SurrealDB would run the query. This is the complete catalog: <strong>94 codes</strong> across eight families, plus the parser's own <a class="link" href="#fam-0">0xxx</a> codes.</p>
+    <p class="lead-p">Every construct in SurrealQL has a <strong>contract</strong> — what the author must mean for the statement to make sense. A diagnostic fires when that contract is provably violated, whether or not SurrealDB would run the query. This is the complete catalog: <strong>95 codes</strong> across eight families, plus the parser's own <a class="link" href="#fam-0">0xxx</a> codes.</p>
 
     <div class="genbar">
       <span>generated from <code>crates/diagnostics/src/catalog.rs</code></span>
@@ -215,7 +215,7 @@
       <a class="n1" href="#fam-1"><b>1xxx</b> schema · 12</a>
       <a class="n2" href="#fam-2"><b>2xxx</b> types · 24</a>
       <a class="n3" href="#fam-3"><b>3xxx</b> graph · 5</a>
-      <a class="n4" href="#fam-4"><b>4xxx</b> statement · 23</a>
+      <a class="n4" href="#fam-4"><b>4xxx</b> statement · 24</a>
       <a class="n5" href="#fam-5"><b>5xxx</b> functions · 5</a>
       <a class="n6" href="#fam-6"><b>6xxx</b> params · 7</a>
       <a class="n7" href="#fam-7"><b>7xxx</b> lints · 15</a>
@@ -331,7 +331,7 @@
       <div class="fam-head">
         <span class="fam-badge">4xxx</span>
         <span class="ft">Statement &amp; clause / flow</span>
-        <span class="fc">23 codes</span>
+        <span class="fc">24 codes</span>
       </div>
       <p class="fam-desc">Clauses must be valid on their statement, and control flow must be well-formed and reachable.</p>
       <div class="tbl-wrap"><table>
@@ -360,6 +360,7 @@
           <tr><td><span class="cd"><span class="sevb w">W</span><span class="num">4027</span></span></td><td><span class="lvl warn">warn</span></td><td>A live query clause the notification will not reflect <span class="covers">— <code>LIVE SELECT DIFF FROM t FETCH owner</code> — registers, delivers, and leaves the link a record id: the FETCH is silently dead. Also <code>LIVE SELECT name, DIFF FROM t</code>, where DIFF has lost its leading position and reads as an ordinary field path, so every notification carries <code>DIFF: null</code>. Sibling of 4009, which owns what the engine *refuses*; this owns what it accepts and then does not honour, hence W rather than E</span></td></tr>
           <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">4028</span></span></td><td><span class="lvl deny">deny</span></td><td>An aggregate over a column runs under a GROUP clause <span class="covers">— <code>SELECT math::sum(age) FROM person</code> — without <code>GROUP ALL</code> the call runs per row on a scalar and the engine rejects the argument (<code>Expected an array</code>). Only the provable shape fires: every aggregate in the projection over a plain row field whose declared kind is not a collection; <code>math::sum(tags)</code> over <code>array&lt;int&gt;</code>, a param, or a computed argument is inferred the ordinary way. Silent for <code>count()</code>, which 4023 owns; aggregate promotion in inference is gated on a GROUP clause</span></td></tr>
           <tr><td><span class="cd"><span class="sevb w">W</span><span class="num">4029</span></span></td><td><span class="lvl warn">warn</span></td><td>Under a GROUP clause every projection is a group key or an aggregate <span class="covers">— <code>SELECT name, count() FROM t GROUP BY city</code> — the engine does not reject <code>name</code>; it silently accumulates every group&#39;s values into an array, so the result shape is not what the projection reads as (inference types it <code>array&lt;string&gt;</code> to match). Fires for a plain non-key field or an expression over one; silent for <code>GROUP ALL</code>, beside a wildcard (4025 owns), and for shapes it cannot prove (subqueries, traversals, methods). Sibling of 4013 (a group key that is not projected) and 4025 (a wildcard)</span></td></tr>
+          <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">4030</span></span></td><td><span class="lvl deny">deny</span></td><td>INSERT&#39;s RELATION and IGNORE modifiers are in the order the engine parses <span class="covers">— <code>INSERT IGNORE RELATION INTO likes {…}</code> — the engine&#39;s parser eats <code>RELATION</code> then <code>IGNORE</code> (<code>syn/parser/stmt/insert.rs</code>, unchanged since RELATION arrived in 2.0), so the reversed spelling is a parse error pointing at the token after the mistake and naming neither keyword, and no version of SurrealDB ever took it. The grammar accepts both orders on purpose: a parse error is fatal to the whole source. Fires only when both keywords are present and <code>IGNORE</code> comes first</span></td></tr>
         </tbody>
       </table></div>
     </section>

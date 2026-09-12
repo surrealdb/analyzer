@@ -584,6 +584,34 @@ impl SyntaxVersions<'_, '_> {
         );
     }
 
+    /// `PARALLEL` on all seven statements that took it: `SELECT`, `CREATE`,
+    /// `UPDATE`, `UPSERT`, `DELETE`, `RELATE` and `INSERT`.
+    ///
+    /// The clause existed from 1.0 (`sql/statements/select.rs` and its
+    /// siblings carry a `parallel: bool` at every 1.x and 2.x tag; INSERT is
+    /// one of them — `syn/v1/stmt/insert.rs` and
+    /// `syn/v2/parser/stmt/insert.rs` at v1.5.6,
+    /// `syn/parser/stmt/insert.rs` at v2.3.x) and was deleted in 3.0 by
+    /// surrealdb#6768, "Remove unused `PARALLEL` clause." — landed between
+    /// `v3.0.0-beta.2` (the seven
+    /// `syn/parser/stmt/{create,delete,insert,relate,select,update,upsert}.rs`
+    /// arms still `self.eat(t!("PARALLEL"))`) and `v3.0.0-beta.3` (none do).
+    /// The token still lexes at 3.2.3 — `syn/lexer/keywords.rs` keeps
+    /// `PARALLEL` — so the engine's error names it: ``Unexpected token
+    /// `PARALLEL`, expected Eof``. It never had a replacement; the commit
+    /// removed it because it did nothing.
+    fn parallel(&mut self, span: Option<ByteRange>) {
+        let Some(span) = span else {
+            return;
+        };
+        self.removed(
+            span,
+            "the `PARALLEL` clause",
+            Version::new(3, 0, 0),
+            "delete the clause — surrealdb#6768 removed it as a no-op, and there is no replacement",
+        );
+    }
+
     /// An unmodeled `DEFINE <kind>`: the kind is the second word.
     fn define_other(&mut self, partial: &ast::PartialNode) {
         let Some(keyword_span) = self.word_span(partial.span, 1) else {
@@ -671,15 +699,22 @@ impl Visitor for SyntaxVersions<'_, '_> {
     fn visit_statement(&mut self, statement: &ast::Spanned<ast::Statement>) {
         match &statement.node {
             // `sql/statements/upsert.rs` at v2.0.5, not v1.5.6.
-            ast::Statement::Upsert(_) => {
+            ast::Statement::Upsert(upsert) => {
                 let span = self.keyword_span(statement.span);
                 self.requires(span, "`UPSERT`", Version::new(2, 0, 0));
+                self.parallel(upsert.parallel);
             }
             // `sql/statements/alter/` at v2.0.5, not v1.5.6.
             ast::Statement::Alter(_) => {
                 let span = self.keyword_span(statement.span);
                 self.requires(span, "`ALTER`", Version::new(2, 0, 0));
             }
+            ast::Statement::Select(select) => self.parallel(select.parallel),
+            ast::Statement::Create(create) => self.parallel(create.parallel),
+            ast::Statement::Update(update) => self.parallel(update.parallel),
+            ast::Statement::Delete(delete) => self.parallel(delete.parallel),
+            ast::Statement::Relate(relate) => self.parallel(relate.parallel),
+            ast::Statement::Insert(insert) => self.parallel(insert.parallel),
             ast::Statement::Define(ast::DefineStmt::Other(partial)) => self.define_other(partial),
             ast::Statement::Define(ast::DefineStmt::Index(index)) => {
                 self.define_index(statement.span, index);

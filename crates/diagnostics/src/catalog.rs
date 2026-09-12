@@ -103,6 +103,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (4027, "a live query clause the notification will not reflect", Severity::Warning, Warn),
     (4028, "an aggregate over a column runs under a GROUP clause", Severity::Error, Deny),
     (4029, "under a GROUP clause every projection is a group key or an aggregate", Severity::Warning, Warn),
+    (4030, "INSERT's RELATION and IGNORE modifiers are in the order the engine parses", Severity::Error, Deny),
     (5001, "a call resolves to a function that exists", Severity::Error, Deny),
     (5002, "a call matches the function's signature", Severity::Error, Deny),
     (5005, "a const argument satisfies the function's value contract", Severity::Error, Deny),

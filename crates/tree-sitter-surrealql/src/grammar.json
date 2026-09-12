@@ -3220,10 +3220,6 @@
               {
                 "type": "SYMBOL",
                 "name": "ComputedClause"
-              },
-              {
-                "type": "SYMBOL",
-                "name": "RatelimitClause"
               }
             ]
           }
@@ -3758,256 +3754,10 @@
               },
               {
                 "type": "SYMBOL",
-                "name": "RatelimitClause"
-              },
-              {
-                "type": "SYMBOL",
                 "name": "CommentClause"
               }
             ]
           }
-        }
-      ]
-    },
-    "RatelimitClause": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_ratelimit"
-          },
-          "named": true,
-          "value": "Keyword"
-        },
-        {
-          "type": "SEQ",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "RatelimitGroup"
-            },
-            {
-              "type": "REPEAT",
-              "content": {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "STRING",
-                    "value": ","
-                  },
-                  {
-                    "type": "SYMBOL",
-                    "name": "RatelimitGroup"
-                  }
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
-    "RatelimitGroup": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_for"
-          },
-          "named": true,
-          "value": "Keyword"
-        },
-        {
-          "type": "SEQ",
-          "members": [
-            {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_kw_select"
-                  },
-                  "named": true,
-                  "value": "Keyword"
-                },
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_kw_create"
-                  },
-                  "named": true,
-                  "value": "Keyword"
-                },
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_kw_update"
-                  },
-                  "named": true,
-                  "value": "Keyword"
-                },
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_kw_delete"
-                  },
-                  "named": true,
-                  "value": "Keyword"
-                }
-              ]
-            },
-            {
-              "type": "REPEAT",
-              "content": {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "STRING",
-                    "value": ","
-                  },
-                  {
-                    "type": "CHOICE",
-                    "members": [
-                      {
-                        "type": "ALIAS",
-                        "content": {
-                          "type": "SYMBOL",
-                          "name": "_kw_select"
-                        },
-                        "named": true,
-                        "value": "Keyword"
-                      },
-                      {
-                        "type": "ALIAS",
-                        "content": {
-                          "type": "SYMBOL",
-                          "name": "_kw_create"
-                        },
-                        "named": true,
-                        "value": "Keyword"
-                      },
-                      {
-                        "type": "ALIAS",
-                        "content": {
-                          "type": "SYMBOL",
-                          "name": "_kw_update"
-                        },
-                        "named": true,
-                        "value": "Keyword"
-                      },
-                      {
-                        "type": "ALIAS",
-                        "content": {
-                          "type": "SYMBOL",
-                          "name": "_kw_delete"
-                        },
-                        "named": true,
-                        "value": "Keyword"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "WhereClause"
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SEQ",
-              "members": [
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_kw_by"
-                  },
-                  "named": true,
-                  "value": "Keyword"
-                },
-                {
-                  "type": "SYMBOL",
-                  "name": "_value"
-                }
-              ]
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_limit"
-          },
-          "named": true,
-          "value": "Keyword"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "Number"
-        },
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_per"
-          },
-          "named": true,
-          "value": "Keyword"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "Duration"
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SEQ",
-              "members": [
-                {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "_kw_max"
-                  },
-                  "named": true,
-                  "value": "Keyword"
-                },
-                {
-                  "type": "SYMBOL",
-                  "name": "Number"
-                }
-              ]
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
         }
       ]
     },
@@ -5084,30 +4834,71 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "ALIAS",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_kw_ignore"
-              },
-              "named": true,
-              "value": "Keyword"
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "ALIAS",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_kw_relation"
-              },
-              "named": true,
-              "value": "Keyword"
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "ALIAS",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "_kw_relation"
+                      },
+                      "named": true,
+                      "value": "Keyword"
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "ALIAS",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "_kw_ignore"
+                          },
+                          "named": true,
+                          "value": "Keyword"
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "ALIAS",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "_kw_ignore"
+                      },
+                      "named": true,
+                      "value": "Keyword"
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "ALIAS",
+                          "content": {
+                            "type": "SYMBOL",
+                            "name": "_kw_relation"
+                          },
+                          "named": true,
+                          "value": "Keyword"
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
             },
             {
               "type": "BLANK"
@@ -5395,6 +5186,18 @@
             {
               "type": "SYMBOL",
               "name": "ReturnClause"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "ParallelClause"
             },
             {
               "type": "BLANK"
@@ -17595,18 +17398,6 @@
     "_kw_prepare": {
       "type": "PATTERN",
       "value": "[pP][rR][eE][pP][aA][rR][eE]"
-    },
-    "_kw_ratelimit": {
-      "type": "PATTERN",
-      "value": "[rR][aA][tT][eE][lL][iI][mM][iI][tT]"
-    },
-    "_kw_per": {
-      "type": "PATTERN",
-      "value": "[pP][eE][rR]"
-    },
-    "_kw_max": {
-      "type": "PATTERN",
-      "value": "[mM][aA][xX]"
     },
     "_kw_sequence": {
       "type": "PATTERN",

@@ -292,7 +292,7 @@ fn insert_accepts_param_targets_subquery_payloads_and_duplicate_key_updates() {
     else {
         panic!("expected INSERT");
     };
-    assert!(insert.ignore);
+    assert!(insert.ignore.is_some());
     assert!(matches!(insert.target.map(|t| t.node), Some(Expr::Param(p)) if p == "tb"));
 
     let Statement::Insert(insert) =
@@ -410,7 +410,7 @@ fn every_comment_syntax_is_an_extra() {
     ]);
 }
 
-// ---- 13. index options, sequences, ratelimits, events, filtered FETCH --------------
+// ---- 13. index options, sequences, events, filtered FETCH -------------------------
 
 #[test]
 fn vector_index_options_lower_to_the_vector_kind() {
@@ -435,14 +435,11 @@ fn vector_index_options_lower_to_the_vector_kind() {
 }
 
 #[test]
-fn sequences_ratelimits_and_event_options_parse() {
+fn sequences_and_event_options_parse() {
     parses(&[
         "DEFINE SEQUENCE sq;",
         "DEFINE SEQUENCE sq1 START -250; DEFINE SEQUENCE sq2 BATCH 50; DEFINE SEQUENCE sq3 BATCH 10 START 1000;",
         "REMOVE SEQUENCE sq;",
-        "DEFINE TABLE post RATELIMIT FOR SELECT WHERE $auth IS NONE BY $session.ip LIMIT 2 PER 1s MAX 4;",
-        "DEFINE TABLE knows RATELIMIT FOR SELECT BY $auth.id LIMIT 100 PER 1m, FOR UPDATE BY $auth.id LIMIT 100 PER 1h;",
-        "DEFINE FIELD name ON post RATELIMIT FOR DELETE BY $auth.id LIMIT 1 PER 1s;",
         "DEFINE EVENT e ON t WHEN null THEN null, none ASYNC RETRY 5 MAXDEPTH 64;",
         "DEFINE EVENT e ON TABLE tb WHEN true THEN RETURN 'foo';",
         "DEFINE EVENT e ON t THEN { RETURN 1 } ASYNC RETRY 3;",

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Fixed — three places the grammar accepted syntax the engine does not
+
+Each was established against a live SurrealDB 3.2.3 and against the version
+history in surrealdb/surrealdb, and the three histories came out differently
+— so the three fixes are different.
+
+- **`RATELIMIT` is removed from the grammar.** `DEFINE TABLE`/`DEFINE FIELD`
+  parsed a `RATELIMIT FOR <action> … LIMIT n PER <duration>` clause that
+  exists in no release and in no commit of SurrealDB on any branch: a pickaxe
+  over every ref finds only HTTP transport rate limiting. 3.2.3 does not even
+  lex the word as a keyword. Nothing for 8002 or 8003 to name, so the rule
+  goes.
+- **`PARALLEL` keeps parsing and now reports E8002.** The clause was real —
+  every 1.x and 2.x release takes it on all seven of SELECT/CREATE/UPDATE/
+  UPSERT/DELETE/RELATE/INSERT — and was removed in 3.0.0 by surrealdb#6768 as
+  a no-op. A 2.x user migrating gets the removal named instead of a token
+  error that collapses the file. Reported when `analysis.surrealdb_version` is
+  3.0 or newer.
+- **`INSERT RELATION IGNORE` parses, and the reverse reports the new E4030.**
+  The engine takes `RELATION` before `IGNORE` and always has; the grammar had
+  the two backwards, so the valid spelling failed to parse and the invalid one
+  passed silently. Both orders parse now, and the reversed one is reported
+  with the order to write instead.
+
+
 ### Changed — the project is now the SurrealQL Analyzer
 
 SurrealGuard has been renamed to the **SurrealQL Analyzer** and moved to

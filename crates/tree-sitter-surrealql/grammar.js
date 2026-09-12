@@ -983,7 +983,6 @@ export default grammar({
 						$.CommentClause,
 						$.ReferenceClause,
 						$.ComputedClause,
-						$.RatelimitClause,
 					),
 				),
 			),
@@ -1078,34 +1077,9 @@ export default grammar({
 						$.TableViewClause,
 						$.ChangefeedClause,
 						$.PermissionsForClause,
-						$.RatelimitClause,
 						$.CommentClause,
 					),
 				),
-			),
-
-		// RATELIMIT FOR <actions> [WHERE cond] [BY key] LIMIT n PER duration
-		// [MAX n], comma-separated per action group.
-		RatelimitClause: ($) =>
-			seq(alias($._kw_ratelimit, $.Keyword), csep($.RatelimitGroup)),
-		RatelimitGroup: ($) =>
-			seq(
-				alias($._kw_for, $.Keyword),
-				csep(
-					choice(
-						alias($._kw_select, $.Keyword),
-						alias($._kw_create, $.Keyword),
-						alias($._kw_update, $.Keyword),
-						alias($._kw_delete, $.Keyword),
-					),
-				),
-				optional($.WhereClause),
-				optional(seq(alias($._kw_by, $.Keyword), $._value)),
-				alias($._kw_limit, $.Keyword),
-				$.Number,
-				alias($._kw_per, $.Keyword),
-				$.Duration,
-				optional(seq(alias($._kw_max, $.Keyword), $.Number)),
 			),
 
 		_defineConfigOptions: ($) =>
@@ -1285,8 +1259,27 @@ export default grammar({
 		InsertStatement: ($) =>
 			seq(
 				alias($._kw_insert, $.Keyword),
-				optional(alias($._kw_ignore, $.Keyword)),
-				optional(alias($._kw_relation, $.Keyword)),
+				// The engine's order is RELATION then IGNORE
+				// (`syn/parser/stmt/insert.rs` eats them in that order, and
+				// has since 2.0 when RELATION arrived): 3.2.3 runs
+				// `INSERT RELATION IGNORE INTO likes {…}` and answers
+				// `INSERT IGNORE RELATION INTO likes {…}` with
+				// ``Unexpected token `INTO`, expected Eof``. Both orders are
+				// accepted here so the reversed one earns E4030 — a message
+				// about the order — instead of a token error that would
+				// collapse the whole file.
+				optional(
+					choice(
+						seq(
+							alias($._kw_relation, $.Keyword),
+							optional(alias($._kw_ignore, $.Keyword)),
+						),
+						seq(
+							alias($._kw_ignore, $.Keyword),
+							optional(alias($._kw_relation, $.Keyword)),
+						),
+					),
+				),
 				optional(
 					seq(
 						alias($._kw_into, $.Keyword),
@@ -1323,6 +1316,12 @@ export default grammar({
 					),
 				),
 				optional($.ReturnClause),
+				// INSERT took PARALLEL like the other six statements —
+				// `syn/v1/stmt/insert.rs` and `syn/v2/parser/stmt/insert.rs`
+				// at v1.5.6, `syn/parser/stmt/insert.rs` through v2.3.x — and
+				// lost it with them in 3.0 (surrealdb#6768). Parsed so 8002
+				// can name the removal.
+				optional($.ParallelClause),
 			),
 		_insertSubquery: ($) => seq('(', $._subqueryStatement, ')'),
 		BulkInsert: ($) => seq('[', csep($.Object), ']'),
@@ -3404,9 +3403,6 @@ export default grammar({
 		_kw_revoked: ($) => kw('revoked'),
 		_kw_expired: ($) => kw('expired'),
 		_kw_prepare: ($) => kw('prepare'),
-		_kw_ratelimit: ($) => kw('ratelimit'),
-		_kw_per: ($) => kw('per'),
-		_kw_max: ($) => kw('max'),
 		_kw_sequence: ($) => kw('sequence'),
 		_kw_batch: ($) => kw('batch'),
 		_kw_matches: ($) => kw('matches'),

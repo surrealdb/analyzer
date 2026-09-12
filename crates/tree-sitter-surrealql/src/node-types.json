@@ -2598,10 +2598,6 @@
           "named": true
         },
         {
-          "type": "RatelimitClause",
-          "named": true
-        },
-        {
           "type": "ReadonlyClause",
           "named": true
         },
@@ -4965,6 +4961,10 @@
         },
         {
           "type": "Object",
+          "named": true
+        },
+        {
+          "type": "ParallelClause",
           "named": true
         },
         {
@@ -7540,152 +7540,6 @@
         },
         {
           "type": "RecordId",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "RatelimitClause",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "Keyword",
-          "named": true
-        },
-        {
-          "type": "RatelimitGroup",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "RatelimitGroup",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "Array",
-          "named": true
-        },
-        {
-          "type": "BinaryExpression",
-          "named": true
-        },
-        {
-          "type": "Block",
-          "named": true
-        },
-        {
-          "type": "Bool",
-          "named": true
-        },
-        {
-          "type": "Closure",
-          "named": true
-        },
-        {
-          "type": "Constant",
-          "named": true
-        },
-        {
-          "type": "Duration",
-          "named": true
-        },
-        {
-          "type": "FormatString",
-          "named": true
-        },
-        {
-          "type": "FunctionCall",
-          "named": true
-        },
-        {
-          "type": "FunctionJs",
-          "named": true
-        },
-        {
-          "type": "Ident",
-          "named": true
-        },
-        {
-          "type": "IfElseStatement",
-          "named": true
-        },
-        {
-          "type": "Keyword",
-          "named": true
-        },
-        {
-          "type": "None",
-          "named": true
-        },
-        {
-          "type": "Number",
-          "named": true
-        },
-        {
-          "type": "Object",
-          "named": true
-        },
-        {
-          "type": "Path",
-          "named": true
-        },
-        {
-          "type": "Point",
-          "named": true
-        },
-        {
-          "type": "PrefixExpression",
-          "named": true
-        },
-        {
-          "type": "Range",
-          "named": true
-        },
-        {
-          "type": "RangeRecordId",
-          "named": true
-        },
-        {
-          "type": "RecordId",
-          "named": true
-        },
-        {
-          "type": "Regex",
-          "named": true
-        },
-        {
-          "type": "Set",
-          "named": true
-        },
-        {
-          "type": "String",
-          "named": true
-        },
-        {
-          "type": "SubQuery",
-          "named": true
-        },
-        {
-          "type": "TypeCast",
-          "named": true
-        },
-        {
-          "type": "VariableName",
-          "named": true
-        },
-        {
-          "type": "WhereClause",
           "named": true
         }
       ]

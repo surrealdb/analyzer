@@ -508,6 +508,7 @@ pub fn walk_create<V: Visitor>(visitor: &mut V, create: &CreateStmt) {
         targets,
         data,
         ret,
+        parallel: _,
     } = create;
     for target in targets {
         visitor.visit_expr(target);
@@ -531,6 +532,7 @@ pub fn walk_update<V: Visitor>(visitor: &mut V, update: &UpdateStmt) {
         data,
         where_clause,
         ret,
+        parallel: _,
     } = update;
     for target in targets {
         visitor.visit_expr(target);
@@ -557,6 +559,7 @@ pub fn walk_upsert<V: Visitor>(visitor: &mut V, upsert: &UpsertStmt) {
         data,
         where_clause,
         ret,
+        parallel: _,
     } = upsert;
     for target in targets {
         visitor.visit_expr(target);
@@ -582,6 +585,7 @@ pub fn walk_delete<V: Visitor>(visitor: &mut V, delete: &DeleteStmt) {
         targets,
         where_clause,
         ret,
+        parallel: _,
     } = delete;
     for target in targets {
         visitor.visit_expr(target);
@@ -606,6 +610,7 @@ pub fn walk_insert<V: Visitor>(visitor: &mut V, insert: &InsertStmt) {
         data,
         on_duplicate_update,
         ret,
+        parallel: _,
     } = insert;
     if let Some(target) = target {
         visitor.visit_expr(target);
@@ -657,6 +662,7 @@ pub fn walk_relate<V: Visitor>(visitor: &mut V, relate: &RelateStmt) {
         to,
         data,
         ret,
+        parallel: _,
     } = relate;
     for endpoint in [from, edge, to].into_iter().flatten() {
         visitor.visit_expr(endpoint);

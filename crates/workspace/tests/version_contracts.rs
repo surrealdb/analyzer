@@ -335,6 +335,50 @@ fn syntax_removed_before_the_target_is_8002() {
     assert!(!codes(Some("3.0"), fulltext).contains(&8003));
 }
 
+/// `PARALLEL` is the one removed clause that spans seven statements, so each
+/// one is pinned: the grammar still parses it (3.2.3 answers ``Unexpected
+/// token `PARALLEL`, expected Eof``, which would otherwise collapse the whole
+/// file), and 8002 names it on a 3.x target. surrealdb#6768 removed it as a
+/// no-op between `v3.0.0-beta.2` and `v3.0.0-beta.3`.
+///
+/// INSERT belongs here with the rest: `syn/v1/stmt/insert.rs` and
+/// `syn/v2/parser/stmt/insert.rs` at v1.5.6 and `syn/parser/stmt/insert.rs`
+/// at v2.3.x all take the clause, and 3.2.3 refuses it like the other six.
+#[test]
+fn parallel_on_every_statement_that_took_it_is_8002() {
+    for query in [
+        "SELECT * FROM t PARALLEL;",
+        "CREATE t:1 PARALLEL;",
+        "UPDATE t:1 SET a = 1 PARALLEL;",
+        "UPSERT t:1 SET a = 1 PARALLEL;",
+        "DELETE t:1 PARALLEL;",
+        "RELATE t:1->e:1->t:2 PARALLEL;",
+        "INSERT INTO t { a: 1 } PARALLEL;",
+    ] {
+        let on_three = findings(Some("3.0"), query);
+        assert!(
+            on_three.iter().any(|(code, _)| *code == 8002),
+            "{query} should be 8002 on 3.0: {on_three:?}"
+        );
+        let message = message_of(Some("3.0"), query, 8002);
+        assert!(message.contains("`PARALLEL` clause"), "{message}");
+        assert!(message.contains("removed in SurrealDB 3.0"), "{message}");
+        // A 2.x target still has the clause, and the statement without it is
+        // silent on every target.
+        assert!(
+            !codes(Some("2.3"), query).contains(&8002),
+            "{query} on 2.3: {:?}",
+            findings(Some("2.3"), query)
+        );
+        let without = query.replace(" PARALLEL", "");
+        assert!(
+            !codes(Some("3.0"), &without).contains(&8002),
+            "{without} on 3.0: {:?}",
+            findings(Some("3.0"), &without)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 4012 — OMIT without a wildcard projection
 // ---------------------------------------------------------------------------

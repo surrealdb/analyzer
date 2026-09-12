@@ -16,6 +16,7 @@ pub(crate) fn analyze_insert(ctx: &mut AnalysisContext<'_>, stmt: &ast::InsertSt
 }
 
 pub(crate) fn insert_response_kind(stmt: &ast::InsertStmt, ctx: &mut AnalysisContext<'_>) -> Kind {
+    check_modifier_order(ctx, stmt);
     mutation::check_relation_insert(ctx, stmt.target.as_ref(), &stmt.data);
     let row_table = mutation::source_table_name(stmt.target.as_ref())
         .and_then(|name| ctx.schema().tables.get(&name));
@@ -36,6 +37,57 @@ pub(crate) fn insert_response_kind(stmt: &ast::InsertStmt, ctx: &mut AnalysisCon
 
     // INSERT has no ONLY modifier — the result is always an array.
     mutation::response_kind_for_target(false, stmt.ret.as_ref(), table, ctx)
+}
+
+/// 4030 — `RELATION` comes before `IGNORE`.
+///
+/// `syn/parser/stmt/insert.rs` eats the two in one fixed order:
+/// `let relation = self.eat(t!("RELATION")); let ignore = self.eat(t!("IGNORE"));`
+/// — unchanged since `RELATION` arrived in 2.0, and there is no 1.x form to
+/// be compatible with (1.5.6's INSERT has no `RELATION` at all). So the
+/// reversed spelling is not old syntax, it is wrong syntax, and a version
+/// diagnostic would have nothing to say about it.
+///
+/// The grammar accepts both orders so this can be the message. On a live
+/// 3.2.3, `INSERT RELATION IGNORE INTO likes {…}` inserts the edge, and the
+/// reversed order is a parse error that is fatal to the whole source — so
+/// refusing it here would silence every other finding in the file to say
+/// less.
+///
+/// The engine stops at whatever follows the reversed pair, so the token it
+/// quotes varies with the statement (`INTO likes {…}` gives ``Unexpected
+/// token `INTO`, expected Eof``; the `INTO`-less
+/// `INSERT IGNORE RELATION {…}` gives ``Unexpected token `{`, expected
+/// Eof``). Only `expected Eof` is invariant, so the help says that and does
+/// not put words in the engine's mouth.
+fn check_modifier_order(ctx: &mut AnalysisContext<'_>, stmt: &ast::InsertStmt) {
+    let (Some(ignore), Some(relation)) = (stmt.ignore, stmt.relation) else {
+        return;
+    };
+    if ignore.start() < relation.start() {
+        // Guarded above: IGNORE starts before RELATION starts, and a range
+        // never ends before it starts, so `start <= end` holds by
+        // construction. There is no sane narrower span to fall back to — the
+        // finding is about the pair — so the invariant is asserted, not
+        // papered over.
+        let range = surrealql_analyzer_syntax::span::ByteRange::new(ignore.start(), relation.end())
+            .expect("IGNORE starts before RELATION, which starts before it ends");
+        let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), range);
+        ctx.emit(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                span,
+                4030,
+                "`INSERT IGNORE RELATION` reverses the modifiers: SurrealDB takes `RELATION` \
+                 before `IGNORE`"
+                    .to_string(),
+            )
+            .with_help(
+                "write `INSERT RELATION IGNORE ...` — on this order the engine stops at the \
+                 token after the reversed pair and reports it as \"expected Eof\""
+                    .to_string(),
+            ),
+        );
+    }
 }
 
 /// Checks the INSERT payload against the (optional) target table: per-form

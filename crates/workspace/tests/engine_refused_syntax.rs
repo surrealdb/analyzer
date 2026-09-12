@@ -14,7 +14,8 @@
 //! what they will actually be told.
 //!
 //! These also make our grammar a strict superset of upstream
-//! `surrealql-tree-sitter`, whose corpus pins all three as parseable.
+//! `surrealql-tree-sitter`, whose corpus pins the KILL and SHOW cases as
+//! parseable.
 
 mod support;
 
@@ -176,6 +177,67 @@ fn show_changes_with_since_is_silent() {
         assert!(
             !codes.iter().any(|code| code == "E2021"),
             "`{query}` names SINCE but raised 2021; got {codes:?}"
+        );
+    }
+}
+
+/// 3.2.3 takes `INSERT RELATION IGNORE`, in that order, and refuses the
+/// reverse with a token error pointing at whatever follows the pair, which
+/// says nothing about the two words before it. The grammar takes both orders
+/// so 4030 can name the order instead.
+///
+/// `INTO` is optional, so the engine's quoted token varies —
+/// ``Unexpected token `INTO`, expected Eof`` with it, ``Unexpected token
+/// `{`, expected Eof`` without — and both shapes must raise 4030 with help
+/// that is true of each.
+#[test]
+fn insert_with_the_modifiers_reversed_parses_and_raises_4030() {
+    for query in [
+        "INSERT IGNORE RELATION INTO person { name: 'Ada' };",
+        "INSERT IGNORE RELATION { name: 'Ada' };",
+    ] {
+        assert_parses(query);
+        let finding = only(query, "E4030");
+        assert!(
+            finding.message().contains("`RELATION` before `IGNORE`"),
+            "unhelpful message: {}",
+            finding.message()
+        );
+        let help: String = finding
+            .help()
+            .iter()
+            .map(|help| help.message.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            help.contains("expected Eof"),
+            "help should quote the engine's own error; got {help:?}"
+        );
+        assert!(
+            !help.contains("`INTO`"),
+            "help must not quote a token this statement may not contain; got {help:?}"
+        );
+    }
+}
+
+/// The order the engine takes, and each modifier on its own, stay silent —
+/// so 4030 reports the order and not the statement.
+#[test]
+fn insert_in_the_order_the_engine_takes_is_silent() {
+    for query in [
+        "INSERT RELATION IGNORE INTO person { name: 'Ada' };",
+        "INSERT RELATION INTO person { name: 'Ada' };",
+        "INSERT IGNORE INTO person { name: 'Ada' };",
+        "INSERT INTO person { name: 'Ada' };",
+    ] {
+        assert_parses(query);
+        let codes: Vec<String> = findings(query)
+            .iter()
+            .map(|finding| finding.code().to_string())
+            .collect();
+        assert!(
+            !codes.iter().any(|code| code == "E4030"),
+            "`{query}` is a legal modifier order but raised 4030; got {codes:?}"
         );
     }
 }
