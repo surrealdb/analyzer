@@ -284,7 +284,7 @@ type Embedded = (
 /// Runs `generate` over `root` and returns the rendered module — the
 /// library's `generate` minus the file write and the terminal rendering.
 fn generate(root: &Path) -> String {
-    render_types_module(&describe(root))
+    render_types_module(&describe(root)).text
 }
 
 /// The types document for `root`: what the analyzer knows, before any

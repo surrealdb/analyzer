@@ -11,7 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use surrealql_analyzer::generate::client_package_is_resolvable;
 use surrealql_analyzer::workspace::config::WorkspaceConfig;
-use surrealql_analyzer::{check, describe, generate, GenerateError, Project, Styles};
+use surrealql_analyzer::{
+    check, describe, generate, GenerateError, Project, Styles, CLIENT_PACKAGE,
+};
 
 fn temp_project_dir(name: &str) -> PathBuf {
     let unique = SystemTime::now()
@@ -628,6 +630,32 @@ fn generate_warns_when_the_imported_package_is_not_installed() {
         warning.contains("`any`"),
         "the consequence is the reason this warning exists: {warning}"
     );
+}
+
+/// A project with no schema and no queries emits a module that imports
+/// nothing, so the package's absence costs it nothing — and the warning would
+/// be a guaranteed false positive, because the header names the package twice
+/// in prose and a `contains` cannot tell a mention from an import.
+#[test]
+fn generate_does_not_warn_about_a_package_the_module_never_imports() {
+    let root = temp_project_dir("generate-empty-project");
+    fs::write(
+        root.join("surrealql-analyzer.toml"),
+        "[sources]\nschema = [\"schema/**/*.surql\"]\n",
+    )
+    .expect("write config");
+
+    let report = generate(&discover(&root), None).expect("an empty project still generates");
+    assert_eq!(report.queries, 0);
+    assert!(
+        report.module.contains(CLIENT_PACKAGE),
+        "the header explains the package, so a text search always finds it"
+    );
+    assert!(
+        !report.missing_client,
+        "nothing is imported, so nothing can fail to resolve"
+    );
+    assert!(report.render_missing_client(Styles::plain()).is_none());
 }
 
 #[test]

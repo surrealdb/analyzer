@@ -50,7 +50,7 @@ pub use document::{
     FieldStep, FieldTypes, FunctionTypes, ParamTypes, QueryTypes, RelationTypes, Source,
     TableTypes, TypesDocument,
 };
-pub use typescript::{render_types_module, CLIENT_PACKAGE};
+pub use typescript::{render_types_module, GeneratedModule, CLIENT_PACKAGE};
 
 /// Where the rendered text is going to sit in a TypeScript type.
 ///

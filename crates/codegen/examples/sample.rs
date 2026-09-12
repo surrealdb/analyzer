@@ -69,5 +69,5 @@ fn main() {
         ],
     };
 
-    print!("{}", render_types_module(&document));
+    print!("{}", render_types_module(&document).text);
 }

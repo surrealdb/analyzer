@@ -179,7 +179,8 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
         }));
     }
 
-    let module = surrealql_analyzer_codegen::render_types_module(&described);
+    let rendered = surrealql_analyzer_codegen::render_types_module(&described);
+    let module = rendered.text;
     // The file usually lands beside the client code (`src/lib/surrealql-analyzer.d.ts`),
     // and that directory need not exist yet — a fresh project, or an `out` that
     // names a directory the host has not created. Creating it is the obvious
@@ -199,10 +200,16 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
         source,
     })?;
 
+    // Gated on what the module IMPORTS, not on whether its text mentions the
+    // package: the header names it twice in prose, so a `contains` is true of
+    // every module this crate emits — including one that imports nothing,
+    // where the package's absence costs nothing and the warning would be
+    // noise on an empty project.
+    //
     // Resolution is asked from the *written module's* directory, not the
     // project root: that is the directory TypeScript resolves the import
     // from, and in a monorepo the two are routinely different packages.
-    let missing_client = module.contains(CLIENT_PACKAGE)
+    let missing_client = !rendered.imports.is_empty()
         && !client_package_is_resolvable(path.parent().unwrap_or(project.root()));
 
     Ok(GenerateReport {

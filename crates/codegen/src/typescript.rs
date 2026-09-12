@@ -68,7 +68,7 @@ const VALUE_TYPES: [&str; 5] = ["Decimal", "Duration", "GeoJSON", "RecordId", "U
 /// (`Tables`, `Queries`), the value types it imports (`RecordId`, `Uuid`, …),
 /// and the globals the emitted types are written in terms of. That last group
 /// is the one that bites — a table called `date`, `record` or `array`
-/// PascalCases to `Date`, `Record` or `Array`, and an interface of that name
+/// `PascalCase`s to `Date`, `Record` or `Array`, and an interface of that name
 /// in the same file SHADOWS the global for every type below it. The file still
 /// compiles, and `joined: Date` now means the user's table. A `Person` whose
 /// `joined` is a `person` row is not a type error anyone will debug quickly,
@@ -106,13 +106,32 @@ const RESERVED_NAMES: [&str; 22] = [
     "Uint8Array",
 ];
 
+/// A rendered module, and what it needs from [`CLIENT_PACKAGE`].
+///
+/// The imports are returned rather than left to be found in the text, because
+/// the one caller that cares — the "`@surrealdb/analyzer-client` is not
+/// installed" warning — cannot tell them apart from a mention. The header
+/// names the package twice in prose, so `text.contains(CLIENT_PACKAGE)` is
+/// true of every module this crate has ever emitted, including one that
+/// imports nothing at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedModule {
+    /// The module text, ready to write.
+    pub text: String,
+    /// The value types imported from [`CLIENT_PACKAGE`], in import order.
+    /// Empty when the module needs none — a project with no tables and no
+    /// queries, where the package's absence would cost nothing.
+    pub imports: Vec<&'static str>,
+}
+
 /// Renders the complete `.d.ts`.
-pub fn render_types_module(document: &TypesDocument) -> String {
+pub fn render_types_module(document: &TypesDocument) -> GeneratedModule {
     let names = interface_names(&document.tables);
+    let mut used = BTreeSet::new();
     let mut body = String::new();
 
     for table in &document.tables {
-        body.push_str(&render_table(table, &names));
+        body.push_str(&render_table(table, &names, &mut used));
         body.push('\n');
     }
 
@@ -132,13 +151,16 @@ pub fn render_types_module(document: &TypesDocument) -> String {
     }
 
     body.push('\n');
-    body.push_str(&render_queries(document));
+    body.push_str(&render_queries(document, &mut used));
 
-    let imports = VALUE_TYPES
+    // In `VALUE_TYPES` order, not in the set's: the import list is part of the
+    // file's stable shape, and a name's position in it must not depend on
+    // which table happened to use it first.
+    let imports: Vec<&'static str> = VALUE_TYPES
         .iter()
-        .filter(|name| mentions(&body, name))
+        .filter(|name| used.contains(*name))
         .copied()
-        .collect::<Vec<_>>();
+        .collect();
     let import_line = if imports.is_empty() {
         String::new()
     } else {
@@ -148,7 +170,10 @@ pub fn render_types_module(document: &TypesDocument) -> String {
         )
     };
 
-    format!("{}{import_line}{body}", header())
+    GeneratedModule {
+        text: format!("{}{import_line}{body}", header()),
+        imports,
+    }
 }
 
 fn header() -> String {
@@ -196,7 +221,11 @@ fn header() -> String {
 /// declared fields, in declaration-path order. A field the schema declares
 /// under one of those names wins — the generator does not get to overrule a
 /// `DEFINE FIELD`.
-fn render_table(table: &TableTypes, names: &HashMap<String, String>) -> String {
+fn render_table(
+    table: &TableTypes,
+    names: &HashMap<String, String>,
+    used: &mut BTreeSet<&'static str>,
+) -> String {
     let mut members: Vec<String> = Vec::new();
     let declared: BTreeSet<&str> = table
         .fields
@@ -208,7 +237,7 @@ fn render_table(table: &TableTypes, names: &HashMap<String, String>) -> String {
     if !declared.contains("id") {
         members.push(format!(
             "  id: {};",
-            value_text(&Kind::Record(vec![table.name.clone().into()]))
+            value_text(&Kind::Record(vec![table.name.clone().into()]), used)
         ));
     }
     if let Some(relation) = &table.relation {
@@ -216,15 +245,16 @@ fn render_table(table: &TableTypes, names: &HashMap<String, String>) -> String {
             if !declared.contains(name) {
                 members.push(format!(
                     "  {name}: {};",
-                    value_text(&Kind::Record(
-                        tables.iter().map(|table| table.clone().into()).collect()
-                    ))
+                    value_text(
+                        &Kind::Record(tables.iter().map(|table| table.clone().into()).collect()),
+                        used,
+                    )
                 ));
             }
         }
     }
     for (key, node) in build_tree(&table.fields).fields {
-        members.push(format!("  {}", render_member(&key, &node)));
+        members.push(format!("  {}", render_member(&key, &node, used)));
     }
 
     format!(
@@ -235,7 +265,7 @@ fn render_table(table: &TableTypes, names: &HashMap<String, String>) -> String {
 }
 
 /// The query registry: one row per analyzed query, keyed by its exact text.
-fn render_queries(document: &TypesDocument) -> String {
+fn render_queries(document: &TypesDocument, used: &mut BTreeSet<&'static str>) -> String {
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
     for query in &document.queries {
@@ -250,8 +280,8 @@ fn render_queries(document: &TypesDocument) -> String {
         rows.push(format!(
             "  {}: {{ result: {}; params: {} }};",
             ts_string(&query.text),
-            response_tuple(&query.statements),
-            params_object(&query.params),
+            response_tuple(&query.statements, used),
+            params_object(&query.params, used),
         ));
     }
 
@@ -281,10 +311,13 @@ fn render_queries(document: &TypesDocument) -> String {
 /// Every element is a [`TsContext::Value`]: a tuple slot has no key to omit,
 /// so an `option<T>` result stays `undefined | T` rather than becoming an
 /// optional slot — dropping it would shorten the tuple.
-fn response_tuple(statements: &[Option<Kind>]) -> String {
+fn response_tuple(statements: &[Option<Kind>], used: &mut BTreeSet<&'static str>) -> String {
     let elements: Vec<String> = statements
         .iter()
-        .map(|kind| kind.as_ref().map_or_else(|| "null".into(), value_text))
+        .map(|kind| {
+            kind.as_ref()
+                .map_or_else(|| "null".into(), |kind| value_text(kind, used))
+        })
         .collect();
     format!("[{}]", elements.join(", "))
 }
@@ -300,7 +333,10 @@ fn response_tuple(statements: &[Option<Kind>]) -> String {
 /// marker is the parameter's own. Folding a parameter's `option<T>` into the
 /// key as well would change the type (it would let callers omit a key the
 /// query requires), not just its spelling.
-fn params_object(params: &[crate::document::ParamTypes]) -> String {
+fn params_object(
+    params: &[crate::document::ParamTypes],
+    used: &mut BTreeSet<&'static str>,
+) -> String {
     let mut parts = Vec::new();
     for param in params {
         if param.name.starts_with(HOST_PARAM_PREFIX) {
@@ -310,7 +346,7 @@ fn params_object(params: &[crate::document::ParamTypes]) -> String {
         let text = param
             .kind
             .as_ref()
-            .map_or_else(|| "unknown".into(), value_text);
+            .map_or_else(|| "unknown".into(), |kind| value_text(kind, used));
         parts.push(format!("{}{marker}: {text}", object_key(&param.name)));
     }
     if parts.is_empty() {
@@ -373,25 +409,25 @@ fn build_tree(fields: &[FieldTypes]) -> Node {
 
 /// One object member: `key: type;`, or `key?: type;` when the field's kind
 /// admits `NONE`.
-fn render_member(key: &str, node: &Node) -> String {
+fn render_member(key: &str, node: &Node, used: &mut BTreeSet<&'static str>) -> String {
     let marker = if node.optional { "?" } else { "" };
-    format!("{}{marker}: {};", object_key(key), render_node(node))
+    format!("{}{marker}: {};", object_key(key), render_node(node, used))
 }
 
 /// A node's type. A node with structure below it is rendered from that
 /// structure — a `DEFINE FIELD settings TYPE object` says nothing a reader can
 /// use, while its subfields say everything — and a leaf is rendered from its
 /// declared kind.
-fn render_node(node: &Node) -> String {
+fn render_node(node: &Node, used: &mut BTreeSet<&'static str>) -> String {
     if let Some(element) = &node.element {
-        return format!("Array<{}>", render_node(element));
+        return format!("Array<{}>", render_node(element, used));
     }
     if !node.fields.is_empty() {
         let members: Vec<String> = node
             .fields
             .iter()
             .map(|(key, child)| {
-                let rendered = render_member(key, child);
+                let rendered = render_member(key, child, used);
                 rendered
                     .strip_suffix(';')
                     .map_or(rendered.clone(), ToString::to_string)
@@ -401,20 +437,37 @@ fn render_node(node: &Node) -> String {
     }
     node.kind
         .as_ref()
-        .map_or_else(|| "unknown".into(), property_text)
+        .map_or_else(|| "unknown".into(), |kind| property_text(kind, used))
 }
 
 /// A kind in a value position: `option<string>` is `undefined | string`,
 /// because there is no key to omit.
-fn value_text(kind: &Kind) -> String {
-    ts_type(kind, TsContext::Value).text
+fn value_text(kind: &Kind, used: &mut BTreeSet<&'static str>) -> String {
+    note(ts_type(kind, TsContext::Value).text, used)
 }
 
 /// A kind in a property position, with the `?` already accounted for by the
 /// member's own `optional` flag: the `none` is folded away here so it is not
 /// spelled twice.
-fn property_text(kind: &Kind) -> String {
-    ts_type(kind, TsContext::Property).text
+fn property_text(kind: &Kind, used: &mut BTreeSet<&'static str>) -> String {
+    note(ts_type(kind, TsContext::Property).text, used)
+}
+
+/// Records which value types a rendered fragment names, and hands the fragment
+/// back.
+///
+/// Every name is recorded where it is *produced*, not found afterwards in the
+/// finished file: the file also contains the query keys, which are arbitrary
+/// user text. A query that happens to select a column called `uuid` would
+/// otherwise add `Uuid` to the imports — an unused import in a `.d.ts`, which
+/// a strict project reports.
+fn note(text: String, used: &mut BTreeSet<&'static str>) -> String {
+    for name in VALUE_TYPES {
+        if !used.contains(name) && mentions(&text, name) {
+            used.insert(name);
+        }
+    }
+    text
 }
 
 /// A stable TypeScript interface name per table: `PascalCase`, never colliding
@@ -511,8 +564,8 @@ fn ts_string(text: &str) -> String {
     out
 }
 
-/// Whether the rendered body names a value type, so the import can carry
-/// exactly what is used.
+/// Whether a rendered type fragment names a value type, as a whole word — so
+/// a field called `recordIdentifier` does not import `RecordId`.
 fn mentions(body: &str, name: &str) -> bool {
     body.match_indices(name).any(|(index, _)| {
         let before = body[..index].chars().next_back();
@@ -548,6 +601,13 @@ mod tests {
             computed: false,
             readonly: false,
         }
+    }
+
+    /// The module text. Every assertion below is about what the file says;
+    /// the import list is checked on its own, in
+    /// `only_the_value_types_a_type_names_are_imported`.
+    fn render(document: &TypesDocument) -> String {
+        render_types_module(document).text
     }
 
     fn document(tables: Vec<TableTypes>, queries: Vec<QueryTypes>) -> TypesDocument {
@@ -602,7 +662,7 @@ mod tests {
     /// format.
     #[test]
     fn the_module_declares_no_runtime_and_augments_nothing() {
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             vec![TableTypes {
                 name: "person".into(),
                 fields: vec![field("name", Kind::String)],
@@ -623,7 +683,7 @@ mod tests {
 
     #[test]
     fn a_table_becomes_an_interface_with_its_id() {
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             vec![TableTypes {
                 name: "person".into(),
                 fields: vec![
@@ -651,7 +711,7 @@ mod tests {
     /// row the engine returns, and they are typed by the edge spec.
     #[test]
     fn a_relation_table_carries_its_edge_links() {
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             vec![TableTypes {
                 name: "knows".into(),
                 fields: vec![field("since", Kind::Datetime)],
@@ -686,7 +746,7 @@ mod tests {
             FieldStep::Element,
             FieldStep::Field("price".into()),
         ];
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             vec![TableTypes {
                 name: "order".into(),
                 fields: vec![
@@ -713,7 +773,7 @@ mod tests {
 
     #[test]
     fn a_query_row_carries_its_response_tuple_and_params() {
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             Vec::new(),
             vec![query(
                 "SELECT name FROM person WHERE team = $team",
@@ -749,7 +809,7 @@ mod tests {
     /// argument the caller passes and must not appear in the params object.
     #[test]
     fn a_substitution_is_not_a_caller_parameter() {
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             Vec::new(),
             vec![QueryTypes {
                 parts: vec!["SELECT name FROM person WHERE age > ".into(), "".into()],
@@ -790,7 +850,7 @@ mod tests {
             ))),
             None,
         );
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             Vec::new(),
             vec![
                 query("SELECT name, nick FROM person", vec![Some(row)], Vec::new()),
@@ -841,7 +901,7 @@ mod tests {
         ];
 
         assert_eq!(
-            params_object(&params),
+            params_object(&params, &mut BTreeSet::new()),
             "{ nick: undefined | string; status?: string }"
         );
     }
@@ -872,9 +932,40 @@ mod tests {
     #[test]
     fn duplicate_query_texts_emit_one_row() {
         let entry = || query("SELECT 1 FROM person", vec![Some(Kind::Int)], Vec::new());
-        let rendered = render_types_module(&document(Vec::new(), vec![entry(), entry()]));
+        let rendered = render(&document(Vec::new(), vec![entry(), entry()]));
 
         assert_eq!(rendered.matches("SELECT 1 FROM person").count(), 1);
+    }
+
+    /// Only the value types a rendered TYPE names are imported. The file also
+    /// holds the query keys, which are arbitrary user text — a query selecting
+    /// a column called `uuid` must not add `Uuid` to the imports, because an
+    /// unused import in a `.d.ts` is what a strict project reports.
+    #[test]
+    fn only_the_value_types_a_type_names_are_imported() {
+        let module = render_types_module(&document(
+            vec![TableTypes {
+                name: "person".into(),
+                fields: vec![field("tenure", Kind::Duration)],
+                relation: None,
+            }],
+            vec![query(
+                "SELECT uuid, Decimal FROM person",
+                vec![Some(Kind::String)],
+                Vec::new(),
+            )],
+        ));
+
+        // `RecordId` from the synthesized `id`, `Duration` from the field —
+        // and neither of the two names the query key happens to contain.
+        assert_eq!(module.imports, vec!["Duration", "RecordId"]);
+        assert!(
+            module.text.contains(
+                "import type { Duration, RecordId } from \"@surrealdb/analyzer-client\";"
+            ),
+            "{}",
+            module.text
+        );
     }
 
     /// An empty `Queries` must be an empty *object type*, not
@@ -883,7 +974,7 @@ mod tests {
     /// instead of erroring as a miss.
     #[test]
     fn an_empty_project_emits_an_empty_object_type() {
-        let rendered = render_types_module(&document(Vec::new(), Vec::new()));
+        let rendered = render(&document(Vec::new(), Vec::new()));
 
         assert!(rendered.contains("export type Queries = {};"), "{rendered}");
         assert!(
@@ -894,6 +985,9 @@ mod tests {
             !code(&rendered).contains("import"),
             "a document that names no value type imports none: {rendered}"
         );
+        assert!(render_types_module(&document(Vec::new(), Vec::new()))
+            .imports
+            .is_empty());
     }
 
     /// Two table names can `PascalCase` to the same identifier, and a table can
@@ -965,7 +1059,7 @@ mod tests {
 
         // …and the rendered file really does use the suffixed name on both
         // sides, so a `Date` field still means a datetime.
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             vec![TableTypes {
                 name: "date".into(),
                 fields: vec![field("at", Kind::Datetime)],
@@ -980,7 +1074,7 @@ mod tests {
 
     #[test]
     fn a_name_that_is_not_an_identifier_is_quoted() {
-        let rendered = render_types_module(&document(
+        let rendered = render(&document(
             vec![TableTypes {
                 name: "user-account".into(),
                 fields: vec![field("full name", Kind::String)],
