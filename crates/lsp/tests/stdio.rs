@@ -35,7 +35,9 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -62,6 +64,9 @@ DEFINE FIELD title ON organization_role TYPE string;
 DEFINE TABLE employee_of SCHEMAFULL TYPE RELATION FROM account TO organization;
 DEFINE TABLE assigned_to SCHEMAFULL TYPE RELATION FROM organization_unit TO organization_role;
 ";
+
+/// How long a test waits for a publish before ending the process.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
 const SCHEMA_URI: &str = "file:///workspace/a_schema.surql";
 const QUERY_URI: &str = "file:///workspace/b_query.surql";
@@ -258,36 +263,51 @@ impl Lsp {
     /// suppression tests' "the directive silenced nothing" failure, seen once
     /// in CI and never locally. The version says which edit a publish
     /// describes, so the harness waits for the one it asked about.
+    ///
+    /// The wait is bounded. It is a blocking read on the child's stdout, so a
+    /// publish that never comes is a hang, and neither cargo nor the test
+    /// harness has a per-test timeout to end it — a broken publish gate would
+    /// burn a CI job rather than fail a test. The watchdog ends the process
+    /// instead, saying what was being waited for.
     fn publish_for_version(&mut self, uri: &str, version: i64) -> Vec<Value> {
-        self.next_matching_publish(uri, Some(version))
-    }
+        let arrived = Arc::new(AtomicBool::new(false));
+        let watchdog = {
+            let arrived = Arc::clone(&arrived);
+            let awaited = format!("{uri} at version {version}");
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + PUBLISH_TIMEOUT;
+                while Instant::now() < deadline {
+                    if arrived.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                eprintln!(
+                    "timed out after {PUBLISH_TIMEOUT:?} waiting for diagnostics for {awaited}"
+                );
+                std::process::exit(101);
+            })
+        };
 
-    /// The next `publishDiagnostics` notification for `uri`, whatever version
-    /// it carries. For a publish no edit of ours provoked — a config change
-    /// re-publishing every open document, which restates the version the
-    /// document already had.
-    fn next_publish(&mut self, uri: &str) -> Vec<Value> {
-        self.next_matching_publish(uri, None)
-    }
-
-    fn next_matching_publish(&mut self, uri: &str, version: Option<i64>) -> Vec<Value> {
-        loop {
+        let diagnostics = loop {
             let message = self.read_message();
             if message["method"] != "textDocument/publishDiagnostics"
                 || message["params"]["uri"] != uri
             {
                 continue;
             }
-            if let Some(version) = version {
-                if message["params"]["version"].as_i64() != Some(version) {
-                    continue;
-                }
+            if message["params"]["version"].as_i64() != Some(version) {
+                continue;
             }
-            return message["params"]["diagnostics"]
+            break message["params"]["diagnostics"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-        }
+        };
+
+        arrived.store(true, Ordering::Relaxed);
+        drop(watchdog);
+        diagnostics
     }
 
     /// Whether `message` is the response to our request `id` — and not a
@@ -1373,7 +1393,7 @@ strict = false
         "workspace/didChangeWatchedFiles",
         json!({"changes": [{"uri": config_uri, "type": 2}]}),
     );
-    let after = lsp.next_publish(&page_uri);
+    let after = lsp.publish_for_version(&page_uri, 1);
     assert!(
         !after.iter().any(|d| d["code"] == "E1001"),
         "an allowed code must stop being published, got: {after:?}"

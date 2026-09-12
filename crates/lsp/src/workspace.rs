@@ -297,6 +297,8 @@ pub struct Workspace {
     /// granularity hook for tests: a schema edit that touches symbols nothing
     /// else references re-analyzes just the edited source, not the whole set.
     reanalyzed_sources: AtomicU64,
+    /// How many times the workspace has changed — see [`Self::generation`].
+    generation: u64,
 }
 
 impl Workspace {
@@ -305,11 +307,37 @@ impl Workspace {
         Self::default()
     }
 
+    /// Which state of the whole workspace this is: a counter bumped by every
+    /// mutation — any document opened, edited, scanned or closed, and every
+    /// config that replaces the one the analysis runs under.
+    ///
+    /// It is the order diagnostics are published in. A document's findings do
+    /// not depend on that document alone: a schema file two directories away
+    /// or a `[lints]` level in `surrealql-analyzer.toml` decides them just as
+    /// much, and both move while the document's own version stands still. So
+    /// "which answer is newer" is a question about the workspace, not about
+    /// one buffer, and the document version cannot answer it — a sweep
+    /// re-publishing a query against a *just-edited schema* carries the
+    /// version that query has had all along.
+    ///
+    /// Every publish captures the generation its analysis ran under, and the
+    /// newest snapshot wins; see `PublishOrder` in `backend.rs`.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Record that the workspace changed. Every mutating method ends here, so
+    /// no state exists that a publish cannot be ordered against.
+    fn bump(&mut self) {
+        self.generation += 1;
+    }
+
     /// Installs the workspace's resolved `surrealql-analyzer.toml`. Every cached
     /// analysis is dropped: the config is an analysis input the cache keys do
     /// not cover, so a result computed under the old one must never be served
     /// under the new.
     pub fn set_config(&mut self, config: WorkspaceConfig) {
+        self.bump();
         self.config = config;
         if let Ok(cache) = self.surql_cache.get_mut() {
             *cache = None;
@@ -328,12 +356,29 @@ impl Workspace {
     /// document gets no version, and replaces whatever was there: the scan
     /// runs once at `initialize`, before any document is open.
     pub fn upsert(&mut self, uri: Url, text: String) {
+        self.bump();
         self.documents
             .insert(uri.clone(), Document::new(uri, text, None));
     }
 
-    /// Update a document the client owns, at the version it stamped on the
-    /// notification. Returns whether the edit was applied.
+    /// Take a document the client just opened, at the version it stamped on
+    /// the `didOpen`. Always applied: an open is the client stating what the
+    /// buffer *is*, not an increment on what we think it was.
+    ///
+    /// Nothing may gate it. A client that reopens a buffer numbers its
+    /// versions from the start again, and one that reloads may repeat an open
+    /// it has already sent — measuring either against the version last seen
+    /// would refuse the client's own truth and leave the workspace on text
+    /// nobody is editing any more.
+    pub fn open(&mut self, uri: Url, text: String, version: i32) {
+        self.bump();
+        self.documents
+            .insert(uri.clone(), Document::new(uri, text, Some(version)));
+    }
+
+    /// Apply an *edit* the client owns, at the version it stamped on the
+    /// notification. Returns whether it was applied — a refused edit changed
+    /// nothing, so its caller has nothing to publish.
     ///
     /// A *stale* edit is refused. tower-lsp serves incoming messages
     /// concurrently (`buffer_unordered`), so two notifications for the same
@@ -344,12 +389,15 @@ impl Workspace {
     /// completion and diagnostic then described a buffer the user had already
     /// moved past, until the next keystroke happened to land in order.
     /// Versions decide it instead, which is what they are for.
-    pub fn upsert_versioned(&mut self, uri: Url, text: String, version: i32) -> bool {
+    #[must_use = "a refused edit changed nothing; publishing after one \
+                  re-sends the state that is already on the client"]
+    pub fn edit(&mut self, uri: Url, text: String, version: i32) -> bool {
         if let Some(current) = self.documents.get(&uri).and_then(|doc| doc.version) {
             if version < current {
                 return false;
             }
         }
+        self.bump();
         self.documents
             .insert(uri.clone(), Document::new(uri, text, Some(version)));
         true
@@ -364,6 +412,7 @@ impl Workspace {
     /// Remove a document on close. Drops any cached host analysis for it; the
     /// `.surql` cache invalidates by hash on the next request.
     pub fn remove(&mut self, uri: &Url) {
+        self.bump();
         self.documents.remove(uri);
         if let Ok(cache) = self.host_cache.get_mut() {
             cache.remove(uri);
@@ -1494,10 +1543,10 @@ mod tests {
         let mut workspace = Workspace::new();
         let uri = Url::parse("file:///workspace/query.surql").expect("valid uri");
 
-        assert!(workspace.upsert_versioned(uri.clone(), "RETURN 1;".into(), 1));
-        assert!(workspace.upsert_versioned(uri.clone(), "RETURN 3;".into(), 3));
+        workspace.open(uri.clone(), "RETURN 1;".into(), 1);
+        assert!(workspace.edit(uri.clone(), "RETURN 3;".into(), 3));
         assert!(
-            !workspace.upsert_versioned(uri.clone(), "RETURN 2;".into(), 2),
+            !workspace.edit(uri.clone(), "RETURN 2;".into(), 2),
             "version 2 arriving after version 3 is the older text"
         );
 
@@ -1505,11 +1554,68 @@ mod tests {
         assert_eq!(workspace.document_version(&uri), Some(3));
 
         // The same version again is a re-send, not a step backwards.
-        assert!(workspace.upsert_versioned(uri.clone(), "RETURN 3;".into(), 3));
+        assert!(workspace.edit(uri.clone(), "RETURN 3;".into(), 3));
         // A document read from disk carries no version at all.
         let scanned = Url::parse("file:///workspace/scanned.surql").expect("valid uri");
         workspace.upsert(scanned.clone(), "RETURN 0;".into());
         assert_eq!(workspace.document_version(&scanned), None);
+    }
+
+    #[test]
+    fn an_open_is_the_client_s_truth_whatever_version_it_carries() {
+        // A reopened buffer numbers its versions from the start again, and a
+        // reloading client may repeat an open outright. Gating either on the
+        // version last seen would leave the workspace on text nobody is
+        // editing — every hover, completion and diagnostic after it wrong.
+        let mut workspace = Workspace::new();
+        let uri = Url::parse("file:///workspace/query.surql").expect("valid uri");
+
+        workspace.open(uri.clone(), "RETURN 1;".into(), 1);
+        assert!(workspace.edit(uri.clone(), "RETURN 9;".into(), 9));
+
+        workspace.open(uri.clone(), "RETURN 'reopened';".into(), 1);
+        assert_eq!(
+            workspace.document_text(&uri).as_deref(),
+            Some("RETURN 'reopened';")
+        );
+        assert_eq!(workspace.document_version(&uri), Some(1));
+    }
+
+    #[test]
+    fn every_mutation_moves_the_generation_on() {
+        // The publish order is built on this: a state no mutation is visible
+        // in is a state a publish could be mis-ordered against.
+        let mut workspace = Workspace::new();
+        let uri = Url::parse("file:///workspace/query.surql").expect("valid uri");
+        let mut seen = workspace.generation();
+        let mut moved_on = |workspace: &Workspace, what: &str| {
+            assert!(
+                workspace.generation() > seen,
+                "{what} must move the generation on"
+            );
+            seen = workspace.generation();
+        };
+
+        workspace.open(uri.clone(), "RETURN 1;".into(), 1);
+        moved_on(&workspace, "an open");
+        assert!(workspace.edit(uri.clone(), "RETURN 2;".into(), 2));
+        moved_on(&workspace, "an edit");
+        workspace.upsert(
+            Url::parse("file:///workspace/scanned.surql").expect("valid uri"),
+            "RETURN 0;".into(),
+        );
+        moved_on(&workspace, "a scanned document");
+        workspace.set_config(WorkspaceConfig::default());
+        moved_on(&workspace, "a config the analysis runs under");
+        workspace.remove(&uri);
+        moved_on(&workspace, "a close");
+
+        // A refused edit changes nothing, so it is not a new state.
+        let held = workspace.generation();
+        let other = Url::parse("file:///workspace/other.surql").expect("valid uri");
+        workspace.open(other.clone(), "RETURN 5;".into(), 5);
+        assert!(!workspace.edit(other, "RETURN 4;".into(), 4));
+        assert_eq!(workspace.generation(), held + 1, "only the open counted");
     }
 
     #[test]

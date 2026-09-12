@@ -11,6 +11,9 @@ use tower_lsp::LspService;
 
 use surrealql_analyzer_lsp::backend::Backend;
 
+/// How long a test waits for a publish before calling it a failure.
+const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 struct Server {
     service: LspService<Backend>,
     socket: std::pin::Pin<Box<tower_lsp::ClientSocket>>,
@@ -124,7 +127,35 @@ impl Server {
     /// completion before the next notification is sent, so a publish is never
     /// still in flight when the following one is asked for. Every publish's
     /// `version` is asserted where it matters instead.
+    ///
+    /// Bounded, because a publish that never comes is otherwise a hang: the
+    /// socket simply stays open, and cargo has no per-test timeout — a broken
+    /// gate would burn a CI job instead of failing a test.
     async fn next_publish(&mut self) -> PublishDiagnosticsParams {
+        match tokio::time::timeout(PUBLISH_TIMEOUT, self.await_publish()).await {
+            Ok(publish) => publish,
+            Err(_) => panic!(
+                "timed out after {PUBLISH_TIMEOUT:?} waiting for a publishDiagnostics; \
+                 messages seen meanwhile: {:?}",
+                self.buffered
+                    .iter()
+                    .map(|message| message.method().to_string())
+                    .collect::<Vec<_>>()
+            ),
+        }
+    }
+
+    /// Whether any publish is already waiting, after letting the handlers'
+    /// spawned tasks run. For asserting that a publish was *not* sent.
+    async fn published_nothing(&mut self) -> bool {
+        self.drain_pending().await;
+        !self
+            .buffered
+            .iter()
+            .any(|message| message.method() == "textDocument/publishDiagnostics")
+    }
+
+    async fn await_publish(&mut self) -> PublishDiagnosticsParams {
         loop {
             let message = if self.buffered.is_empty() {
                 self.socket.next().await.expect("client socket open")
@@ -290,8 +321,9 @@ async fn an_edit_that_arrives_out_of_order_never_puts_the_older_text_back() {
     assert_eq!(current.version, Some(3));
     assert!(current.diagnostics.is_empty(), "{:?}", current.diagnostics);
 
-    // Version 2, delivered late: its text is older than what the document
-    // already holds, so it is dropped and the publish still describes 3.
+    // Version 2, delivered late: older than the text the document already
+    // holds, so it is refused — and a refused edit changed nothing, so it says
+    // nothing either. The client's marks are already right.
     server
         .call(
             "textDocument/didChange",
@@ -299,12 +331,197 @@ async fn an_edit_that_arrives_out_of_order_never_puts_the_older_text_back() {
             did_change(&uri, 2, "SELECT * FROM persn;\n"),
         )
         .await;
-    let late = server.next_publish().await;
-    assert_eq!(late.version, Some(3));
     assert!(
-        late.diagnostics.is_empty(),
+        server.published_nothing().await,
+        "a refused edit must not re-publish: nothing about the document changed"
+    );
+
+    // And the text really is still version 3's: a save re-publishes every
+    // tracked document from what the workspace holds.
+    server
+        .call(
+            "textDocument/didSave",
+            None,
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+    let after_save = server.next_publish().await;
+    assert_eq!(after_save.version, Some(3));
+    assert!(
+        after_save.diagnostics.is_empty(),
         "a late edit must not resurrect the older text's findings: {:?}",
-        late.diagnostics
+        after_save.diagnostics
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_open_replaces_the_document_whatever_version_it_carries() {
+    // An open is the client stating what the buffer *is*. A client that
+    // reloads repeats an open it has already sent, and one that reopens a
+    // buffer numbers its versions from the start again — gating either on the
+    // version last seen would leave the server serving text nobody is editing.
+    let mut server = Server::started().await;
+    let uri = Url::parse("file:///workspace/query.surql").expect("valid url");
+
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&uri, "DEFINE TABLE persn;\nSELECT * FROM persn;\n"),
+        )
+        .await;
+    assert!(server.next_publish().await.diagnostics.is_empty());
+
+    server
+        .call(
+            "textDocument/didChange",
+            None,
+            did_change(
+                &uri,
+                5,
+                "DEFINE TABLE persn;\nSELECT * FROM persn WHERE id;\n",
+            ),
+        )
+        .await;
+    assert_eq!(server.next_publish().await.version, Some(5));
+
+    // The editor reloads and opens the file again, numbering from 1.
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&uri, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    let reopened = server.next_publish().await;
+    assert_eq!(
+        reopened.version,
+        Some(1),
+        "the open's own diagnostics must reach the client"
+    );
+    assert_eq!(
+        reopened.diagnostics.len(),
+        1,
+        "the reopened text has no DEFINE TABLE in it: {:?}",
+        reopened.diagnostics
+    );
+}
+
+#[tokio::test]
+async fn a_document_opened_again_after_a_close_is_published_again() {
+    // `didClose` marks the document closed so an analysis still in flight
+    // cannot repaint a buffer the editor has shut. Only `didOpen` lifts that,
+    // and it must: otherwise the reopened buffer never gets a mark again.
+    let mut server = Server::started().await;
+    let uri = Url::parse("file:///workspace/query.surql").expect("valid url");
+
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&uri, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    assert_eq!(server.next_publish().await.diagnostics.len(), 1);
+
+    server
+        .call(
+            "textDocument/didChange",
+            None,
+            did_change(&uri, 9, "SELECT * FROM persn WHERE id;\n"),
+        )
+        .await;
+    assert_eq!(server.next_publish().await.version, Some(9));
+
+    server
+        .call(
+            "textDocument/didClose",
+            None,
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+    let cleared = server.next_publish().await;
+    assert!(cleared.diagnostics.is_empty());
+
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&uri, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    let reopened = server.next_publish().await;
+    assert_eq!(reopened.version, Some(1));
+    assert_eq!(
+        reopened.diagnostics.len(),
+        1,
+        "the reopened buffer must be marked up again: {:?}",
+        reopened.diagnostics
+    );
+}
+
+#[tokio::test]
+async fn a_schema_edit_republishes_the_query_it_changes_at_its_unchanged_version() {
+    // Why publishes are ordered by workspace generation and not by document
+    // version: this query's findings change without the query changing. The
+    // republish carries the version it has carried all along, so an order
+    // built on versions has no way to tell it from an answer already sent —
+    // and dropping it leaves the editor marking a table that now exists.
+    let mut server = Server::started().await;
+    let schema_uri = Url::parse("file:///workspace/a_schema.surql").expect("valid url");
+    let query_uri = Url::parse("file:///workspace/b_query.surql").expect("valid url");
+
+    server
+        .call("textDocument/didOpen", None, did_open(&schema_uri, "\n"))
+        .await;
+    let _ = server.next_publish().await;
+    server
+        .call(
+            "textDocument/didOpen",
+            None,
+            did_open(&query_uri, "SELECT * FROM persn;\n"),
+        )
+        .await;
+    let opened = server.next_publish().await;
+    assert_eq!(opened.uri, query_uri);
+    assert_eq!(opened.diagnostics.len(), 1, "the table does not exist yet");
+
+    // The schema gains the table; a save sweeps every tracked document.
+    server
+        .call(
+            "textDocument/didChange",
+            None,
+            did_change(&schema_uri, 2, "DEFINE TABLE persn;\n"),
+        )
+        .await;
+    let _ = server.next_publish().await;
+    server
+        .call(
+            "textDocument/didSave",
+            None,
+            json!({"textDocument": {"uri": schema_uri}}),
+        )
+        .await;
+
+    let mut query_publish = None;
+    for _ in 0..4 {
+        let publish = server.next_publish().await;
+        if publish.uri == query_uri {
+            query_publish = Some(publish);
+            break;
+        }
+    }
+    let query_publish = query_publish.expect("the sweep must republish the query");
+    assert_eq!(
+        query_publish.version,
+        Some(1),
+        "the query has not been edited; its version stands still"
+    );
+    assert!(
+        query_publish.diagnostics.is_empty(),
+        "the table exists now, and the answer that says so must reach the \
+         client: {:?}",
+        query_publish.diagnostics
     );
 }
 

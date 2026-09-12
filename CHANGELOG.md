@@ -2,22 +2,40 @@
 
 ## Unreleased
 
-### Fixed — the editor could be left holding diagnostics for text the user had replaced
+### Fixed — the editor could be left holding diagnostics for a state it had moved past
 
-The LSP published diagnostics with no `version` and applied every edit in the
-order its handler happened to finish. tower-lsp serves incoming messages
+The LSP published diagnostics with no `version` and applied every notification
+in the order its handler happened to finish. tower-lsp serves incoming messages
 concurrently, so a `didOpen` and the `didChange` a keystroke later are routinely
 in flight together — and whichever handler took the workspace lock last won.
 The older one winning put the older text back for good: every later hover,
-completion and diagnostic then described a buffer the user had moved past, and
-a late publish could repaint squiggles for text that no longer existed.
+completion and diagnostic then described a buffer the user had moved past. A
+publish from a slower analysis could likewise repaint marks the newer one had
+just cleared, and no client could filter it, because the server sent no version
+at all.
 
-Document versions now decide all of it. An edit older than the text a document
-already holds is refused, every `publishDiagnostics` carries the version of the
-text it describes (`PublishDiagnosticsParams.version`, LSP 3.15), and a publish
-whose version is older than one already sent for that document is dropped rather
-than overwriting it — so a client can tell which edit an answer belongs to, and
-diagnostics for a document only ever move forwards.
+Both are ordered now, by two different things, because they are two different
+questions.
+
+- **Edits** are ordered by the document's version: an edit older than the text
+  a document already holds is refused, and a refused edit publishes nothing. An
+  **open** is never refused — a reopened buffer numbers its versions from the
+  start again, and a client that reloads repeats an open it has already sent, so
+  an open is the client stating what the buffer *is*, not an increment on it.
+- **Publishes** are ordered by a workspace *generation*: a counter bumped by
+  every mutation — any document opened, edited, scanned or closed, and every
+  config the analysis runs under. A document's findings do not depend on that
+  document alone (a schema two directories away and a `[lints]` level decide
+  them just as much, while the document's version stands still), so a publish
+  carries the generation its analysis ran under, and one from a snapshot
+  already overtaken is dropped rather than overwriting a newer answer. A closed
+  document is marked closed, not forgotten, so an analysis still in flight
+  cannot repaint a buffer the editor has shut; the next `didOpen` lifts the
+  mark.
+
+Every `publishDiagnostics` now carries `PublishDiagnosticsParams.version` (LSP
+3.15) — the version of the text it describes — so a client can discard an answer
+that no longer matches its buffer.
 
 ### Fixed — a watch could re-trigger itself forever
 

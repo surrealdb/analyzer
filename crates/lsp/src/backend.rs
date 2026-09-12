@@ -50,11 +50,12 @@ pub struct Backend {
     /// The last semantic-token answer per document, keyed by the text it was
     /// computed from; see [`Self::semantic_tokens_full`].
     semantic_cache: Mutex<HashMap<Url, SemanticEntry>>,
-    /// The newest document version whose diagnostics have already been sent,
-    /// per document; see [`PublishedVersions`]. An async mutex because it is
-    /// held across the send itself, which is what makes the check and the
-    /// send one step.
-    published: tokio::sync::Mutex<PublishedVersions>,
+    /// Which workspace generation each document's diagnostics were last
+    /// published from; see [`PublishOrder`]. An async mutex because it is held
+    /// across the send itself, which is what makes the check and the send one
+    /// step — and therefore the *innermost* lock on every path: nothing else
+    /// may be acquired while it is held.
+    published: tokio::sync::Mutex<PublishOrder>,
     /// The `surrealql-analyzer.toml` the policy came from, when a workspace root has
     /// one. `None` leaves the workspace-wide suppression action unoffered:
     /// creating a config file is a resource operation not every client
@@ -74,39 +75,56 @@ pub struct Backend {
     watched_files_support: AtomicBool,
 }
 
-/// The newest document version already published, per document — the gate
-/// that keeps a document's diagnostics moving forwards only.
+/// Which workspace generation each document's diagnostics were last published
+/// from — the gate that keeps a document's marks moving forwards only.
 ///
 /// Publishing is not instantaneous: a handler analyzes, then sends. tower-lsp
-/// serves messages concurrently, so the handler for an older edit can still be
-/// between those two steps when the handler for a newer one finishes, and its
-/// send would then overwrite fresh diagnostics with stale ones — squiggles for
-/// text the user has already replaced, left standing until the next edit. The
-/// version says which is which, so the older send is simply dropped: the newer
-/// publish it lost to already describes the document.
+/// serves messages concurrently, so the handler for an older snapshot can still
+/// be between those two steps when the handler for a newer one finishes, and
+/// its send would then overwrite fresh diagnostics with stale ones — squiggles
+/// for text the user has already replaced, or for a schema they have already
+/// fixed, left standing until the next edit happens to land.
 ///
-/// Unversioned publishes (a document read from disk, a cleared document) never
-/// gate and never move the mark: they have no place in that order.
+/// The ordering key is the *workspace* generation
+/// ([`Workspace::generation`]), not the document's own version. A document's
+/// findings depend on every other document and on the config: a sweep
+/// re-publishing a query against a just-edited schema carries the version that
+/// query has had all along, so ordering by version would drop the very answer
+/// the edit was for. Newer snapshot wins, at equal generations either answer
+/// describes the same state, and a publish from a snapshot already overtaken is
+/// dropped.
+///
+/// A closed document is marked [`CLOSED`] rather than forgotten: an analysis
+/// still in flight when the close lands must not repaint a buffer the editor
+/// has shut, and must not leave a mark behind that then outranks the reopen.
+/// Only a `didOpen` clears it, because only the client can say the document is
+/// back.
 #[derive(Debug, Default)]
-struct PublishedVersions(HashMap<Url, i32>);
+struct PublishOrder(HashMap<Url, u64>);
 
-impl PublishedVersions {
-    /// Whether diagnostics computed for `uri` at `version` may still be sent,
-    /// recording them as the newest published when they may.
-    fn accepts(&mut self, uri: &Url, version: Option<i32>) -> bool {
-        let Some(version) = version else {
-            return true;
-        };
-        if self.0.get(uri).is_some_and(|newest| *newest > version) {
+/// The mark a closed document carries: no generation can exceed it, so every
+/// publish for that document is dropped until it is opened again.
+const CLOSED: u64 = u64::MAX;
+
+impl PublishOrder {
+    /// Whether diagnostics analyzed at `generation` may still be sent for
+    /// `uri`, recording them as the newest published when they may.
+    fn accepts(&mut self, uri: &Url, generation: u64) -> bool {
+        if self.0.get(uri).is_some_and(|newest| *newest > generation) {
             return false;
         }
-        self.0.insert(uri.clone(), version);
+        self.0.insert(uri.clone(), generation);
         true
     }
 
-    /// Forget a document, so a reopen (whose versions start over) is not
-    /// measured against the closed buffer's.
-    fn forget(&mut self, uri: &Url) {
+    /// The document was closed: nothing more may be published for it.
+    fn closed(&mut self, uri: &Url) {
+        self.0.insert(uri.clone(), CLOSED);
+    }
+
+    /// The document was opened: its history starts over, whatever was
+    /// published for the incarnation before it.
+    fn reopened(&mut self, uri: &Url) {
         self.0.remove(uri);
     }
 }
@@ -174,7 +192,7 @@ impl Backend {
             policy: RwLock::new(PolicyConfig::default()),
             refresh: Arc::new(RefreshState::default()),
             semantic_cache: Mutex::new(HashMap::new()),
-            published: tokio::sync::Mutex::new(PublishedVersions::default()),
+            published: tokio::sync::Mutex::new(PublishOrder::default()),
             config: RwLock::new(None),
             code_action_literal_support: AtomicBool::new(false),
             watched_files_support: AtomicBool::new(false),
@@ -265,12 +283,16 @@ impl Backend {
     /// analysis result shares the workspace's text by `Arc`, so this costs
     /// the document's findings and no copy of anything.
     async fn publish_document_diagnostics(&self, uri: &Url) {
-        // The version is read under the same guard as the analysis, so it
-        // always names the exact text these diagnostics describe — never a
-        // newer one an edit installed in between.
-        let (result, version) = {
+        // Version and generation are read under the same guard as the
+        // analysis, so they always name the exact state these diagnostics
+        // describe — never a newer one a mutation installed in between.
+        let (result, version, generation) = {
             let ws = self.workspace.read().await;
-            (ws.diagnostic_analysis(uri), ws.document_version(uri))
+            (
+                ws.diagnostic_analysis(uri),
+                ws.document_version(uri),
+                ws.generation(),
+            )
         };
 
         let Some(result) = result else {
@@ -291,21 +313,32 @@ impl Backend {
             .collect();
         drop(policy);
 
-        self.publish(uri, lsp_diagnostics, version).await;
+        self.publish(uri, lsp_diagnostics, version, generation)
+            .await;
     }
 
     /// Send one document's diagnostics, stamped with the version of the text
-    /// they were computed from — unless a newer version's diagnostics have
-    /// already gone out, in which case this answer is obsolete and is dropped.
+    /// they describe — unless a newer snapshot's diagnostics have already gone
+    /// out for this document, in which case this answer is obsolete and is
+    /// dropped.
     ///
     /// The version is `PublishDiagnosticsParams.version` (LSP 3.15): it lets a
     /// client discard an answer that no longer matches its buffer, and it is
-    /// how a test knows which edit a publish belongs to. The gate is held
-    /// across the send so the check and the send cannot interleave with
-    /// another publish of the same document; see [`PublishedVersions`].
-    async fn publish(&self, uri: &Url, diagnostics: Vec<Diagnostic>, version: Option<i32>) {
+    /// how a test knows which edit a publish belongs to. It is not what orders
+    /// the publishes — `generation` is; see [`PublishOrder`].
+    ///
+    /// The gate is held across the send so the check and the send cannot
+    /// interleave with another publish of the same document. It is the
+    /// innermost lock: no other lock may be taken while it is held.
+    async fn publish(
+        &self,
+        uri: &Url,
+        diagnostics: Vec<Diagnostic>,
+        version: Option<i32>,
+        generation: u64,
+    ) {
         let mut published = self.published.lock().await;
-        if !published.accepts(uri, version) {
+        if !published.accepts(uri, generation) {
             return;
         }
         self.client
@@ -1095,16 +1128,26 @@ impl LanguageServer for Backend {
         })))
     }
 
+    /// The client opened a buffer. Whatever it says the text is, is the text:
+    /// an open is never measured against what was tracked before, because a
+    /// reopened buffer numbers its versions from the start again and a reload
+    /// may repeat an open we have already seen.
+    ///
+    /// The publish order starts over with it. Anything published for this URI
+    /// before belongs to an incarnation that is gone — including the [`CLOSED`]
+    /// mark a `didClose` left, which otherwise swallows this open's own
+    /// diagnostics.
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.clone();
         {
             let mut ws = self.workspace.write().await;
-            ws.upsert_versioned(
+            ws.open(
                 params.text_document.uri,
                 params.text_document.text,
                 params.text_document.version,
             );
         }
+        self.published.lock().await.reopened(&uri);
         self.publish_diagnostics(&uri).await;
     }
 
@@ -1123,8 +1166,22 @@ impl LanguageServer for Backend {
             )
         };
         if let Some(change) = params.content_changes.into_iter().last() {
-            let mut ws = self.workspace.write().await;
-            ws.upsert_versioned(uri.clone(), change.text, params.text_document.version);
+            let applied = {
+                let mut ws = self.workspace.write().await;
+                ws.edit(uri.clone(), change.text, params.text_document.version)
+            };
+            // A refused edit changed nothing, so there is nothing to say: the
+            // client already holds the diagnostics for the text we still have,
+            // and re-sending them would only add a publish for a snapshot
+            // newer than the one that answer came from.
+            if !applied {
+                eprintln!(
+                    "[surrealql-analyzer] edit \u{2192} dropped (version {} is older than the \
+                     text already held)",
+                    params.text_document.version
+                );
+                return;
+            }
         }
         let started = std::time::Instant::now();
         self.publish_diagnostics(&uri).await;
@@ -1163,11 +1220,13 @@ impl LanguageServer for Backend {
         if let Ok(mut cache) = self.semantic_cache.lock() {
             cache.remove(&uri);
         }
-        // Forgetting the version mark and clearing the marks is one step: a
-        // reopened buffer starts its versions over, and must not be measured
-        // against the closed one's.
+        // Marking the document closed and clearing its marks is one step, and
+        // the clear goes out ungated: it is the close itself, not an answer
+        // about any snapshot. The mark stops an analysis that was already in
+        // flight from repainting a buffer the editor has shut, and a later
+        // `didOpen` lifts it.
         let mut published = self.published.lock().await;
-        published.forget(&uri);
+        published.closed(&uri);
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 }
@@ -1181,47 +1240,77 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_for_an_older_version_than_one_already_sent_is_dropped() {
-        let mut published = PublishedVersions::default();
+    fn a_publish_from_a_snapshot_already_overtaken_is_dropped() {
+        let mut order = PublishOrder::default();
         let query = uri("query");
 
-        assert!(published.accepts(&query, Some(1)));
-        assert!(published.accepts(&query, Some(2)));
+        assert!(order.accepts(&query, 1));
+        assert!(order.accepts(&query, 2));
         assert!(
-            !published.accepts(&query, Some(1)),
-            "version 1's diagnostics describe text the client has replaced"
+            !order.accepts(&query, 1),
+            "generation 1 describes a workspace two mutations ago"
         );
-        // The same version twice is a re-publish of the current text (a config
-        // change sweeping every open document), not a step backwards.
-        assert!(published.accepts(&query, Some(2)));
-        // Documents are gated one by one.
-        assert!(published.accepts(&uri("other"), Some(1)));
+        // Equal generations describe the same state, so neither is stale: a
+        // sweep re-publishing a document nothing has touched still goes out.
+        assert!(order.accepts(&query, 2));
+        // Documents are ordered one by one.
+        assert!(order.accepts(&uri("other"), 1));
     }
 
     #[test]
-    fn an_unversioned_publish_neither_gates_nor_moves_the_mark() {
-        let mut published = PublishedVersions::default();
+    fn a_sweep_holding_older_text_cannot_overwrite_the_open_buffer() {
+        // The `initialized` sweep reads a file from disk and analyzes it; the
+        // editor opens the same file meanwhile and its diagnostics go out
+        // first. The sweep's answer describes the workspace *before* the open
+        // — an unversioned one at that, which a client cannot discard by
+        // version — so the gate has to drop it. It carries a generation like
+        // every other publish, and that is what decides it.
+        let mut order = PublishOrder::default();
         let query = uri("query");
 
-        assert!(published.accepts(&query, None));
-        assert!(published.accepts(&query, Some(2)));
-        assert!(published.accepts(&query, None));
-        assert!(
-            !published.accepts(&query, Some(1)),
-            "an unversioned publish in between must not have cleared the mark"
-        );
+        let sweep_read_the_file = 4;
+        let the_editor_opened_it = 5;
+
+        assert!(order.accepts(&query, the_editor_opened_it));
+        assert!(!order.accepts(&query, sweep_read_the_file));
     }
 
     #[test]
-    fn a_closed_document_is_forgotten_so_a_reopen_starts_over() {
-        let mut published = PublishedVersions::default();
+    fn a_republish_against_a_newer_schema_survives_an_edit_that_beat_it() {
+        // The reason the order is a *workspace* generation and not the
+        // document's version: a schema edit changes `query.surql`'s findings
+        // without changing `query.surql`. Here a `didChange` (version 3)
+        // analyzed before the schema landed and published first; the sweep the
+        // schema edit provoked then publishes the same document, still at
+        // version 3, with the findings the new schema produces. Ordering by
+        // version would drop the only answer that has the schema in it.
+        let mut order = PublishOrder::default();
         let query = uri("query");
 
-        assert!(published.accepts(&query, Some(7)));
-        published.forget(&query);
+        let edit_analyzed_before_the_schema_landed = 7;
+        let sweep_after_the_schema_landed = 9;
+
+        assert!(order.accepts(&query, edit_analyzed_before_the_schema_landed));
+        assert!(order.accepts(&query, sweep_after_the_schema_landed));
+    }
+
+    #[test]
+    fn nothing_is_published_for_a_closed_document_until_it_is_opened_again() {
+        let mut order = PublishOrder::default();
+        let query = uri("query");
+
+        assert!(order.accepts(&query, 3));
+        order.closed(&query);
         assert!(
-            published.accepts(&query, Some(1)),
-            "a reopened buffer numbers its versions from the start again"
+            !order.accepts(&query, 4),
+            "an analysis still in flight when the close landed must not \
+             repaint a buffer the editor has shut"
         );
+        assert!(!order.accepts(&query, CLOSED - 1));
+
+        // Only the client can say the document is back — and then its
+        // diagnostics must get through, however low their generation.
+        order.reopened(&query);
+        assert!(order.accepts(&query, 1));
     }
 }
