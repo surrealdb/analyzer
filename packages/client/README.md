@@ -284,6 +284,7 @@ try {
 db.surreal                                   // the raw SDK instance
 db.surreal.query(surql`SELECT * FROM ${t}`)  // fully dynamic, SDK-typed
 defineQuery.unchecked("SELECT " + table)     // a query no registry could hold
+                                             // (the free export: no registry)
 fromSurreal(existingSurreal)                 // wrap a connection you already own
 ```
 

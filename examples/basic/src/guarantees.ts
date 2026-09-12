@@ -4,10 +4,13 @@
 //
 // This file is never executed.
 
-import { createClient, defineQuery, RecordId } from "./surrealql-analyzer.generated";
+// `defineQuery` here is the FREE export, not `db.defineQuery`: only its
+// `.unchecked` escape hatch is used below, and that one is registry-
+// independent by design — it is for a query no generated file could contain.
+import { defineQuery, RecordId } from "@surrealdb/analyzer-client";
+import { db } from "./db";
 import { allPeople, liveTeam, peopleOf } from "./queries";
 
-const db = createClient({ url: "ws://localhost:8000/rpc" });
 const team = new RecordId("team", "red");
 
 export async function guarantees() {

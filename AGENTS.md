@@ -24,9 +24,12 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
 4. **Type the queries:**
    - Rust: wrap queries in the `query!` macro (`cargo add surrealql-analyzer-rs`). They
      are checked at compile time; a violation fails `cargo check`.
-   - TypeScript: run `surrealkit generate --out src/surrealql-analyzer.generated.ts`,
-     import `SurrealQLAnalyzerClient` from that file (it extends the `surrealdb` SDK),
-     and pass string literals to `db.query("…")` — destructure the first result,
+   - TypeScript: run `surrealkit generate --out src/surrealql-analyzer.d.ts`
+     (types only — nothing in that file exists at runtime), then
+     `import { createClient } from "@surrealdb/analyzer-client"` and
+     `import type { Queries } from "./surrealql-analyzer"`, and build the client
+     as `createClient<Queries>({ url })`. Pass string literals to
+     `db.query("…")` — destructure the first result,
      `const [rows] = await db.query("…")`.
 
 ## Working inside this repository
@@ -126,20 +129,24 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
   - `crates/codegen/tests/golden.rs` — the **generated-TypeScript golden**.
     `generate` emits a module nothing used to compile, so a type
     error in the emitter's output would ship undetected. The test runs the
-    library's generation path (`QueryEntry::from_analysis` + `render_registry`)
+    library's generation path (`QueryTypes::from_analysis` + `TypesDocument::new`
+    + `render_types_module`)
     over the fixture workspace `crates/codegen/tests/fixtures/typecheck/`
     (schema with option/record/array/literal-union/object fields, an edge
     table, `fn::` functions, a host `src/queries.ts`) and compares the module
-    byte-for-byte with `packages/client/test-d/gen/surrealql-analyzer.generated.ts`.
+    byte-for-byte with `packages/client/test-d/gen/surrealql-analyzer.d.ts`.
     That file is then compiled by `pnpm -r run typecheck` as part of
     `@surrealdb/analyzer-client` against the real `surrealdb` types, and
     `test-d/gen/*.test-d.ts` + `test/generated.test.ts` assert what the
-    resolved types are. Regenerate with
+    resolved types are — including `test-d/gen/consumer.test-d.ts`, which does
+    what a user does (`createClient<Queries>`, `db.query("<literal>")`) with no
+    module augmentation anywhere in it. Regenerate with
     `UPDATE_SNAPSHOTS=1 cargo test -p surrealql-analyzer-codegen --test golden`, then
     run the package typecheck — the golden records *current* output, and the
-    Rust side cannot tell whether it is valid TypeScript. Augment
-    `SurqlRegistry` only through `"@surrealdb/analyzer-client"` in that package
-    (never `../src/registry.js`): one interface augmented through two
+    Rust side cannot tell whether it is valid TypeScript. Where a test still
+    augments the global `SurqlRegistry` (`test-d/query.test-d.ts`, which pins
+    the opt-in path), do it only through `"@surrealdb/analyzer-client"` in that
+    package (never `../src/registry.js`): one interface augmented through two
     specifiers gets two merged clones, and which one a file sees depends on
     program order.
 - **Grammar:** the parser is the vendored `crates/tree-sitter-surrealql`

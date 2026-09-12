@@ -298,10 +298,10 @@ neither of which needs a database.
 | `scripts/seed.surql` | The data. Deliberately tiny — a large seed was observed to drop live subscriptions. |
 | `scripts/verify.mjs` | The headless check above. |
 | `src/lib/queries.ts` | The two writes, and the editor-moment comment block. |
-| `src/lib/db.ts` | The one client. Port 8124 lives here and in `scripts/db.mjs`, nowhere else. |
+| `src/lib/db.ts` | The one client — `createClient<Queries>` — plus the one-line `SurqlRegistry` augmentation the `<Query q="…">` markup form needs. Port 8124 lives here and in `scripts/db.mjs`, nowhere else. |
 | `src/lib/session.svelte.ts` | Sign-in, and the cache reset that has to follow it. |
 | `src/lib/inline-registry.ts` | The row types the snippets annotate themselves with, and nothing else. The stopgap above. Delete on sight, once you can. |
-| `src/lib/surrealql-analyzer.generated.ts` | Generated; committed on purpose, so a fresh checkout type-checks with no build step. `pnpm generate`. |
+| `src/lib/surrealql-analyzer.d.ts` | Generated types; committed on purpose, so a fresh checkout type-checks with no build step. Nothing in it exists at runtime. `pnpm generate`. |
 
 ## Things not to do live
 

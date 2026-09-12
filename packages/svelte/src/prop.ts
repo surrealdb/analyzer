@@ -14,6 +14,20 @@
  * query changes its text and therefore its key, so this is the check that
  * catches an edit nobody thinks of as one — `surrealkit generate` picks the
  * new text up on its next run, and until it does, the build stops.
+ *
+ * `SurqlRegistry` is the **global** registry, and it is the one place in this
+ * design that still needs one: an attribute is not a call, so there is nowhere
+ * to write `createClient<Queries>`'s type argument. A project using the text
+ * form fills it in once, in its own code:
+ *
+ * ```ts
+ * declare module "@surrealdb/analyzer-client" {
+ *   interface SurqlRegistry extends Queries {}
+ * }
+ * ```
+ *
+ * The object form (`q={someQuery}`) carries its types in the value and needs
+ * none of this, which is why it is the primary API.
  */
 
 import type {
