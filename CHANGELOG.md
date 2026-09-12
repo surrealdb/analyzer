@@ -50,6 +50,27 @@ message quotes the engine text it predicts.
   missing `value` and takes no `from` at all — so its own message sends the
   reader after the wrong key. The help quotes it anyway, so the two can be
   matched up.
+- **2008 knows three more impossible conversions**, all silent before and all
+  hard runtime errors on 3.2.3:
+  - `record<A>` to `record<B>` where the table sets cannot overlap
+    ("Could not cast into record<company> using input person:1"). An
+    overlapping arm, an unconstrained `record` on either side, and a string
+    operand all stay silent.
+  - a collection target handed something that is not one, and an `object`
+    target handed something that is (`<array> {obj}`, `<array> 'abc'`,
+    `<object> [1,2]`). The rows are a closed list of *proven* failures probed
+    against the engine, not an allowlist read off the type names — `<array>
+    <bytes>'ab'` is `[97, 98]` and stays silent, and an operand kind the
+    analyzer cannot pin down (a union, `any`) is never judged.
+  - `type::int('abc')` and its siblings `type::float` / `type::datetime` /
+    `type::duration` / `type::record`. The cast spelling has been reported
+    since 2008 existed; the function spelling was not, so whether the same
+    mistake was visible depended on how it was written. Constant arguments
+    only, and the finding never changes what the call returns.
+
+  A known-constant operand also reaches the kind half now: it used to return
+  as soon as the value check passed, which made a literal the one shape
+  `<array> 'abc'` could not be caught in.
 
 ### Fixed — a watch could re-trigger itself forever
 

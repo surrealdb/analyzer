@@ -278,20 +278,7 @@ fn check_cast(
 
     // Value-proven: the constant can be converted right now.
     if let Some(surrealdb_types::Value::String(text)) = &fact.value {
-        use std::str::FromStr;
-        let fails = match target {
-            Kind::Int => text.trim().parse::<i64>().is_err(),
-            Kind::Float => text.trim().parse::<f64>().is_err(),
-            Kind::Number => {
-                text.trim().parse::<i64>().is_err() && text.trim().parse::<f64>().is_err()
-            }
-            Kind::Datetime => surrealdb_types::Datetime::from_str(text).is_err(),
-            Kind::Duration => surrealdb_types::Duration::from_str(text).is_err(),
-            Kind::Uuid => surrealdb_types::Uuid::from_str(text).is_err(),
-            Kind::Bool => !matches!(text.as_str(), "true" | "false"),
-            _ => false,
-        };
-        if fails {
+        if constant_string_cast_fails(text, &target) {
             emit(
                 ctx,
                 whole.span,
@@ -301,8 +288,12 @@ fn check_cast(
                     crate::render_kind(&target)
                 ),
             );
+            return;
         }
-        return;
+        // A constant that the target does not read as a *value* still has a
+        // kind, and `<array> 'abc'` is decided by that — so fall through
+        // rather than returning, which used to make a known-constant operand
+        // the one shape the kind half never saw.
     }
 
     // Kind-proven: no value of the operand's kind converts.
@@ -313,20 +304,7 @@ fn check_cast(
         return;
     }
     let base = crate::kinds::literal_base_kind(&kind).unwrap_or_else(|| kind.clone());
-    let possible = match &target {
-        Kind::String | Kind::Any => true,
-        Kind::Bool => matches!(base, Kind::Bool | Kind::String),
-        Kind::Int | Kind::Float | Kind::Decimal | Kind::Number => {
-            is_numeric(&base) || matches!(base, Kind::String)
-        }
-        Kind::Datetime => matches!(base, Kind::Datetime | Kind::String),
-        Kind::Duration => matches!(base, Kind::Duration | Kind::String),
-        Kind::Uuid => matches!(base, Kind::Uuid | Kind::String),
-        Kind::Bytes => matches!(base, Kind::Bytes | Kind::String | Kind::Array(_, _)),
-        Kind::Record(_) => matches!(base, Kind::Record(_) | Kind::String),
-        _ => true,
-    };
-    if !possible {
+    if !cast_is_possible(&base, &target) {
         emit(
             ctx,
             whole.span,
@@ -337,6 +315,98 @@ fn check_cast(
                 crate::render_kind(&target)
             ),
         );
+    }
+}
+
+/// Whether a known constant string provably fails to convert to `target`
+/// (2008's value-proven half).
+///
+/// Shared with the `type::*` constructors, which are the function spelling of
+/// the same conversion and fail with the same engine message: both
+/// `type::int('abc')` and `<int> 'abc'` answer
+/// "Could not cast into int using input 'abc'".
+pub(crate) fn constant_string_cast_fails(text: &str, target: &Kind) -> bool {
+    use std::str::FromStr;
+    match target {
+        Kind::Int => text.trim().parse::<i64>().is_err(),
+        Kind::Float => text.trim().parse::<f64>().is_err(),
+        Kind::Number => text.trim().parse::<i64>().is_err() && text.trim().parse::<f64>().is_err(),
+        Kind::Datetime => surrealdb_types::Datetime::from_str(text).is_err(),
+        Kind::Duration => surrealdb_types::Duration::from_str(text).is_err(),
+        Kind::Uuid => surrealdb_types::Uuid::from_str(text).is_err(),
+        Kind::Bool => !matches!(text, "true" | "false"),
+        // A record id is `table:id`; a string with no `:` names no record,
+        // and 3.2.3 says so: "Could not cast into record using input 'nope'".
+        Kind::Record(_) => !text.contains(':'),
+        _ => false,
+    }
+}
+
+/// Whether SurrealDB's `Cast` impls admit *any* value of `base` into
+/// `target`. `false` only where the failure is proven — an operand kind the
+/// analyzer cannot pin down (a union, `any`) is always given the benefit of
+/// the doubt.
+///
+/// The collection and record rows were established by probing 3.2.3 rather
+/// than read off the type names:
+///
+/// ```text
+/// <array> { city: 'ldn' }  -> Could not cast into `array` using input `{ city: 'ldn' }`
+/// <array> 'abc' / 5 / 1h / person:1 / <uuid>… / <geometry>…  -> the same, per input
+/// <array> <bytes>'ab'      -> [97, 98]                       (bytes DO convert)
+/// <set>   { a: 1 }         -> Could not cast into `array` …  (set is array's twin)
+/// <object> [1, 2] / 'abc' / 5 / person:1 / <bytes>… / <geometry>… -> Could not cast into `object` …
+/// <record<company>> person:1        -> Could not cast into `record<company>` using input `person:1`
+/// <record<person|company>> person:1 -> person:1              (an overlapping arm is enough)
+/// <record> person:1 / <record<company>> 'company:1' -> fine
+/// ```
+fn cast_is_possible(base: &Kind, target: &Kind) -> bool {
+    // The kinds a collection or object target provably cannot take. Written
+    // as a closed list of *failures* rather than a list of successes so an
+    // operand kind outside it — a union, a literal the analyzer models
+    // loosely, a kind added to a later SurrealDB — stays silent.
+    let scalar_or_record = matches!(
+        base,
+        Kind::String
+            | Kind::Int
+            | Kind::Float
+            | Kind::Decimal
+            | Kind::Number
+            | Kind::Bool
+            | Kind::Datetime
+            | Kind::Duration
+            | Kind::Uuid
+            | Kind::Record(_)
+            | Kind::Geometry(_)
+    );
+    match target {
+        Kind::String | Kind::Any => true,
+        Kind::Bool => matches!(base, Kind::Bool | Kind::String),
+        Kind::Int | Kind::Float | Kind::Decimal | Kind::Number => {
+            is_numeric(base) || matches!(base, Kind::String)
+        }
+        Kind::Datetime => matches!(base, Kind::Datetime | Kind::String),
+        Kind::Duration => matches!(base, Kind::Duration | Kind::String),
+        Kind::Uuid => matches!(base, Kind::Uuid | Kind::String),
+        Kind::Bytes => matches!(base, Kind::Bytes | Kind::String | Kind::Array(_, _)),
+        Kind::Array(_, _) | Kind::Set(_, _) => !(scalar_or_record || matches!(base, Kind::Object)),
+        Kind::Object => {
+            !(scalar_or_record || matches!(base, Kind::Array(_, _) | Kind::Set(_, _) | Kind::Bytes))
+        }
+        // Record tables: the cast keeps the id and re-labels it, so it
+        // succeeds only where the two table sets can overlap. An
+        // unconstrained `record` on either side overlaps everything.
+        Kind::Record(target_tables) => match base {
+            Kind::Record(source_tables) => {
+                target_tables.is_empty()
+                    || source_tables.is_empty()
+                    || source_tables
+                        .iter()
+                        .any(|table| target_tables.contains(table))
+            }
+            _ => matches!(base, Kind::String),
+        },
+        _ => true,
     }
 }
 
@@ -1477,6 +1547,70 @@ mod tests {
 
     fn fires(query: &str, code: &str) -> bool {
         codes(query).iter().any(|c| c == code)
+    }
+
+    #[test]
+    fn a_cast_no_value_can_survive_is_2008() {
+        const SCHEMA: &str = "DEFINE TABLE person SCHEMAFULL; DEFINE FIELD n ON person TYPE string; \
+             DEFINE TABLE company SCHEMAFULL; DEFINE FIELD n ON company TYPE string; \
+             DEFINE TABLE article SCHEMAFULL; DEFINE FIELD author ON article TYPE record<person>; \
+             DEFINE FIELD addr ON article TYPE object; DEFINE FIELD tags ON article TYPE array<string>;";
+        // Disjoint record tables, and the two collection/object rows — each
+        // one an engine error on 3.2.3, each one silent before.
+        for query in [
+            "SELECT <record<company>> author FROM article;",
+            "SELECT <array<string>> addr FROM article;",
+            "SELECT <object> tags FROM article;",
+            "RETURN <array> 'abc';",
+            "RETURN <object> 5;",
+        ] {
+            let query = format!("{SCHEMA} {query}");
+            assert!(fires(&query, "E2008"), "{query}: {:?}", codes(&query));
+        }
+        // The near misses: an overlapping arm is enough, an unconstrained
+        // `record` takes anything, bytes really do convert to an array, and a
+        // collection into a collection is the ordinary case.
+        for query in [
+            "SELECT <record<person>> author FROM article;",
+            "SELECT <record<person | company>> author FROM article;",
+            "SELECT <record> author FROM article;",
+            "SELECT <array<string>> tags FROM article;",
+            "SELECT <object> addr FROM article;",
+            "RETURN <array> <bytes>'ab';",
+            "RETURN <array> [1, 2];",
+            "RETURN <int> '42';",
+        ] {
+            let query = format!("{SCHEMA} {query}");
+            assert!(!fires(&query, "E2008"), "{query}: {:?}", codes(&query));
+        }
+    }
+
+    #[test]
+    fn a_type_constructor_handed_an_unconvertible_constant_is_2008() {
+        // The function spelling of a cast, and the same engine error.
+        for query in [
+            "RETURN type::int('abc');",
+            "RETURN type::float('abc');",
+            "RETURN type::datetime('not-a-date');",
+            "RETURN type::duration('5 apples');",
+            "RETURN type::record('nope');",
+        ] {
+            assert!(fires(query, "E2008"), "{query}: {:?}", codes(query));
+        }
+        for query in [
+            "RETURN type::int('42');",
+            "RETURN type::float('4.2');",
+            "RETURN type::datetime('2024-01-01T00:00:00Z');",
+            "RETURN type::duration('5h');",
+            "RETURN type::record('user:1');",
+            // Two arguments: the table is named separately, so the id half
+            // needs no `:` of its own.
+            "RETURN type::record('person', 'a');",
+            // A runtime value is never guessed at.
+            "RETURN type::int($n);",
+        ] {
+            assert!(!fires(query, "E2008"), "{query}: {:?}", codes(query));
+        }
     }
 
     #[test]

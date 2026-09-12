@@ -16,6 +16,20 @@ RETURN <ghost> 1;
 RETURN <int> 'abc';
 RETURN <duration> true;
 
+-- 2008: record tables that cannot overlap ("Could not cast into
+-- `record<person>` using input `account:…`"), and the two collection rows —
+-- an object is not an array and an array is not an object, whatever is in it.
+SELECT <record<person>> author FROM article WHERE id = article:hello;
+RETURN <array> 'abc';
+RETURN <object> 5;
+
+-- 2008: the `type::` constructors are the function spelling of a cast, and
+-- fail with the same message ("Could not cast into `int` using input `'abc'`").
+RETURN type::int('abc');
+RETURN type::datetime('not-a-date');
+RETURN type::duration('5 apples');
+RETURN type::record('nope');
+
 -- 2012: a body that does not return what it declares.
 DEFINE FUNCTION fn::bad::returns_int() -> string { RETURN 1; };
 
