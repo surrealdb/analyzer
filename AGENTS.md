@@ -117,6 +117,37 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     even though the engine rejects both of those queries outright. A bare count
     also hides the worst case — one gained plus one lost reads as no change.
 
+  - `tools/type-oracle` — the **type oracle**, and the only harness that can say
+    whether an inferred type is *true*. Everything above proves inference is
+    stable or not degrading; a snapshot of a wrong answer is still a green test.
+    The oracle takes the `response_kind` the analyzer infers for a statement,
+    takes the `Value` SurrealDB actually returns for that same statement from an
+    embedded `kv-mem` engine, and asks whether the value **inhabits** the kind
+    (`Value::is_kind`, the engine's own relation — with one divergence: a
+    missing object key is read as `NONE`, because SurrealDB does not store a
+    NONE field). Two sources: SurrealDB's own `language-tests/tests/**` corpus,
+    whose `[[test.results]]` entries line up 1:1 with `AnalysisOutput.statements`,
+    and the vendored corpus, executed instead of only analyzed. Run
+    `scripts/type-oracle.sh check`; after triaging, `scripts/type-oracle.sh
+    update`. It needs a SurrealDB checkout at the **pinned tag `v3.2.3`**
+    (`SURREALDB_REPO=…`, or a sibling `../surrealdb`) matching the engine version
+    the crate depends on and the baseline was generated against.
+
+    Like `scripts/oracle.py` this is a **triage gate, not a count**:
+    `tools/type-oracle/baseline.txt` records every mismatch with a verdict
+    (`BUG` — the observed value contradicts the inferred kind, a TODO on us;
+    `expected` — the engine's behaviour here is not knowable statically). A NEW
+    or UNTRIAGED mismatch fails; one that DISAPPEARED is reported so it can be
+    deleted, because fixing an inference bug is *supposed* to move the number.
+    It also counts, without gating, what the oracle cannot yet assert on —
+    statements with no inferred kind, and files the analyzer rejects that the
+    engine runs cleanly (false positives, a negative-gate backlog).
+
+    It lives in its own workspace with its own `Cargo.lock`, outside
+    `crates/`, on purpose: the embedded engine drags `surrealdb-core` and about
+    two gigabytes of debug rlib behind it, and `cargo test --workspace` must
+    never build any of that. CI runs it as a separate job.
+
   - `crates/lsp/tests/stdio.rs` — spawns the **real** `surrealql-analyzer-lsp` binary
     and asserts on hover, inlay hints, completion and diagnostics at specific
     cursor positions. `crates/lsp/tests/backend.rs` drives the service in-process

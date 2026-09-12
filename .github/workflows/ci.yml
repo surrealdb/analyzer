@@ -57,3 +57,63 @@ jobs:
       # page fell 88 codes behind the catalog once already.
       - name: Diagnostics page is in sync with the catalog
         run: pnpm run docs:diagnostics:check
+
+  # The type oracle is the only check that can say whether an inferred type is
+  # *true*: it compares the analyzer's response kinds against the values an
+  # embedded SurrealDB returns for the same statements. It is a separate job
+  # because it builds the engine (surrealdb-core, ~2 GB of debug rlib) and has a
+  # dependency the main gate does not — a corpus from another repository — so a
+  # flake here is visible instead of blocking `build · test · lint`.
+  type-oracle:
+    name: type oracle · inferred kinds vs the engine
+    runs-on: ubuntu-latest
+    continue-on-error: false
+    env:
+      # The oracle's dependency tree is not warning-clean under someone else's
+      # RUSTFLAGS, and `-D warnings` there would fail on third-party code. The
+      # tool itself is linted explicitly below, which is what we control.
+      RUSTFLAGS: ""
+    steps:
+      - name: Check out surrealql-analyzer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned to the tag matching the engine version tools/type-oracle depends
+      # on and the version tools/type-oracle/baseline.txt was generated against.
+      # Bumping either is deliberate: an engine that returns a different shape
+      # is a finding, and the baseline diff is the report. Sparse and shallow —
+      # only the .surql corpus is read.
+      # Outside the checkout, so the analyzer's own working tree stays clean.
+      - name: Check out the SurrealDB language tests (v3.2.3)
+        run: |
+          git clone --depth 1 --branch v3.2.3 --filter=blob:none --sparse \
+            https://github.com/surrealdb/surrealdb "$RUNNER_TEMP/surrealdb"
+          git -C "$RUNNER_TEMP/surrealdb" sparse-checkout set language-tests/tests
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: tools/type-oracle
+
+      - name: Format check
+        working-directory: tools/type-oracle
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: tools/type-oracle
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test the harness itself
+        working-directory: tools/type-oracle
+        run: cargo test
+
+      # Every mismatch must carry a verdict. A new one fails; one that stopped
+      # firing is reported, not failed.
+      - name: Every mismatch is accounted for
+        run: scripts/type-oracle.sh check
+        env:
+          SURREALDB_REPO: ${{ runner.temp }}/surrealdb

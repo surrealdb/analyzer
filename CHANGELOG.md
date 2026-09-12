@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Added — a type oracle: is an inferred type *true*?
+
+Every harness we had proves inference is stable (`precision_snapshot.rs`) or
+not degrading (`any_ratchet.rs`, `narrowing_floor.rs`). None of them can tell a
+right answer from a wrong one — a snapshot of a wrong type is a green test.
+`tools/type-oracle` closes that: it takes the `response_kind` inferred for a
+statement, takes the `Value` an embedded SurrealDB returns for that same
+statement, and asks whether the value **inhabits** the kind. The relation is
+`Value::is_kind`, the engine's own, so it cannot drift from the engine; the one
+divergence is that a missing object key is read as `NONE`, because SurrealDB
+does not store a NONE field.
+
+Two sources, both already maintained by someone: SurrealDB's own
+`language-tests/tests/**`, whose `[[test.results]]` entries line up 1:1 with
+`AnalysisOutput.statements`, and the analyzer's vendored corpus, executed
+instead of only analyzed. The first run over 1,916 language-test files and 35
+corpus files compared 3,072 statements and found **188 statements where the
+value SurrealDB returns does not inhabit the kind we infer** — a stale
+`EXPLAIN` plan shape, range slices read as an index, indexing treated as total,
+literal-array lengths leaking through `array::fold`/`fill`/`transpose`,
+`crypto::joaat` typed `string` when it returns an int, `RETURN $before` read as
+a projection key, a parenthesised multi-edge traversal left as an object key,
+and more. All 188 are triaged in `tools/type-oracle/baseline.txt`.
+
+Run it with `scripts/type-oracle.sh check`. Like `scripts/oracle.py`, it is a
+triage gate and not a count: a new or untriaged mismatch fails, one that stopped
+firing is reported so the line can be deleted. It lives in its own workspace so
+that `cargo test --workspace` never builds the embedded engine, and runs as its
+own CI job against a pinned `v3.2.3` corpus.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the
