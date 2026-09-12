@@ -1,8 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "rootDir": ".",
-    "types": ["svelte"]
-  },
-  "include": ["src", "test", "test-d", "svelte.config.js"]
-}

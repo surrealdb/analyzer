@@ -5,8 +5,6 @@ members = [
     "crates/diagnostics",
     "crates/embed",
     "crates/lsp",
-    "crates/macros",
-    "crates/rs",
     "crates/syntax",
     "crates/tree-sitter-surrealql",
     "crates/wasm",
