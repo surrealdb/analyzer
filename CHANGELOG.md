@@ -58,6 +58,27 @@ server is unchanged and remains the one binary this repository releases.
   (the `[sources]` layout is SurrealKit's to know). `scripts/oracle.py` runs the
   corpus through `cargo run --example check_json` instead of a binary.
 
+### Added — diagnostics found by probing, verified on SurrealDB 3.2.3
+
+- **E4031** — a payload `id` that disagrees with the statement's record target
+  (`CREATE p:1 CONTENT { id: p:2 }`); the engine refuses the write outright.
+- **W4032** — `ORDER BY`/`LIMIT`/`START` on a single record id: `START` skips
+  the only row and the statement returns nothing.
+- **W7006** now covers the set operators handed a scalar (`tags CONTAINSANY
+  'x'`): the ANY/ALL forms are always false, the NONE forms always true.
+- **E1033** now covers `REFERENCE` on a non-record type, which the engine
+  rejects.
+- **E1012** now covers the analyzer a `FULLTEXT`/`SEARCH ANALYZER` index names —
+  the engine accepts the definition and fails only on first search.
+- **E8002** now covers `MTREE` and the bare `<|k|>` KNN operator (with a
+  configured 3.x target); E1027's message names HNSW/FULLTEXT instead.
+- **W7012** reaches `DEFINE EVENT … THEN` bodies (blocking calls and `SLEEP`).
+
+### Fixed
+
+- `sleep(1s)` no longer reports E5001: the builtin was registered only under
+  `sleep::sleep`, a spelling SurrealQL does not have.
+
 ### Changed — the project is now the SurrealQL Analyzer
 
 SurrealGuard has been renamed to the **SurrealQL Analyzer** and moved to
