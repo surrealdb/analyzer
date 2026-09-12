@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added — diagnostics (batch 2)
+
+Every entry below was established against a live SurrealDB 3.2.3; each
+message quotes the engine text it predicts.
+
+- **1022 is an error, and says what the engine actually does.** A plain
+  redefinition does not "silently replace the earlier one" — SurrealDB 3.2
+  fails the statement, one message per kind: `The table 'user' already
+  exists`, and likewise for `field`, `index`, `event`, `function`, `param`
+  and `analyzer` (all seven verified). The code moves from Warning/Warn to
+  Error/Deny and the message names the engine's own text; the help offers
+  both spellings the engine accepts, `OVERWRITE` (replace) and `IF NOT
+  EXISTS` (keep the first), where it used to offer only the first.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

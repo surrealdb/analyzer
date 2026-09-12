@@ -1326,8 +1326,12 @@ fn hoist_functions(
             crate::analyzer::schema::define::emit_duplicate_definition(
                 &mut ctx,
                 name_span,
-                &format!("`{name}`"),
-                &format!("DEFINE FUNCTION OVERWRITE {name}(...)"),
+                &crate::analyzer::schema::define::Redefined {
+                    kind: "function",
+                    name: &name,
+                    subject: &format!("`{name}`"),
+                    redefine: &format!("DEFINE FUNCTION OVERWRITE {name}(...)"),
+                },
                 existing,
             );
         }

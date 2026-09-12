@@ -38,7 +38,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (1002, "a field reference names a declared field of its row's table (schemafull only; FLEXIBLE subtrees exempt)", Severity::Error, Deny),
     (1012, "a schema-object reference names a known object of that kind", Severity::Error, Deny),
     (1021, "REMOVE removes something that exists", Severity::Warning, Warn),
-    (1022, "a definition does not silently redefine (OVERWRITE states intent)", Severity::Warning, Warn),
+    (1022, "a definition does not redefine (OVERWRITE/IF NOT EXISTS state the intent)", Severity::Error, Deny),
     (1023, "FETCH names something that can hold records", Severity::Error, Warn),
     (1024, "SPLIT names a collection field", Severity::Error, Warn),
     (1025, "a subfield is declared under an object-shaped parent", Severity::Error, Deny),

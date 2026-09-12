@@ -19,8 +19,12 @@ pub(crate) fn analyze_define_param(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
             super::emit_duplicate_definition(
                 ctx,
                 stmt.name.span,
-                &format!("`${}`", stmt.name.node),
-                &format!("DEFINE PARAM OVERWRITE ${}", stmt.name.node),
+                &super::Redefined {
+                    kind: "param",
+                    name: &format!("${}", stmt.name.node),
+                    subject: &format!("`${}`", stmt.name.node),
+                    redefine: &format!("DEFINE PARAM OVERWRITE ${}", stmt.name.node),
+                },
                 existing,
             );
         }

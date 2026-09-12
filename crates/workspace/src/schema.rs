@@ -2174,7 +2174,7 @@ mod tests {
         assert_eq!(duplicates.len(), 1);
         assert_eq!(
             duplicates[0].message(),
-            "`person` is already defined; this DEFINE silently replaces the earlier one"
+        "`person` is already defined; SurrealDB rejects this DEFINE with \"The table 'person' already exists\""
         );
     }
 

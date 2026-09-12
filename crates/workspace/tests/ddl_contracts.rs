@@ -107,7 +107,7 @@ fn a_second_definition_without_a_flag_is_a_duplicate() {
         assert!(
             finding
                 .message()
-                .ends_with("is already defined; this DEFINE silently replaces the earlier one"),
+                .contains("is already defined; SurrealDB rejects this DEFINE with \"The "),
             "{kind}: {}",
             finding.message()
         );

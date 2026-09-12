@@ -390,9 +390,14 @@ fn check_field_definition(
                     stmt.path.span,
                 ),
                 1022,
-                format!("`{field_key}` is already defined on `{}`", stmt.table.node),
+                format!(
+                    "`{field_key}` is already defined on `{}`; SurrealDB rejects this DEFINE with \"The field '{field_key}' already exists\"",
+                    stmt.table.node
+                ),
             )
-            .with_help("use `DEFINE FIELD OVERWRITE` to redefine it intentionally");
+            .with_help(
+                "write `DEFINE FIELD OVERWRITE` to replace the earlier definition, or add `IF NOT EXISTS` to keep it",
+            );
             if let Some(existing) = table.fields.get(&field_key) {
                 finding = finding.with_related(
                     existing.name_span.clone(),

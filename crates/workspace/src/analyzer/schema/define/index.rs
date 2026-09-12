@@ -68,11 +68,15 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         super::emit_duplicate_definition(
             ctx,
             stmt.name.span,
-            &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
-            &format!(
-                "DEFINE INDEX OVERWRITE {} ON {}",
-                stmt.name.node, stmt.table.node
-            ),
+            &super::Redefined {
+                kind: "index",
+                name: &stmt.name.node,
+                subject: &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
+                redefine: &format!(
+                    "DEFINE INDEX OVERWRITE {} ON {}",
+                    stmt.name.node, stmt.table.node
+                ),
+            },
             existing,
         );
     }

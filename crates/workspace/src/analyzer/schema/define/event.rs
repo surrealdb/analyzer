@@ -193,11 +193,15 @@ fn check_event_references(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineEvent
             super::emit_duplicate_definition(
                 ctx,
                 stmt.name.span,
-                &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
-                &format!(
-                    "DEFINE EVENT OVERWRITE {} ON {}",
-                    stmt.name.node, stmt.table.node
-                ),
+                &super::Redefined {
+                    kind: "event",
+                    name: &stmt.name.node,
+                    subject: &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
+                    redefine: &format!(
+                        "DEFINE EVENT OVERWRITE {} ON {}",
+                        stmt.name.node, stmt.table.node
+                    ),
+                },
                 existing,
             );
         }

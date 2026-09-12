@@ -69,6 +69,11 @@ const GUARDS: &[Guard] = &[
         "REBUILD INDEX user_vec ON user;",
     ),
     guard(
+        1022,
+        "DEFINE TABLE post SCHEMAFULL;",
+        "DEFINE TABLE OVERWRITE post SCHEMAFULL;",
+    ),
+    guard(
         1025,
         "DEFINE FIELD age.part ON user TYPE int;",
         "DEFINE FIELD prefs ON user TYPE object; DEFINE FIELD prefs.theme ON user TYPE string;",
