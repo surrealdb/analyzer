@@ -13,7 +13,7 @@ description = "TypeScript type generation from SurrealQL Analyzer analysis resul
 
 [dependencies]
 surrealdb-types.workspace = true
-surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
+surrealql-analyzer-workspace = { path = "../workspace", version = "0.6.0" }
 
 [dev-dependencies]
 # `tests/golden.rs` runs the CLI's generation path over a fixture workspace:
@@ -21,9 +21,9 @@ surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
 # host-parameter prefix restated here still matches its definition), and the
 # schema/query partition follows the same globs `surrealql-analyzer.toml` declares.
 glob = "0.3"
-surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.5.3" }
-surrealql-analyzer-embed = { path = "../embed", version = "0.5.3" }
-surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
+surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.6.0" }
+surrealql-analyzer-embed = { path = "../embed", version = "0.6.0" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.6.0" }
 
 [lints]
 workspace = true

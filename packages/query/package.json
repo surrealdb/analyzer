@@ -1,6 +1,6 @@
 {
   "name": "@surrealdb/analyzer-query",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Framework-agnostic reactive core for SurrealQL Analyzer: cache, dedup, live reconciliation, SSR hydration.",
   "type": "module",
   "license": "MIT OR Apache-2.0",
@@ -34,7 +34,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@surrealdb/analyzer-client": "0.5.3"
+    "@surrealdb/analyzer-client": "0.6.0"
   },
   "peerDependencies": {
     "surrealdb": "^2.0.8"

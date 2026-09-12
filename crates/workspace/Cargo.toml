@@ -13,8 +13,8 @@ description = "SurrealQL Analyzer workspace, config, and source registry layer"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.5.3" }
-surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
+surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.6.0" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.6.0" }
 surrealdb-types.workspace = true
 toml = "0.8"
 

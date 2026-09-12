@@ -16,10 +16,10 @@ name = "surrealql-analyzer-lsp"
 path = "src/main.rs"
 
 [dependencies]
-surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.5.3" }
-surrealql-analyzer-embed = { path = "../embed", version = "0.5.3" }
-surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
-surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
+surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.6.0" }
+surrealql-analyzer-embed = { path = "../embed", version = "0.6.0" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.6.0" }
+surrealql-analyzer-workspace = { path = "../workspace", version = "0.6.0" }
 tower-lsp = "0.20"
 # Dynamic capability registration carries its options as a raw JSON value.
 serde_json = "1"

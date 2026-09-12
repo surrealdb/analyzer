@@ -108,6 +108,12 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     with a verdict, and the gate reports what is NEW (needs triage) and what is
     GONE (a check stopped firing — usually a regression). Run
     `scripts/oracle.py check`; after triaging, `scripts/oracle.py update`.
+    The corpus path comes from `SG_ORACLE_CORPUS` (the built-in default is one
+    machine's). Without a corpus the gate *fails* — a missing directory and a
+    mistyped path look identical, so a pass would mean nothing; set
+    `SG_ORACLE_SKIP_MISSING=1` to make it print one line and exit 0 instead, or
+    run `scripts/release.sh check --no-oracle`, which skips the step and says so
+    loudly. Neither belongs in a run that gates a release.
 
     **Do not treat the finding count as the invariant.** That corpus is not
     all-valid — it contains genuinely broken SurrealQL — so the count *should*

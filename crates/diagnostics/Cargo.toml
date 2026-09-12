@@ -13,7 +13,7 @@ description = "Structured findings, severities, lint policy, and suppressions fo
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.6.0" }
 
 [lints]
 workspace = true
