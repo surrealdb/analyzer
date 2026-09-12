@@ -493,16 +493,28 @@ mod tests {
 
     // --- `$auth` seed + narrowing (design §4 Phase 1) ----------------------
 
-    /// `$auth` seeds as `option<record>` in every env, so a callee wanting a
-    /// concrete/non-optional record needs a guard to clear the mismatch.
+    /// `$auth` seeds as `option<record>` in every env; the narrowing tests
+    /// below prove a guard tightens it, and a callee wanting something that is
+    /// not a record at all proves the seed reaches a `fn::` body.
     const AUTH_TABLES: &str = "DEFINE TABLE user SCHEMAFULL;\n\
          DEFINE FUNCTION fn::user_only($u: record<user>) { RETURN true; };\n\
-         DEFINE FUNCTION fn::any_record($r: record) { RETURN true; };\n";
+         DEFINE FUNCTION fn::any_record($r: record) { RETURN true; };\n\
+         DEFINE FUNCTION fn::str_only($s: string) { RETURN true; };\n";
 
     #[test]
-    fn auth_seeds_as_option_record_so_an_unguarded_record_call_fires() {
-        // Baseline: `$auth : option<record>` is not assignable to `record` —
-        // proving the seed carries the NONE and reaches a `fn::` body.
+    fn auth_seeds_as_option_record_and_reaches_a_record_parameter_unguarded() {
+        // The seed still carries the NONE — root/NS/DB/JWT-without-subject
+        // sessions have no subject and the narrowing below depends on it —
+        // and that is asserted against the seeding source directly, because it
+        // is deliberately no longer observable as a finding: `none | record`
+        // is the analyzer's own placeholder for an access method it does not
+        // model, so `crate::kinds::kind_coerces_to` lets it reach a record
+        // destination rather than billing the user for that uncertainty.
+        assert_eq!(
+            crate::context_params::session_context_params().get("auth"),
+            Some(&Kind::option(Kind::Record(Vec::new()))),
+            "the seed must keep the NONE the guards below strip"
+        );
         let unguarded = format!(
             "{AUTH_TABLES}\
              DEFINE FUNCTION fn::caller() {{\n\
@@ -511,9 +523,19 @@ mod tests {
         );
         assert_eq!(
             code_count(&unguarded, 5002),
-            1,
-            "option<record> is not record"
+            0,
+            "the engine coerces $auth into a record parameter"
         );
+
+        // A destination that is not a record is a real mismatch, and that the
+        // seed reaches the body at all is what makes it report.
+        let wrong = format!(
+            "{AUTH_TABLES}\
+             DEFINE FUNCTION fn::caller() {{\n\
+                RETURN fn::str_only($auth);\n\
+             }};"
+        );
+        assert_eq!(code_count(&wrong, 5002), 1, "$auth is not a string");
     }
 
     #[test]
