@@ -73,6 +73,7 @@ export interface Tables {
  * the call, carrying its own remedy.
  */
 export type Queries = {
+  "SELECT name, age\nFROM person\nWHERE age > 21": { result: [Array<{ age: number; name: string }>]; params: Record<string, never> };
   "SELECT id, name, joined FROM person": { result: [Array<{ id: RecordId<"person">; joined: Date; name: string }>]; params: Record<string, never> };
   "SELECT name FROM person WHERE team = $team": { result: [Array<{ name: string }>]; params: { team: RecordId<"team"> } };
   "SELECT name, nick FROM person": { result: [Array<{ name: string; nick?: string }>]; params: Record<string, never> };

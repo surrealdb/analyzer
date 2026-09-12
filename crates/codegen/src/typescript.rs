@@ -436,13 +436,41 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
+/// One string, as a TypeScript double-quoted literal.
+///
+/// Every character a string literal cannot hold raw is escaped, not just the
+/// three that are common. A query key is arbitrary user text, and the three
+/// classes below each produced a file that does not parse — reported as
+/// TS1002 *inside the generated file*, after `generate` said it succeeded:
+///
+/// * `\r`, from a host file with CRLF line endings. (The key itself no longer
+///   carries one — see `QueryTypes::from_analysis` — but a `\r` can still
+///   reach here inside a literal string in the query.)
+/// * U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are line
+///   terminators in JavaScript and so end a string literal exactly as a
+///   newline does.
+/// * the rest of the C0 controls and DEL, which the grammar does allow raw but
+///   which no reader or diff tool survives; they go out as `\u00XX`.
 fn ts_string(text: &str) -> String {
-    format!(
-        "\"{}\"",
-        text.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-    )
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            control if control.is_control() && (control as u32) < 0x80 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Whether the rendered body names a value type, so the import can carry
@@ -778,6 +806,29 @@ mod tests {
             params_object(&params),
             "{ nick: undefined | string; status?: string }"
         );
+    }
+
+    /// A key is arbitrary user text, and three classes of character used to
+    /// end the generated string literal early — a file that does not parse,
+    /// reported inside the generated file after `generate` said it succeeded.
+    #[test]
+    fn every_character_a_string_literal_cannot_hold_is_escaped() {
+        assert_eq!(ts_string("plain"), "\"plain\"");
+        assert_eq!(ts_string("say \"hi\""), "\"say \\\"hi\\\"\"");
+        assert_eq!(ts_string("back\\slash"), "\"back\\\\slash\"");
+        assert_eq!(ts_string("one\ntwo"), "\"one\\ntwo\"");
+        // A CR from a CRLF host file, a tab, and the two Unicode line
+        // terminators JavaScript recognises inside a string.
+        assert_eq!(ts_string("one\r\ntwo"), "\"one\\r\\ntwo\"");
+        assert_eq!(ts_string("a\tb"), "\"a\\tb\"");
+        assert_eq!(ts_string("a\u{2028}b"), "\"a\\u2028b\"");
+        assert_eq!(ts_string("a\u{2029}b"), "\"a\\u2029b\"");
+        // The rest of the C0 controls, and DEL.
+        assert_eq!(ts_string("a\u{0}b"), "\"a\\u0000b\"");
+        assert_eq!(ts_string("a\u{1b}b"), "\"a\\u001bb\"");
+        assert_eq!(ts_string("a\u{7f}b"), "\"a\\u007fb\"");
+        // Non-ASCII text is not a hazard and stays readable.
+        assert_eq!(ts_string("naïve → ok"), "\"naïve → ok\"");
     }
 
     #[test]

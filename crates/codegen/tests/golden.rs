@@ -139,6 +139,9 @@ fn every_embedded_query_reaches_the_registry() {
     for (_, query, _) in &queries {
         // A hole is keyed by the name the analyzer bound it to (`$__host0`,
         // `$__host1`, …), which is what the client reconstructs at call time.
+        // Line endings are cooked to LF for the same reason the document does
+        // it: extraction reads the file's bytes, and the runtime is handed a
+        // template literal's cooked value.
         let mut key = String::new();
         for (index, part) in query.parts().iter().enumerate() {
             if index > 0 {
@@ -150,13 +153,17 @@ fn every_embedded_query_reaches_the_registry() {
             }
             key.push_str(part);
         }
+        let key = key.replace("\r\n", "\n").replace('\r', "\n");
         assert!(
-            module.contains(&format!("  \"{}\": {{", key.replace('"', "\\\""))),
+            module.contains(&format!(
+                "  \"{}\": {{",
+                key.replace('"', "\\\"").replace('\n', "\\n")
+            )),
             "embedded query is missing from the generated registry: {key}"
         );
     }
     assert!(
-        queries.len() >= 15,
+        queries.len() >= 16,
         "the fixture host file should carry the whole spread of query forms, found {}",
         queries.len()
     );
@@ -214,7 +221,32 @@ fn the_fixture_document_carries_the_schema_and_every_query() {
 
     // Every embedded query is described, including the ones whose shape the
     // TypeScript spells unusually.
-    assert_eq!(document.queries.len(), 15);
+    assert_eq!(document.queries.len(), 16);
+
+    // The CRLF fixture's key is the COOKED text — LF — because that is the
+    // string the runtime hands the client. `src/crlf.ts` really is stored with
+    // CRLF endings (`.gitattributes` beside it keeps them), so this fails the
+    // moment normalisation is dropped.
+    assert!(
+        document
+            .queries
+            .iter()
+            .any(|query| query.text == "SELECT name, age\nFROM person\nWHERE age > 21"),
+        "the CRLF host file must key by its cooked text: {:?}",
+        document
+            .queries
+            .iter()
+            .map(|query| query.text.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        document
+            .queries
+            .iter()
+            .all(|query| !query.text.contains('\r')),
+        "no key may carry a CR: it matches nothing at run time and ends the \
+         generated string literal early"
+    );
     let multi = document
         .queries
         .iter()

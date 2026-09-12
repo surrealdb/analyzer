@@ -55,6 +55,22 @@ describe("the generated golden", () => {
     expect(bound.params).toEqual({ team: new RecordId("team", "red") });
   });
 
+  it("keys a multi-line query by its COOKED text, whatever the file's endings", () => {
+    // `crates/codegen/tests/fixtures/typecheck/src/crlf.ts` is stored with CRLF
+    // line endings, so extraction saw `\r\n` here. THIS file has LF endings, and
+    // a template literal is cooked either way — every line terminator becomes
+    // `\n` before the string reaches the client. The two must agree, and both
+    // halves of that are checked here: the literal below has to be a key of
+    // `Queries` or `defineQuery` refuses to compile, and its runtime text has
+    // to be the same bytes.
+    const wrapped = defineQuery(`SELECT name, age
+FROM person
+WHERE age > 21`);
+    expect(wrapped.text).toBe("SELECT name, age\nFROM person\nWHERE age > 21");
+    expect(wrapped.text).not.toContain("\r");
+    expect(wrapped.key).toBe(wrapped.text);
+  });
+
   it("survives destructuring, because the methods do not read `this`", () => {
     const { defineQuery: define } = db;
     expect(define("SELECT id, name, age FROM person").text).toBe(

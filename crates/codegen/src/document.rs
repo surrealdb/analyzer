@@ -242,6 +242,7 @@ impl QueryTypes {
     /// rendered module with `tsc` — exercises the same code path a user's
     /// `surrealkit generate` does, not a re-implementation of it.
     pub fn from_analysis(parts: Vec<String>, output: &AnalysisOutput) -> Self {
+        let parts: Vec<String> = parts.iter().map(|part| normalize_newlines(part)).collect();
         Self {
             text: join_with_holes(&parts),
             parts,
@@ -253,6 +254,41 @@ impl QueryTypes {
             params: output.inferred_params.iter().map(param_types).collect(),
         }
     }
+}
+
+/// CRLF and lone CR collapsed to LF, because that is what the runtime will ask
+/// for.
+///
+/// A query key must equal, byte for byte, the string the host language hands
+/// the client at run time. For a template literal that string is the *cooked*
+/// value, and cooking normalises every line-terminator sequence to LF — so in
+/// a host file saved with CRLF endings, a multi-line query reaches `db.query`
+/// with `\n` while extraction (which reads the file's bytes) sees `\r\n`. A key
+/// carrying the `\r` matches nothing at run time, and the same `\r` ends the
+/// generated string literal early, so the file does not even parse.
+///
+/// This is deliberately **not** done in `crates/embed`: its spans index the
+/// original bytes, and the language server maps findings back through them, so
+/// rewriting the text there would move every diagnostic by one byte per line.
+/// The key is the only thing that needs the cooked spelling, so the key is the
+/// only thing that gets it.
+fn normalize_newlines(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\r' {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            out.push('\n');
+        } else {
+            out.push(character);
+        }
+    }
+    out
 }
 
 /// Rebuild the analyzed text from a template's static parts, restoring the
@@ -467,6 +503,27 @@ mod tests {
         let parsed: TypesDocument = serde_json::from_str(&json).expect("and deserializes");
 
         assert_eq!(parsed, document);
+    }
+
+    /// A host file saved with CRLF endings must produce the key the runtime
+    /// asks for, which is the template literal's cooked value — LF.
+    #[test]
+    fn a_crlf_host_file_keys_by_the_cooked_text() {
+        assert_eq!(
+            normalize_newlines("SELECT name\r\nFROM person"),
+            "SELECT name\nFROM person"
+        );
+        // A lone CR is a line terminator too, and cooks to LF just the same.
+        assert_eq!(normalize_newlines("a\rb"), "a\nb");
+        assert_eq!(normalize_newlines("a\nb"), "a\nb");
+        // …and the joined key carries the normalised parts, holes and all.
+        assert_eq!(
+            join_with_holes(&[
+                normalize_newlines("SELECT name\r\nFROM person WHERE age > "),
+                normalize_newlines("\r\n")
+            ]),
+            "SELECT name\nFROM person WHERE age > $__host0\n"
+        );
     }
 
     #[test]
