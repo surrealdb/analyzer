@@ -49,18 +49,29 @@ pub(crate) fn insert_response_kind(stmt: &ast::InsertStmt, ctx: &mut AnalysisCon
 /// diagnostic would have nothing to say about it.
 ///
 /// The grammar accepts both orders so this can be the message. On a live
-/// 3.2.3, `INSERT RELATION IGNORE INTO likes {…}` inserts the edge and
-/// `INSERT IGNORE RELATION INTO likes {…}` is ``Unexpected token `INTO`,
-/// expected Eof`` — a parse error that is fatal to the whole source, so
+/// 3.2.3, `INSERT RELATION IGNORE INTO likes {…}` inserts the edge, and the
+/// reversed order is a parse error that is fatal to the whole source — so
 /// refusing it here would silence every other finding in the file to say
 /// less.
+///
+/// The engine stops at whatever follows the reversed pair, so the token it
+/// quotes varies with the statement (`INTO likes {…}` gives ``Unexpected
+/// token `INTO`, expected Eof``; the `INTO`-less
+/// `INSERT IGNORE RELATION {…}` gives ``Unexpected token `{`, expected
+/// Eof``). Only `expected Eof` is invariant, so the help says that and does
+/// not put words in the engine's mouth.
 fn check_modifier_order(ctx: &mut AnalysisContext<'_>, stmt: &ast::InsertStmt) {
     let (Some(ignore), Some(relation)) = (stmt.ignore, stmt.relation) else {
         return;
     };
     if ignore.start() < relation.start() {
+        // Guarded above: IGNORE starts before RELATION starts, and a range
+        // never ends before it starts, so `start <= end` holds by
+        // construction. There is no sane narrower span to fall back to — the
+        // finding is about the pair — so the invariant is asserted, not
+        // papered over.
         let range = surrealql_analyzer_syntax::span::ByteRange::new(ignore.start(), relation.end())
-            .unwrap_or(ignore);
+            .expect("IGNORE starts before RELATION, which starts before it ends");
         let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), range);
         ctx.emit(
             surrealql_analyzer_diagnostics::catalog::finding(
@@ -71,8 +82,8 @@ fn check_modifier_order(ctx: &mut AnalysisContext<'_>, stmt: &ast::InsertStmt) {
                     .to_string(),
             )
             .with_help(
-                "write `INSERT RELATION IGNORE ...` — 3.2.3 answers this order with \
-                 \"Unexpected token `INTO`, expected Eof\""
+                "write `INSERT RELATION IGNORE ...` — on this order the engine stops at the \
+                 token after the reversed pair and reports it as \"expected Eof\""
                     .to_string(),
             ),
         );

@@ -181,30 +181,43 @@ fn show_changes_with_since_is_silent() {
     }
 }
 
-/// 3.2.3 takes `INSERT RELATION IGNORE`, in that order, and answers the
-/// reverse with ``Unexpected token `INTO`, expected Eof`` — a token error
-/// pointing at `INTO`, which says nothing about the two words before it. The
-/// grammar takes both orders so 4030 can name the order instead.
+/// 3.2.3 takes `INSERT RELATION IGNORE`, in that order, and refuses the
+/// reverse with a token error pointing at whatever follows the pair, which
+/// says nothing about the two words before it. The grammar takes both orders
+/// so 4030 can name the order instead.
+///
+/// `INTO` is optional, so the engine's quoted token varies —
+/// ``Unexpected token `INTO`, expected Eof`` with it, ``Unexpected token
+/// `{`, expected Eof`` without — and both shapes must raise 4030 with help
+/// that is true of each.
 #[test]
 fn insert_with_the_modifiers_reversed_parses_and_raises_4030() {
-    let query = "INSERT IGNORE RELATION INTO person { name: 'Ada' };";
-    assert_parses(query);
-    let finding = only(query, "E4030");
-    assert!(
-        finding.message().contains("`RELATION` before `IGNORE`"),
-        "unhelpful message: {}",
-        finding.message()
-    );
-    let help: String = finding
-        .help()
-        .iter()
-        .map(|help| help.message.clone())
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(
-        help.contains("expected Eof"),
-        "help should quote the engine's own error; got {help:?}"
-    );
+    for query in [
+        "INSERT IGNORE RELATION INTO person { name: 'Ada' };",
+        "INSERT IGNORE RELATION { name: 'Ada' };",
+    ] {
+        assert_parses(query);
+        let finding = only(query, "E4030");
+        assert!(
+            finding.message().contains("`RELATION` before `IGNORE`"),
+            "unhelpful message: {}",
+            finding.message()
+        );
+        let help: String = finding
+            .help()
+            .iter()
+            .map(|help| help.message.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            help.contains("expected Eof"),
+            "help should quote the engine's own error; got {help:?}"
+        );
+        assert!(
+            !help.contains("`INTO`"),
+            "help must not quote a token this statement may not contain; got {help:?}"
+        );
+    }
 }
 
 /// The order the engine takes, and each modifier on its own, stay silent —
