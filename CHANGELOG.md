@@ -15,10 +15,11 @@ history in surrealdb/surrealdb, and the three histories came out differently
   lex the word as a keyword. Nothing for 8002 or 8003 to name, so the rule
   goes.
 - **`PARALLEL` keeps parsing and now reports E8002.** The clause was real —
-  every 1.x and 2.x release takes it on SELECT/CREATE/UPDATE/UPSERT/DELETE/
-  RELATE — and was removed in 3.0.0 by surrealdb#6768 as a no-op. A 2.x user
-  migrating gets the removal named instead of a token error that collapses
-  the file. Reported when `analysis.surrealdb_version` is 3.0 or newer.
+  every 1.x and 2.x release takes it on all seven of SELECT/CREATE/UPDATE/
+  UPSERT/DELETE/RELATE/INSERT — and was removed in 3.0.0 by surrealdb#6768 as
+  a no-op. A 2.x user migrating gets the removal named instead of a token
+  error that collapses the file. Reported when `analysis.surrealdb_version` is
+  3.0 or newer.
 - **`INSERT RELATION IGNORE` parses, and the reverse reports the new E4030.**
   The engine takes `RELATION` before `IGNORE` and always has; the grammar had
   the two backwards, so the valid spelling failed to parse and the invalid one

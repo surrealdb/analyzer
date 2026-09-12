@@ -610,6 +610,7 @@ pub fn walk_insert<V: Visitor>(visitor: &mut V, insert: &InsertStmt) {
         data,
         on_duplicate_update,
         ret,
+        parallel: _,
     } = insert;
     if let Some(target) = target {
         visitor.visit_expr(target);

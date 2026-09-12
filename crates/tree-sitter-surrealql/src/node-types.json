@@ -4964,6 +4964,10 @@
           "named": true
         },
         {
+          "type": "ParallelClause",
+          "named": true
+        },
+        {
           "type": "Path",
           "named": true
         },

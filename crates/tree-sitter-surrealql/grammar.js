@@ -1316,6 +1316,12 @@ export default grammar({
 					),
 				),
 				optional($.ReturnClause),
+				// INSERT took PARALLEL like the other six statements —
+				// `syn/v1/stmt/insert.rs` and `syn/v2/parser/stmt/insert.rs`
+				// at v1.5.6, `syn/parser/stmt/insert.rs` through v2.3.x — and
+				// lost it with them in 3.0 (surrealdb#6768). Parsed so 8002
+				// can name the removal.
+				optional($.ParallelClause),
 			),
 		_insertSubquery: ($) => seq('(', $._subqueryStatement, ')'),
 		BulkInsert: ($) => seq('[', csep($.Object), ']'),

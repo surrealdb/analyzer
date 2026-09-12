@@ -268,6 +268,7 @@ impl Collected {
     fn insert(&mut self, insert: &InsertStmt) {
         self.opt_span("insert ignore", insert.ignore);
         self.opt_span("insert relation", insert.relation);
+        self.opt_span("parallel", insert.parallel);
         self.opt_expr(insert.target.as_ref());
         match &insert.data {
             InsertData::Values(values) => self.exprs(values),

@@ -109,7 +109,8 @@ accept them would have made us wrong.
 Net for this step: 319 entries → 315 valid (4 fragments out) + 7 rejected
 (4 fragments + 3 regex assertions), with 3 restored queries taking the place
 of the regex assertions. The six `ORDER BY count` entries added afterwards
-bring the committed sets to their current 320 and 8.
+brought the committed sets to 320 and 8; the three findings recorded below
+moved them to their current 319 and 11.
 
 ## Where the grammar is deliberately looser than the engine
 
@@ -120,8 +121,8 @@ Three upstream corpus cases are forms SurrealDB 3.2.3 refuses outright:
 | `KILL "plain-string"` | ``Unexpected token `a strand`, expected a UUID or a parameter`` | E2020 |
 | `SHOW CHANGES FOR TABLE person` | ``Unexpected token `;`, expected SINCE`` | E2021 |
 | `SHOW CHANGES FOR TABLE person LIMIT 10` | ``Unexpected token `LIMIT`, expected SINCE`` | E2021 |
-| `INSERT IGNORE RELATION INTO likes {…}` | ``Unexpected token `INTO`, expected Eof`` | E4030 |
-| `SELECT … PARALLEL` and the five other statements that took the clause | ``Unexpected token `PARALLEL`, expected Eof`` | E8002, with a target |
+| `INSERT IGNORE RELATION INTO likes {…}` | ``Unexpected token `INTO`, expected Eof`` (``…`{`…`` without the optional `INTO`) | E4030 |
+| `SELECT … PARALLEL` and the six other statements that took the clause | ``Unexpected token `PARALLEL`, expected Eof`` | E8002, with a target |
 
 We used to refuse them too. For a language server that is the wrong trade: a
 parse error is fatal to the whole source, so refusing one statement silences
@@ -222,15 +223,17 @@ grammar had to satisfy into one it must refuse. Valid 320 → 317, rejected
 
 ## PARALLEL was real, and is gone
 
-`ParallelClause` is wired into six statements (SELECT through
-`_modifierClause`, plus CREATE/UPDATE/UPSERT/DELETE/RELATE). 3.2.3 refuses
-every one: ``Unexpected token `PARALLEL`, expected Eof``, verified live on
-all six.
+`ParallelClause` is wired into seven statements (SELECT through
+`_modifierClause`, plus CREATE/UPDATE/UPSERT/DELETE/RELATE/INSERT). 3.2.3
+refuses every one: ``Unexpected token `PARALLEL`, expected Eof``, verified
+live on all seven.
 
 Unlike RATELIMIT the clause existed. `sql/statements/{create,delete,insert,
 relate,select,update,upsert}.rs` carry `parallel: bool` at every 1.x and
 2.x tag, and from 2.0 the token parser eats it in
-`syn/parser/stmt/<statement>.rs`. It was deleted by 6d8302029, *"Remove
+`syn/parser/stmt/<statement>.rs` — INSERT included, in both of 1.5.6's
+parsers (`syn/v1/stmt/insert.rs:38`, `syn/v2/parser/stmt/insert.rs:76`) and
+at `v2.3.7 crates/core/src/syn/parser/stmt/insert.rs:45`. It was deleted by 6d8302029, *"Remove
 unused `PARALLEL` clause. (#6768)"*, which landed between `v3.0.0-beta.2`
 (seven parser files still `self.eat(t!("PARALLEL"))`) and `v3.0.0-beta.3`
 (none do) — so the removal ships in **3.0.0**, with no replacement: the
@@ -239,7 +242,7 @@ commit removed it because it did nothing.
 That is what 8002 is for, so the clause keeps parsing and the version
 registry names the removal. Deleting the rule would answer a 2.x user
 migrating to 3.x with a token error that kills analysis of the whole file
-and explains nothing. The five non-SELECT statements dropped the clause
+and explains nothing. The six non-SELECT statements dropped the clause
 during lowering and so had no span to report on; they now carry
 `parallel: Option<ByteRange>` like `SelectStmt` does.
 

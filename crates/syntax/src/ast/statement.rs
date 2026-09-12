@@ -235,6 +235,10 @@ pub struct InsertStmt {
     pub on_duplicate_update: Vec<Assignment>,
     /// `RETURN` mode, if specified.
     pub ret: Option<Spanned<ReturnMode>>,
+    /// `PARALLEL` — the clause's span, when present. SurrealDB removed the
+    /// clause in 3.0; the grammar still accepts it so the analyzer can say so
+    /// (8002) instead of the file collapsing into a syntax error.
+    pub parallel: Option<ByteRange>,
 }
 
 /// INSERT's payload forms — distinct from the other mutations' `DataClause`

@@ -656,6 +656,7 @@ fn lower_insert(node: Node<'_>, text: &str) -> InsertStmt {
         data: InsertData::Values(Vec::new()),
         on_duplicate_update: Vec::new(),
         ret: None,
+        parallel: None,
     };
     let mut saw_into = false;
     let mut saw_values = false;
@@ -684,6 +685,7 @@ fn lower_insert(node: Node<'_>, text: &str) -> InsertStmt {
                 }
             }
             "ReturnClause" => stmt.ret = Some(lower_return_mode(child, text)),
+            "ParallelClause" => stmt.parallel = Some(node_range(child)),
             // `ON DUPLICATE KEY UPDATE a = 1, b += 2` — the grammar hands the
             // assignments to the statement directly; they amend the row
             // payload rather than replacing it.
@@ -1789,6 +1791,10 @@ mod tests {
                 "RELATE person:1->likes:1->post:1 PARALLEL;",
                 "RelateStatement",
             ),
+            (
+                "INSERT INTO person { name: 'A' } PARALLEL;",
+                "InsertStatement",
+            ),
         ] {
             let parsed = parse(query);
             let node =
@@ -1799,6 +1805,7 @@ mod tests {
                 Statement::Upsert(stmt) => stmt.parallel,
                 Statement::Delete(stmt) => stmt.parallel,
                 Statement::Relate(stmt) => stmt.parallel,
+                Statement::Insert(stmt) => stmt.parallel,
                 other => panic!("unexpected statement for `{query}`: {other:?}"),
             };
             let span = span.unwrap_or_else(|| panic!("`{query}` lost its PARALLEL span"));
