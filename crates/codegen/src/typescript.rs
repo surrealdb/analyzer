@@ -62,10 +62,48 @@ pub const CLIENT_PACKAGE: &str = "@surrealdb/analyzer-client";
 /// in a strict project at worst.
 const VALUE_TYPES: [&str; 5] = ["Decimal", "Duration", "GeoJSON", "RecordId", "Uuid"];
 
-/// Names the generated module defines itself, which a table's interface name
-/// must therefore not collide with.
-const RESERVED_NAMES: [&str; 7] = [
-    "Decimal", "Duration", "GeoJSON", "Queries", "RecordId", "Tables", "Uuid",
+/// Names a table's interface must not take.
+///
+/// Three groups, and all three are real: the names this module defines itself
+/// (`Tables`, `Queries`), the value types it imports (`RecordId`, `Uuid`, …),
+/// and the globals the emitted types are written in terms of. That last group
+/// is the one that bites — a table called `date`, `record` or `array`
+/// PascalCases to `Date`, `Record` or `Array`, and an interface of that name
+/// in the same file SHADOWS the global for every type below it. The file still
+/// compiles, and `joined: Date` now means the user's table. A `Person` whose
+/// `joined` is a `person` row is not a type error anyone will debug quickly,
+/// so the collision is resolved by suffix instead.
+///
+/// Everything `ts_type` can emit is here, plus the handful of globals a
+/// consumer of a generated type routinely writes (`Partial`, `Readonly`,
+/// `Promise`, …). The cost of an unnecessary entry is one digit in a name;
+/// the cost of a missing one is a silently wrong type.
+const RESERVED_NAMES: [&str; 22] = [
+    // Defined here.
+    "Queries",
+    "Tables",
+    // Imported from the client package.
+    "Decimal",
+    "Duration",
+    "GeoJSON",
+    "RecordId",
+    "Uuid",
+    // Emitted by `ts_type`, or routinely wrapped around what it emits.
+    "Array",
+    "Boolean",
+    "Date",
+    "Json",
+    "Map",
+    "Number",
+    "Object",
+    "Partial",
+    "Promise",
+    "Readonly",
+    "Record",
+    "Set",
+    "String",
+    "Symbol",
+    "Uint8Array",
 ];
 
 /// Renders the complete `.d.ts`.
@@ -874,6 +912,70 @@ mod tests {
         assert_eq!(names["teamMember"], "TeamMember");
         assert_eq!(names["team_member"], "TeamMember2");
         assert_eq!(names["tables"], "Tables2");
+    }
+
+    /// A table named after a type the emitted file is written in terms of.
+    /// `export interface Date { … }` shadows the global for the rest of the
+    /// file, so `joined: Date` would quietly mean the user's table instead of
+    /// a datetime — and it would still compile.
+    #[test]
+    fn a_table_never_shadows_a_type_the_file_is_written_in() {
+        let table = |name: &str| TableTypes {
+            name: name.into(),
+            fields: Vec::new(),
+            relation: None,
+        };
+        let names = interface_names(&[
+            table("date"),
+            table("record"),
+            table("array"),
+            table("uint8_array"),
+            table("json"),
+            table("promise"),
+            table("partial"),
+            table("readonly"),
+            table("object"),
+            table("string"),
+            table("number"),
+            table("boolean"),
+            table("symbol"),
+            table("map"),
+            table("set"),
+            table("GeoJSON"),
+            table("record_id"),
+            table("uuid"),
+            table("duration"),
+            table("decimal"),
+            table("queries"),
+        ]);
+
+        for (table, name) in &names {
+            assert!(
+                name.ends_with('2'),
+                "`{table}` PascalCases onto a reserved name and must be suffixed, got `{name}`"
+            );
+        }
+
+        // Case matters, and TypeScript agrees: `Uint8array` shadows nothing,
+        // so it is not a collision and takes no suffix.
+        assert_eq!(
+            interface_names(&[table("uint8array")])["uint8array"],
+            "Uint8array"
+        );
+
+        // …and the rendered file really does use the suffixed name on both
+        // sides, so a `Date` field still means a datetime.
+        let rendered = render_types_module(&document(
+            vec![TableTypes {
+                name: "date".into(),
+                fields: vec![field("at", Kind::Datetime)],
+                relation: None,
+            }],
+            Vec::new(),
+        ));
+        assert!(rendered.contains("export interface Date2 {"), "{rendered}");
+        assert!(rendered.contains("  at: Date;"), "{rendered}");
+        assert!(rendered.contains("  date: Date2;"), "{rendered}");
     }
 
     #[test]
