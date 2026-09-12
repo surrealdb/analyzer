@@ -24,9 +24,11 @@ pub struct Diagnostic {
     pub code: String,
     /// `error`, `warning`, or `hint`, after policy.
     pub severity: &'static str,
-    /// The file the finding lands in — a host file, never a registry id.
+    /// The file the finding lands in — a host file, never a registry id —
+    /// relative to the project root, with no `file://` scheme. A file outside
+    /// the root keeps its absolute path.
     pub source: String,
-    /// Byte offsets into `source`.
+    /// Byte offsets into the file named by `source`.
     pub range: Range,
     /// What is wrong.
     pub message: String,
@@ -39,9 +41,9 @@ pub struct Diagnostic {
 /// A secondary location attached to a [`Diagnostic`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Related {
-    /// The file this location is in.
+    /// The file this location is in, spelled like [`Diagnostic::source`].
     pub source: String,
-    /// Byte offsets into `source`.
+    /// Byte offsets into the file named by `source`.
     pub range: Range,
     /// Why this location matters to the finding.
     pub message: String,
@@ -63,13 +65,14 @@ impl fmt::Display for Diagnostic {
 }
 
 impl Diagnostic {
-    /// Flattens one resolved finding into the wire shape.
-    pub(crate) fn from_finding(finding: &Finding, severity: Severity) -> Self {
+    /// Flattens one resolved finding into the wire shape, with every source
+    /// spelled the way the rendered text spells it.
+    pub(crate) fn from_finding(finding: &Finding, severity: Severity, root: &Path) -> Self {
         let range = finding.span().range();
         Self {
             code: render_code(finding.code(), severity),
             severity: severity.as_str(),
-            source: finding.span().source().to_string(),
+            source: display_source(root, &finding.span().source().to_string()),
             range: Range {
                 start: range.start(),
                 end: range.end(),
@@ -84,7 +87,7 @@ impl Diagnostic {
                 .related()
                 .iter()
                 .map(|related| Related {
-                    source: related.span.source().to_string(),
+                    source: display_source(root, &related.span.source().to_string()),
                     range: Range {
                         start: related.span.range().start(),
                         end: related.span.range().end(),
@@ -94,6 +97,20 @@ impl Diagnostic {
                 .collect(),
         }
     }
+}
+
+/// One source id, spelled for a consumer: the `file://` scheme dropped and the
+/// path shown relative to the project root.
+///
+/// The same rule the renderer uses, for the same reason and then one more. A
+/// finding read as text says `src/app.ts`; the JSON said
+/// `file:///Users/…/src/app.ts` for a `.surql` file and a bare absolute path
+/// for a host file, so a consumer had to know which kind it was holding, and
+/// two machines analyzing the same commit disagreed about every `source` in
+/// the document. Relative to the root, they agree.
+fn display_source(root: &Path, source: &str) -> String {
+    let path = source.strip_prefix("file://").unwrap_or(source);
+    crate::project::display_relative(root, Path::new(path))
 }
 
 /// The findings a report was built from, kept so it can render them.
@@ -131,7 +148,7 @@ impl Findings {
     pub(crate) fn diagnostics(&self) -> Vec<Diagnostic> {
         self.resolved
             .iter()
-            .map(|(finding, severity)| Diagnostic::from_finding(finding, *severity))
+            .map(|(finding, severity)| Diagnostic::from_finding(finding, *severity, &self.root))
             .collect()
     }
 

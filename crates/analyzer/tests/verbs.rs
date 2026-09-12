@@ -147,10 +147,11 @@ fn check_json_uses_stable_diagnostic_keys() {
     assert_eq!(value["summary"]["errors"], 1);
     assert_eq!(value["diagnostics"][0]["code"], "S0002");
     assert_eq!(value["diagnostics"][0]["severity"], "error");
-    assert!(value["diagnostics"][0]["source"]
-        .as_str()
-        .unwrap()
-        .contains("bad.surql"));
+    // Project-root-relative, with no `file://` scheme and no absolute prefix:
+    // two machines analyzing the same commit must produce the same document,
+    // and a consumer must not have to know whether a finding landed in a
+    // `.surql` file or a host file to parse the path.
+    assert_eq!(value["diagnostics"][0]["source"], "queries/bad.surql");
     assert_eq!(
         value["diagnostics"][0]["message"],
         "missing SurrealQL syntax node `Ident`"

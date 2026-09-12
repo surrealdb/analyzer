@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed — a watch could re-trigger itself forever
+
+`resolve_output` canonicalized the registry's *parent* to get the spelling the
+watcher reports. When that parent does not exist yet — the first `generate`
+creates it — canonicalization failed and the raw path was kept, so under a
+symlinked ancestor (`/tmp`, `/var`, a symlinked home) the path written and the
+path excluded never matched: `generate` wrote, the watcher called the write an
+input, and the loop ran continuously. Resolution now starts at the nearest
+ancestor that does exist and re-appends the rest.
+
+### Changed — `source` in the JSON document is relative to the project root
+
+A `Diagnostic`'s `source` was whatever the source id happened to be: a bare
+absolute path for a finding in a host file, `file:///abs/...` for one in a
+`.surql` file, and always `file://` for `related[].source` — while the same
+finding rendered as text said `src/app.ts`. Every one of them is now the
+root-relative path the renderer shows, so a consumer need not know which kind
+of source it is holding, and two machines analyzing the same commit produce the
+same document. A file outside the root keeps its absolute path.
+
 ### Fixed — `generate` creates the directory it writes the registry into
 
 `generate` wrote the registry with a bare `fs::write`, so an `out` naming a
