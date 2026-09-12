@@ -159,6 +159,13 @@ const GUARDS: &[Guard] = &[
         "UPDATE user:a PATCH [{ op: 'teleport', path: '/age', value: 1 }];",
         "UPDATE user:a PATCH [{ op: 'replace', path: '/age', value: 1 }];",
     ),
+    // A PATCH operation missing the key its op needs is the same contract;
+    // the guard rows cover one code apiece, so this one rides on 2033's.
+    guard(
+        2033,
+        "UPDATE user:a PATCH [{ op: 'copy', path: '/age' }];",
+        "UPDATE user:a PATCH [{ op: 'copy', path: '/age', from: '/name' }];",
+    ),
     guard(
         2034,
         "CREATE user SET name = 'a';",

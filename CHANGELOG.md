@@ -42,6 +42,14 @@ message quotes the engine text it predicts.
   before. The exemption stood in front of the most misleading spelling: the
   one that looks like it has done everything right. `INSERT RELATION INTO`
   stays silent.
+- **2033 checks the keys each PATCH operation needs**, not only the op name.
+  Every op takes `path`; `add`/`replace`/`test`/`change` take `value`;
+  `move`/`copy` take `from`. The finding names the key that is actually
+  absent, which the engine does not: it answers every shortfall but a missing
+  `path` with `Key 'from' missing` — including an `add` or a `test` that is
+  missing `value` and takes no `from` at all — so its own message sends the
+  reader after the wrong key. The help quotes it anyway, so the two can be
+  matched up.
 
 ### Fixed — a watch could re-trigger itself forever
 

@@ -120,7 +120,7 @@ removed table unknown); 1028 → 1027.
 | 2030 | index/filter/splat apply to collections | `age[0]`, `name[WHERE ..]`, `age.*` | E | ✅ emitting |
 | 2031 | a regex literal compiles | `name ~ 'unclosed('` | E | ✅ emitting |
 | 2032 | literal content is valid for its kind | `d'2024-13-45'`, `u'not-a-uuid'` | E | ✅ emitting |
-| 2033 | PATCH operations are well-formed | unknown op, path without `/` | E | ✅ emitting |
+| 2033 | PATCH operations are well-formed | unknown op, path without `/`, and an operation missing the key its op needs — every op takes `path`, `add`/`replace`/`test`/`change` take `value`, `move`/`copy` take `from` (each verified on 3.2.3). The engine answers all but the missing-`path` case with `Key 'from' missing`, including an `add` that is in fact missing `value`, so the finding names the key that is really absent and quotes what the engine will print beside it | E | ✅ |
 | 2034 | required fields are provided at creation | `CREATE person;` with non-optional, no-DEFAULT `name` | E | ✅ emitting |
 | 2035 | DEFINE ANALYZER filter arguments are valid | `edgengram(5, 2)` | E | ✅ emitting |
 | 2036 | GeoJSON literals have their declared shape | `{type: 'Pointt', ...}` | E | ✅ emitting |

@@ -393,8 +393,22 @@ pub fn check_return_before_on_create(
     }
 }
 
-/// PATCH operations must be well-formed JSON-Patch (2033): known ops and
-/// `/`-prefixed paths. Only constant payloads are checkable.
+/// PATCH operations must be well-formed JSON-Patch (2033): known ops,
+/// `/`-prefixed paths, and the keys the op itself needs. Only constant
+/// payloads are checkable.
+///
+/// The per-op key requirements, each verified against 3.2.3:
+///
+/// ```text
+/// every op                          -> path
+/// add / replace / test / change     -> value
+/// move / copy                       -> from
+/// ```
+///
+/// The engine's own message is worth beating here. A missing `path` gives
+/// `Key 'path' missing`, but *every* other shortfall gives `Key 'from'
+/// missing` — including an `add` or a `test` that is in fact missing `value`,
+/// which sends the reader looking for a key that op does not take at all.
 ///
 /// An `add`/`replace` whose `path` names a field is a write to that field, so
 /// its `value` is held to the field's contracts exactly as a `CONTENT` key is
@@ -452,6 +466,7 @@ fn check_patch_operations(
                 ));
             }
         }
+        check_patch_operation_keys(ctx, operation, fields, op);
         let (Some(table), Some("add" | "replace"), Some((pointer, pointer_span)), Some(value)) =
             (table, op, path, written)
         else {
@@ -493,6 +508,55 @@ fn check_patch_operations(
 /// an empty pointer (the whole document), an empty step, or a step that is an
 /// array position (`0`, `-`) rather than a key. `~1` and `~0` unescape to `/`
 /// and `~` per RFC 6901.
+/// 2033: the keys a single PATCH operation must carry.
+///
+/// Presence is all that is asked, and it is asked of the written keys only —
+/// a key whose value is a param or a call still counts, because the contract
+/// is "the operation has a `from`", not "the analyzer can read it". A `path`
+/// that is present but malformed is the loop above's business.
+///
+/// Silent when the `op` is not a known constant string: without it there is
+/// no requirement set to check against, and an unknown op name has already
+/// been reported on its own.
+fn check_patch_operation_keys(
+    ctx: &mut AnalysisContext<'_>,
+    operation: &ast::Spanned<ast::Expr>,
+    fields: &[(ast::Spanned<String>, ast::Spanned<ast::Expr>)],
+    op: Option<&str>,
+) {
+    let Some(op) = op else {
+        return;
+    };
+    let has = |key: &str| fields.iter().any(|(name, _)| name.node == key);
+    let mut required = vec!["path"];
+    match op {
+        "add" | "replace" | "test" | "change" => required.push("value"),
+        "move" | "copy" => required.push("from"),
+        _ => {}
+    }
+    for key in required {
+        if has(key) {
+            continue;
+        }
+        let span =
+            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), operation.span);
+        // What the engine will actually print, so the reader can match the
+        // two up — it says `from` for a missing `value`, which is why this
+        // check exists rather than deferring to the runtime error.
+        let engine_key = if key == "path" { "path" } else { "from" };
+        ctx.emit(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                span,
+                2033,
+                format!("a `{op}` PATCH operation needs a `{key}` key"),
+            )
+            .with_help(format!(
+                "SurrealDB rejects the whole patch: \"The JSON Patch contains invalid operations. Failed to parse JSON patch structure: Key '{engine_key}' missing\""
+            )),
+        );
+    }
+}
+
 fn json_pointer_field_segments(pointer: &str) -> Option<Vec<String>> {
     let body = pointer.strip_prefix('/')?;
     if body.is_empty() {
@@ -1312,6 +1376,96 @@ mod tests {
     use crate::schema::extract_schema;
 
     const PERSON_SCHEMA: &str = "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nDEFINE FIELD age ON person TYPE int;";
+
+    /// Every finding an `UPDATE` raises, for the clause-shape checks.
+    fn update_diagnostics(
+        schema_src: &str,
+        query: &str,
+    ) -> Vec<surrealql_analyzer_diagnostics::Finding> {
+        let schema_parsed =
+            parse_source(SourceId::new("schema"), schema_src).expect("schema should parse");
+        let schema = extract_schema(&[schema_parsed]).schema;
+        let parsed = parse_source(SourceId::new("query"), query).expect("query should parse");
+        let ast::Statement::Update(stmt) =
+            surrealql_analyzer_syntax::lower::lower_first_statement(&parsed, "UpdateStatement")
+                .expect("update statement exists")
+                .node
+        else {
+            panic!("expected an update statement");
+        };
+        let mut diagnostics: Vec<surrealql_analyzer_diagnostics::Finding> = Vec::new();
+        {
+            let mut ctx = AnalysisContext::scoped(
+                &schema,
+                parsed.source_id().clone(),
+                parsed.text(),
+                &mut diagnostics,
+                crate::statement_env::StatementEnv::default(),
+                None,
+            );
+            crate::analyzer::data::update::update_response_kind(&stmt, &mut ctx);
+        }
+        diagnostics
+    }
+
+    #[test]
+    fn a_patch_operation_missing_a_required_key_is_2033() {
+        let messages = |query: &str| -> Vec<String> {
+            update_diagnostics(PERSON_SCHEMA, query)
+                .iter()
+                .filter(|finding| finding.code().number() == 2033)
+                .map(|finding| finding.message().to_string())
+                .collect()
+        };
+        // Every op needs `path`; add/replace/test/change need `value`;
+        // move/copy need `from` (each verified on 3.2.3).
+        for (query, needed) in [
+            ("UPDATE person:1 PATCH [{ op: 'remove' }];", "`path`"),
+            (
+                "UPDATE person:1 PATCH [{ op: 'add', path: '/age' }];",
+                "`value`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'test', path: '/age' }];",
+                "`value`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'change', path: '/name' }];",
+                "`value`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'copy', path: '/age' }];",
+                "`from`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'move', path: '/age' }];",
+                "`from`",
+            ),
+        ] {
+            let found = messages(query);
+            assert!(
+                found.iter().any(|message| message.contains(needed)),
+                "{query} should want {needed}: {found:?}"
+            );
+        }
+
+        // The near misses: each op with the keys it actually needs, and a
+        // `from` whose value the analyzer cannot read still counts as present.
+        for query in [
+            "UPDATE person:1 PATCH [{ op: 'remove', path: '/age' }];",
+            "UPDATE person:1 PATCH [{ op: 'add', path: '/age', value: 2 }];",
+            "UPDATE person:1 PATCH [{ op: 'copy', path: '/age', from: '/name' }];",
+            "UPDATE person:1 PATCH [{ op: 'move', path: '/age', from: $src }];",
+        ] {
+            assert!(messages(query).is_empty(), "{query}: {:?}", messages(query));
+        }
+
+        // An op name that is not an op was already reported as such; there is
+        // no key requirement to add on top of it.
+        let unknown = messages("UPDATE person:1 PATCH [{ op: 'teleport' }];");
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        assert!(unknown[0].contains("teleport"), "{unknown:?}");
+    }
 
     fn build_kind(schema_src: &str, query: &str, statement_kind: &str) -> Kind {
         let schema_parsed =

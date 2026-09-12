@@ -61,6 +61,14 @@ RETURN u'not-a-uuid';
 UPDATE article:hello PATCH [{ op: 'teleport', path: '/views', value: 1 }];
 UPDATE article:hello PATCH [{ op: 'replace', path: 'views', value: 1 }];
 
+-- 2033: operations missing the key the op needs. `replace` needs `value`,
+-- `copy` needs `from`, every op needs `path` — and the engine answers all
+-- three of these with "Key 'from' missing", including the two that are not
+-- missing a `from` at all.
+UPDATE article:hello PATCH [{ op: 'replace', path: '/views' }];
+UPDATE article:hello PATCH [{ op: 'copy', path: '/views' }];
+UPDATE article:hello PATCH [{ op: 'remove' }];
+
 -- 2034: a creation that omits required fields.
 CREATE article SET title = 'only a title';
 
