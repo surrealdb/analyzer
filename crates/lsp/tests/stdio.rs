@@ -68,6 +68,18 @@ DEFINE TABLE assigned_to SCHEMAFULL TYPE RELATION FROM organization_unit TO orga
 /// How long a test waits for a publish before ending the process.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Disarms a publish watchdog when the wait leaves scope — returning *or*
+/// unwinding. A panic on the way (a server that died mid-test) is a clean
+/// failure; an armed watchdog would turn it into an abort of the whole binary
+/// ten seconds later.
+struct Disarm(Arc<AtomicBool>);
+
+impl Drop for Disarm {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 const SCHEMA_URI: &str = "file:///workspace/a_schema.surql";
 const QUERY_URI: &str = "file:///workspace/b_query.surql";
 
@@ -264,32 +276,49 @@ impl Lsp {
     /// in CI and never locally. The version says which edit a publish
     /// describes, so the harness waits for the one it asked about.
     ///
-    /// The wait is bounded. It is a blocking read on the child's stdout, so a
-    /// publish that never comes is a hang, and neither cargo nor the test
-    /// harness has a per-test timeout to end it — a broken publish gate would
-    /// burn a CI job rather than fail a test. The watchdog ends the process
-    /// instead, saying what was being waited for.
+    /// The wait is bounded, and the bound is **fatal to the whole test
+    /// binary**. It is a blocking read on the child's stdout, so a publish
+    /// that never comes is a hang, and neither cargo nor libtest has a
+    /// per-test timeout to end it — a broken publish gate would burn a CI job
+    /// instead of failing a test. There is no way to fail only the waiting
+    /// test from another thread, so the watchdog says what was awaited and
+    /// ends the process with a failing status; the run reports no counts, and
+    /// the message is the result.
+    ///
+    /// It writes to the real stderr rather than through `eprintln!`: libtest
+    /// captures per-test output in a thread-local buffer that the spawned
+    /// thread inherits and `exit` discards, so the one line that explains the
+    /// abort would be the one line lost.
+    ///
+    /// The disarm is a guard, not a statement at the end: a `read_framed`
+    /// panic (the server died, and the test is about to fail cleanly and
+    /// legibly) must not leave a watchdog armed to abort the binary ten
+    /// seconds later, erasing every other result with it.
     fn publish_for_version(&mut self, uri: &str, version: i64) -> Vec<Value> {
         let arrived = Arc::new(AtomicBool::new(false));
-        let watchdog = {
-            let arrived = Arc::clone(&arrived);
+        {
+            let armed = Arc::clone(&arrived);
             let awaited = format!("{uri} at version {version}");
             std::thread::spawn(move || {
                 let deadline = Instant::now() + PUBLISH_TIMEOUT;
                 while Instant::now() < deadline {
-                    if arrived.load(Ordering::Relaxed) {
+                    if armed.load(Ordering::Relaxed) {
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                eprintln!(
-                    "timed out after {PUBLISH_TIMEOUT:?} waiting for diagnostics for {awaited}"
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "\nsurrealql-analyzer-lsp stdio tests: timed out after {PUBLISH_TIMEOUT:?} \
+                     waiting for diagnostics for {awaited} — aborting the test binary"
                 );
+                let _ = std::io::stderr().flush();
                 std::process::exit(101);
-            })
-        };
+            });
+        }
+        let _disarm = Disarm(arrived);
 
-        let diagnostics = loop {
+        loop {
             let message = self.read_message();
             if message["method"] != "textDocument/publishDiagnostics"
                 || message["params"]["uri"] != uri
@@ -299,15 +328,11 @@ impl Lsp {
             if message["params"]["version"].as_i64() != Some(version) {
                 continue;
             }
-            break message["params"]["diagnostics"]
+            return message["params"]["diagnostics"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
-        };
-
-        arrived.store(true, Ordering::Relaxed);
-        drop(watchdog);
-        diagnostics
+        }
     }
 
     /// Whether `message` is the response to our request `id` — and not a

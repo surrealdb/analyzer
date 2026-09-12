@@ -362,18 +362,28 @@ impl Workspace {
     }
 
     /// Take a document the client just opened, at the version it stamped on
-    /// the `didOpen`. Always applied: an open is the client stating what the
-    /// buffer *is*, not an increment on what we think it was.
+    /// the `didOpen`, and return the generation the open produced. Always
+    /// applied: an open is the client stating what the buffer *is*, not an
+    /// increment on what we think it was.
     ///
     /// Nothing may gate it. A client that reopens a buffer numbers its
     /// versions from the start again, and one that reloads may repeat an open
     /// it has already sent — measuring either against the version last seen
     /// would refuse the client's own truth and leave the workspace on text
     /// nobody is editing any more.
-    pub fn open(&mut self, uri: Url, text: String, version: i32) {
+    ///
+    /// Accepted residual: because it is unconditional, a `didChange` whose
+    /// handler finishes *before* the `didOpen` it followed would leave the
+    /// open's older text in place until the next keystroke. That needs the
+    /// change to both start and finish inside the open's own handler —
+    /// tower-lsp hands out the write lock in arrival order — and the next edit
+    /// corrects it. The reverse (refusing the open) never corrects itself,
+    /// which is why this is the side to err on.
+    pub fn open(&mut self, uri: Url, text: String, version: i32) -> u64 {
         self.bump();
         self.documents
             .insert(uri.clone(), Document::new(uri, text, Some(version)));
+        self.generation
     }
 
     /// Apply an *edit* the client owns, at the version it stamped on the

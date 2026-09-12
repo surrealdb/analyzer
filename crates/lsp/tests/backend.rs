@@ -11,6 +11,9 @@ use tower_lsp::LspService;
 
 use surrealql_analyzer_lsp::backend::Backend;
 
+/// The notification every diagnostic assertion here is about.
+const PUBLISH_DIAGNOSTICS: &str = "textDocument/publishDiagnostics";
+
 /// How long a test waits for a publish before calling it a failure.
 const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -145,14 +148,34 @@ impl Server {
         }
     }
 
-    /// Whether any publish is already waiting, after letting the handlers'
-    /// spawned tasks run. For asserting that a publish was *not* sent.
-    async fn published_nothing(&mut self) -> bool {
+    /// Whether nothing was published **for `uri`**, after letting the
+    /// handlers' spawned tasks run.
+    ///
+    /// Every publish from an earlier step must have been taken already: one
+    /// left in the buffer would answer this question in place of the step
+    /// under test, so the check asserts the buffer is clear rather than
+    /// trusting it.
+    async fn published_nothing_for(&mut self, uri: &Url) -> bool {
+        assert!(
+            !self
+                .buffered
+                .iter()
+                .any(|message| message.method() == PUBLISH_DIAGNOSTICS),
+            "take the publishes from earlier steps before asserting that one \
+             was not sent"
+        );
         self.drain_pending().await;
         !self
             .buffered
             .iter()
-            .any(|message| message.method() == "textDocument/publishDiagnostics")
+            .filter(|message| message.method() == PUBLISH_DIAGNOSTICS)
+            .any(|message| {
+                message
+                    .params()
+                    .and_then(|params| params.get("uri"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(uri.as_str())
+            })
     }
 
     async fn await_publish(&mut self) -> PublishDiagnosticsParams {
@@ -162,7 +185,7 @@ impl Server {
             } else {
                 self.buffered.remove(0)
             };
-            if message.method() == "textDocument/publishDiagnostics" {
+            if message.method() == PUBLISH_DIAGNOSTICS {
                 let (_, _, params) = message.into_parts();
                 return serde_json::from_value(params.expect("params present"))
                     .expect("publishDiagnostics params decode");
@@ -332,7 +355,7 @@ async fn an_edit_that_arrives_out_of_order_never_puts_the_older_text_back() {
         )
         .await;
     assert!(
-        server.published_nothing().await,
+        server.published_nothing_for(&uri).await,
         "a refused edit must not re-publish: nothing about the document changed"
     );
 
