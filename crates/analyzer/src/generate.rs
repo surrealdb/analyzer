@@ -157,6 +157,20 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
 
     let path = project.registry_path(out);
     let module = surrealql_analyzer_codegen::render_registry(&entries);
+    // The registry usually lands beside the client code (`src/lib/db.generated.ts`),
+    // and that directory need not exist yet — a fresh project, or an `out` that
+    // names a directory the host has not created. Creating it is the obvious
+    // reading of "write the registry here", and the alternative is an ENOENT
+    // that names the file rather than the missing directory.
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| SourceError {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
     fs::write(&path, &module).map_err(|source| SourceError {
         path: path.clone(),
         source,

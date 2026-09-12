@@ -344,6 +344,46 @@ fn generate_writes_registry_for_clean_embedded_queries() {
 }
 
 #[test]
+fn generate_creates_the_directory_the_registry_is_written_into() {
+    // `out = "src/lib/db.generated.ts"` is the documented shape, and
+    // `src/lib/` does not exist in a project that has not made it yet. The
+    // write must create the directory rather than fail with an ENOENT that
+    // names the file instead of the missing parent.
+    let root = temp_project_dir("generate-makes-out-dir");
+    fs::create_dir_all(root.join("schema")).expect("schema dir");
+    fs::create_dir_all(root.join("src")).expect("src dir");
+    fs::write(
+        root.join("surrealql-analyzer.toml"),
+        "[sources]\nschema = [\"schema/**/*.surql\"]\n",
+    )
+    .expect("write config");
+    fs::write(
+        root.join("schema/person.surql"),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;",
+    )
+    .expect("write schema");
+    fs::write(
+        root.join("src/app.ts"),
+        "const [rows] = await db.query(\"SELECT name FROM person\");",
+    )
+    .expect("write host source");
+
+    let out = root.join("src/lib/db.generated.ts");
+    assert!(
+        !out.parent().expect("out has a parent").exists(),
+        "the fixture must start without the output directory"
+    );
+
+    let report = generate(&discover(&root), Some(&out)).expect("generate creates the directory");
+    assert_eq!(report.path, out);
+    let written = fs::read_to_string(&out).expect("registry file written");
+    assert!(
+        written.contains("SELECT name FROM person"),
+        "registry must carry the embedded query:\n{written}"
+    );
+}
+
+#[test]
 fn check_reports_errors_in_embedded_host_queries_at_the_host_file() {
     // `check` is the CI gate. It must see the queries the client actually
     // runs — a host file's embedded query — or CI passes green on a

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed — `generate` creates the directory it writes the registry into
+
+`generate` wrote the registry with a bare `fs::write`, so an `out` naming a
+directory that does not exist yet — `src/lib/db.generated.ts` in a project
+without a `src/lib/`, the shape the documentation uses — failed with an ENOENT
+that named the *file*, not the missing parent. The parent is created first now.
+
 ### Fixed — three places the grammar accepted syntax the engine does not
 
 Each was established against a live SurrealDB 3.2.3 and against the version
