@@ -170,6 +170,15 @@ const CASES: &[Case] = &[
         accepted: "SELECT * FROM article FETCH author.name;",
         rejected: "SELECT * FROM article FETCH title;",
     },
+    // ---- `string::join` is variadic over `any` -----------------------------
+    Case {
+        code: 5002,
+        engine: "`RETURN string::join(',', 1, 2)` is `'1,2'`; even the \
+                 separator coerces — `string::join(1, 'a', 'b')` is `'a1b'`",
+        schema: "DEFINE TABLE t SCHEMAFULL;\n",
+        accepted: "RETURN string::join(',', 1, 2);",
+        rejected: "RETURN string::join();",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
