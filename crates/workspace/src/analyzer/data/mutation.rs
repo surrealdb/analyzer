@@ -568,8 +568,10 @@ fn check_duplicate_targets(ctx: &mut AnalysisContext<'_>, assignments: &[ast::As
 }
 
 /// ONLY on a whole-table target is a deterministic runtime error for
-/// row-iterating mutations (4003); record ids and CREATE (always one row)
-/// are fine.
+/// row-*returning* mutations (4003); record ids and CREATE (always one row)
+/// are fine, and so is DELETE, which returns nothing and therefore never
+/// trips the single-result check — hence UPDATE and UPSERT are the only
+/// callers.
 pub fn check_only_on_table(
     ctx: &mut AnalysisContext<'_>,
     only: bool,

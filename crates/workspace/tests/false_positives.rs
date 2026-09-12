@@ -179,6 +179,16 @@ const CASES: &[Case] = &[
         accepted: "RETURN string::join(',', 1, 2);",
         rejected: "RETURN string::join();",
     },
+    // ---- DELETE returns nothing, so ONLY never fails there -----------------
+    Case {
+        code: 4003,
+        engine: "`DELETE ONLY u` with two matching rows answers `NONE`; \
+                 `UPDATE ONLY u SET x = 1` answers \"Expected a single result \
+                 output when using the ONLY keyword\"",
+        schema: "DEFINE TABLE u SCHEMALESS;\n",
+        accepted: "DELETE ONLY u;",
+        rejected: "UPDATE ONLY u SET x = 1;",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
