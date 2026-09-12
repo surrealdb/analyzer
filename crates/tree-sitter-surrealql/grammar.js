@@ -2736,15 +2736,21 @@ export default grammar({
 				alias($._assignmentOp, $.Operator),
 				$._value,
 			),
+		// The bracket segment is `_pathFilter`, the same rule a path in a read
+		// position uses, because 3.2.3 accepts the same set in a SET target —
+		// verified on a live server: `SET tags[0] = 'ok'`, `SET
+		// meta['score'] = 5`, `SET tags[$] = 'z'`, `SET tags[$i] = 'z'` and
+		// `SET tags[WHERE $this = 'a'] = 'z'` all write. `[*]` comes with it
+		// rather than being a separate alternative, which is why it is not
+		// listed twice.
 		_nestedAssignTarget: ($) =>
 			seq(
 				$.Ident,
 				repeat1(
 					choice(
 						seq('.', choice($.Ident, alias('*', $.Any))),
-						seq('[', alias('*', $.Any), ']'),
 						alias('...', $.Flatten),
-						alias($._idiomFilter, $.Filter),
+						alias($._pathFilter, $.Filter),
 					),
 				),
 			),

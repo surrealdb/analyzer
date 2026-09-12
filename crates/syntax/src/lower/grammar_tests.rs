@@ -1016,3 +1016,52 @@ fn throw_lowers_wherever_a_value_is_wanted() {
     };
     assert!(matches!(inner.node, Statement::Throw(_)));
 }
+
+// ---- engine parity: a SET target reaches into the record with brackets ----
+
+#[test]
+fn a_bracket_segment_in_a_set_target_lowers_to_its_idiom_part() {
+    fn target(query: &str) -> Idiom {
+        let Statement::Update(update) = statement(query, "UpdateStatement") else {
+            panic!("expected UPDATE for `{query}`");
+        };
+        let Some(DataClause::Set(assignments)) = update.data else {
+            panic!("expected SET for `{query}`");
+        };
+        assignments
+            .into_iter()
+            .next()
+            .expect("one assignment")
+            .target
+            .node
+    }
+    // Every one of these writes on 3.2.3.
+    let parts = target("UPDATE user:1 SET tags[0] = 'ok';").parts;
+    assert!(matches!(parts[0].node, IdiomPart::Field(ref name) if name == "tags"));
+    assert!(matches!(
+        parts[1].node,
+        IdiomPart::Index(ref index) if index.node == Expr::Literal(Literal::Int(0))
+    ));
+    let parts = target("UPDATE user:1 SET meta['score'] = 5;").parts;
+    assert!(matches!(
+        parts[1].node,
+        IdiomPart::Index(ref index)
+            if index.node == Expr::Literal(Literal::String("score".into()))
+    ));
+    assert!(matches!(
+        target("UPDATE user:1 SET tags[$] = 'z';").parts[1].node,
+        IdiomPart::Last
+    ));
+    assert!(matches!(
+        target("UPDATE t SET a[*] = 1;").parts[1].node,
+        IdiomPart::All
+    ));
+    assert!(matches!(
+        target("UPDATE t SET a[WHERE b = 1] = 1;").parts[1].node,
+        IdiomPart::Where(_)
+    ));
+    // A subscript in the middle of the path keeps the parts around it.
+    let parts = target("UPDATE user:1 SET meta.deep[0].x = 5;").parts;
+    assert_eq!(parts.len(), 4);
+    assert!(matches!(parts[3].node, IdiomPart::Field(ref name) if name == "x"));
+}

@@ -321,5 +321,9 @@
  "DEFINE TABLE ro SCHEMAFULL PERMISSIONS FOR select WHERE $auth != NONE, FOR create, update, delete WHERE THROW \"Read-only customer\";",
  "DEFINE FIELD f ON t TYPE string ASSERT $value != NONE OR THROW \"y\";",
  "RETURN false OR THROW \"y\";",
- "RETURN THROW 1 + 1;"
+ "RETURN THROW 1 + 1;",
+ "UPDATE user:1 SET tags[0] = 'ok';",
+ "UPDATE user:1 SET meta['score'] = 5;",
+ "UPDATE user:1 SET tags[$] = 'z';",
+ "UPDATE user:1 SET tags[WHERE $this = 'a'] = 'z';"
 ]

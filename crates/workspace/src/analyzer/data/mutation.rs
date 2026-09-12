@@ -689,9 +689,10 @@ fn check_assignment_value(
     table: &TableDef,
     assignment: &ast::Assignment,
 ) {
-    let Some(segments) = plain_field_segments(&assignment.target.node) else {
+    let Some(target) = AssignTarget::resolve(&assignment.target.node) else {
         return;
     };
+    let segments = target.segments.clone();
     if segments == ["id"] {
         let span = surrealql_analyzer_syntax::span::SourceSpan::new(
             ctx.source().clone(),
@@ -708,7 +709,7 @@ fn check_assignment_value(
     // sense as `age + x`.
     if !matches!(assignment.op.node, ast::AssignOp::Assign) {
         let (Some(field_kind), Some(value_kind)) = (
-            crate::analyzer::data::select::kind_for_path(table, &segments),
+            target.written_kind(table),
             infer_expression_fact(&assignment.value, ctx).kind,
         ) else {
             return;
@@ -743,7 +744,7 @@ fn check_assignment_value(
             } else {
                 "-="
             };
-            let path = segments.join(".");
+            let path = target.path();
             let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
                 span,
                 2004,
@@ -765,7 +766,7 @@ fn check_assignment_value(
         }
         return;
     }
-    let Some(field_kind) = crate::analyzer::data::select::kind_for_path(table, &segments) else {
+    let Some(field_kind) = target.written_kind(table) else {
         return;
     };
     // An unbound parameter here is constrained to the field's kind;
@@ -810,14 +811,18 @@ fn check_assignment_value(
         emit_write_mismatch(
             ctx,
             table,
-            &segments.join("."),
+            &target.path(),
             assignment.value.span,
             &value_kind,
             &field_kind,
         );
         return;
     }
-    check_constant_satisfies_assert(ctx, table, &segments.join("."), &assignment.value);
+    // A field's `ASSERT` constrains the whole field value, not one element of
+    // it, so an element write has nothing to fold against.
+    if !target.element {
+        check_constant_satisfies_assert(ctx, table, &segments.join("."), &assignment.value);
+    }
 }
 
 /// A constant written to a field must satisfy the field's `ASSERT` (2038).
@@ -1026,8 +1031,94 @@ fn check_assignment_target(
     table: &TableDef,
     target: &ast::Spanned<ast::Idiom>,
 ) {
-    if let Some(segments) = plain_field_segments(&target.node) {
-        crate::analyzer::data::check_field_path(ctx, table, &segments, target.span, 1002);
+    if let Some(resolved) = AssignTarget::resolve(&target.node) {
+        crate::analyzer::data::check_field_path(ctx, table, &resolved.segments, target.span, 1002);
+    }
+}
+
+/// A `SET` target split into the declared-field path it names and whether a
+/// subscript follows that path.
+///
+/// A bracket segment in an assignment target is ordinary SurrealQL — 3.2.3
+/// writes `SET tags[0] = 'ok'`, `SET meta['score'] = 5`, `SET tags[$] = 'z'`
+/// and `SET tags[WHERE $this = 'a'] = 'z'` — and the grammar refused all of
+/// them until it took `_pathFilter` here. Now that they parse, every check
+/// keyed on [`plain_field_segments`] would still go silent on them, which
+/// trades a wrong syntax error for no diagnostic at all. So the two checks
+/// that own the write — the field must exist (1002) and the value must
+/// inhabit its kind (2001) — resolve the target through this instead.
+///
+/// Two shapes of subscript, because the engine treats them differently:
+///
+/// * a **string literal** is a field step. `SET meta['score'] = 5` stores
+///   `meta: { score: 5 }`, exactly as `SET meta.score = 5` does, so it joins
+///   the path.
+/// * everything else — `[0]`, `[$i]`, `[$]`, `[*]`, `[WHERE …]` — addresses
+///   an **element** of the collection the path reached, so the value is held
+///   to the element kind, not to the field's.
+///
+/// Anything the two rules do not describe (a path part after an element
+/// subscript, a graph step, a method call, a leading value) resolves to
+/// `None` and is left alone, as it was before.
+struct AssignTarget {
+    /// The declared-field path the write lands on or inside.
+    segments: Vec<String>,
+    /// Whether the write addresses one element of that field.
+    element: bool,
+}
+
+impl AssignTarget {
+    fn resolve(target: &ast::Idiom) -> Option<Self> {
+        let mut segments = Vec::new();
+        let mut element = false;
+        for part in &target.parts {
+            // Nothing addresses a path part once the write is inside an
+            // element: `SET meta.deep[0].x = 5` writes a *string* key `"0"`
+            // on 3.2.3, which is not a shape the schema describes.
+            if element {
+                return None;
+            }
+            match &part.node {
+                ast::IdiomPart::Field(name) => segments.push(name.clone()),
+                ast::IdiomPart::Index(index) => match &index.node {
+                    ast::Expr::Literal(ast::Literal::String(key)) => segments.push(key.clone()),
+                    _ => element = true,
+                },
+                ast::IdiomPart::All | ast::IdiomPart::Last | ast::IdiomPart::Where(_) => {
+                    element = true;
+                }
+                _ => return None,
+            }
+        }
+        (!segments.is_empty()).then_some(Self { segments, element })
+    }
+
+    /// The kind a value written to this target must inhabit: the field's own
+    /// kind, or its element kind when the write addresses an element.
+    fn written_kind(&self, table: &TableDef) -> Option<Kind> {
+        let kind = crate::analyzer::data::select::kind_for_path(table, &self.segments)?;
+        if !self.element {
+            return Some(kind);
+        }
+        match kind {
+            Kind::Array(element, _) | Kind::Set(element, _) => Some(*element),
+            // A subscript on something that is not a collection is a write
+            // the engine will reject, but on a different contract than this
+            // one — and on an `object` it is legal (the key is computed), so
+            // there is nothing here to prove.
+            _ => None,
+        }
+    }
+
+    /// How the path reads in a message: `tags[…]` when the write addresses an
+    /// element, so 2001 does not claim `tags` itself is being assigned.
+    fn path(&self) -> String {
+        let path = self.segments.join(".");
+        if self.element {
+            format!("{path}[…]")
+        } else {
+            path
+        }
     }
 }
 

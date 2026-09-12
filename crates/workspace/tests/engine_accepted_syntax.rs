@@ -39,6 +39,26 @@ fn findings(query: &str) -> Vec<Finding> {
         .collect()
 }
 
+/// The one finding with `code`, or a panic naming what was found instead.
+fn only(query: &str, code: &str) -> Finding {
+    let found = findings(query);
+    support::assert_no_syntax_findings(&found);
+    let matching: Vec<&Finding> = found
+        .iter()
+        .filter(|finding| finding.code().to_string() == code)
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "`{query}` should raise exactly one {code}; got {:?}",
+        found
+            .iter()
+            .map(|finding| (finding.code().to_string(), finding.message().to_string()))
+            .collect::<Vec<_>>()
+    );
+    matching[0].clone()
+}
+
 /// `query` parses and raises nothing.
 fn silent(query: &str) {
     let found = findings(query);
@@ -71,4 +91,39 @@ fn throw_in_a_predicate_is_not_a_syntax_error() {
     // A thrown value is still a value: the condition contract (2005) reads a
     // diverging predicate as satisfying it, and the operand is still analyzed.
     silent("SELECT name FROM person WHERE THROW 'a';");
+}
+
+/// A bracket segment in a SET *target* was an `S0001`, on a statement 3.2.3
+/// writes without complaint. `SET meta.score = 5` parsed; `SET meta['score']
+/// = 5` did not.
+///
+/// Parsing it is only half the fix: every write check keys on a path of plain
+/// field segments, so the statement would have gone from a wrong syntax error
+/// to no diagnostic at all. A string-literal subscript is a field step (3.2.3
+/// stores `meta: { score: 5 }` for `SET meta['score'] = 5`) and every other
+/// subscript addresses an element, so the value is held to the element kind.
+#[test]
+fn a_bracket_segment_in_a_set_target_parses_and_still_checks_the_write() {
+    silent("UPDATE person:1 SET tags[0] = 'ok';");
+    silent("UPDATE person:1 SET meta['score'] = 5;");
+    silent("UPDATE person:1 SET tags[$] = 'z';");
+    silent("UPDATE person:1 SET tags[WHERE $this = 'a'] = 'z';");
+
+    // The engine answers this one ``Couldn't coerce value for field `tags`:
+    // Expected `none | array<string>` but found `[5]` ``; 2001 names the
+    // element kind the write actually violated.
+    let finding = only("UPDATE person:1 SET tags[0] = 5;", "E2001");
+    assert_eq!(
+        finding.message(),
+        "`tags[…]` is declared `string`, but this value is `5`"
+    );
+    // A string subscript is a field step, so it reads as the field it is.
+    let finding = only("UPDATE person:1 SET meta['score'] = 'x';", "E2001");
+    assert_eq!(
+        finding.message(),
+        "`meta.score` is declared `int`, but this value is `'x'`"
+    );
+    // And the field still has to exist.
+    let finding = only("UPDATE person:1 SET nope[0] = 1;", "E1002");
+    assert_eq!(finding.message(), "`person` has no field `nope`");
 }

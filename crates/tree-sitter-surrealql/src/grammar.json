@@ -14441,28 +14441,6 @@
                 ]
               },
               {
-                "type": "SEQ",
-                "members": [
-                  {
-                    "type": "STRING",
-                    "value": "["
-                  },
-                  {
-                    "type": "ALIAS",
-                    "content": {
-                      "type": "STRING",
-                      "value": "*"
-                    },
-                    "named": true,
-                    "value": "Any"
-                  },
-                  {
-                    "type": "STRING",
-                    "value": "]"
-                  }
-                ]
-              },
-              {
                 "type": "ALIAS",
                 "content": {
                   "type": "STRING",
@@ -14475,7 +14453,7 @@
                 "type": "ALIAS",
                 "content": {
                   "type": "SYMBOL",
-                  "name": "_idiomFilter"
+                  "name": "_pathFilter"
                 },
                 "named": true,
                 "value": "Filter"
