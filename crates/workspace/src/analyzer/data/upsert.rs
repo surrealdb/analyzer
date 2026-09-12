@@ -15,6 +15,7 @@ pub(crate) fn analyze_upsert(ctx: &mut AnalysisContext<'_>, stmt: &ast::UpsertSt
 
 pub(crate) fn upsert_response_kind(stmt: &ast::UpsertStmt, ctx: &mut AnalysisContext<'_>) -> Kind {
     mutation::check_only_on_table(ctx, stmt.only, stmt.targets.first());
+    mutation::check_payload_id_against_target(ctx, &stmt.targets, stmt.data.as_ref());
     // UPSERT is create-like: a bare `UPSERT table SET ...` (no WHERE) generates
     // a fresh record id rather than rewriting every existing row, so the
     // whole-table-write contract (7009) — which flags unconditional

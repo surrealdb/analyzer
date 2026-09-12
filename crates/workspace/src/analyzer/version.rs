@@ -655,17 +655,10 @@ impl SyntaxVersions<'_, '_> {
         }
     }
 
-    /// `DEFINE INDEX ... SEARCH ANALYZER` became `FULLTEXT ANALYZER` in 3.0:
-    /// the 2.3.10 define parser matches `t!("SEARCH")` and the 3.0.5 one only
-    /// `t!("FULLTEXT")` (docs: "Before SurrealDB version 3.0.0 [the FULLTEXT
-    /// ANALYZER clause] used the syntax SEARCH ANALYZER"). The AST folds both
-    /// into `IndexKind::Search`, so the spelling is read from the statement.
-    fn define_index(&mut self, span: ByteRange, index: &ast::DefineIndex) {
-        if index.kind != ast::IndexKind::Search {
-            return;
-        }
-        let words: Vec<(usize, String)> = self
-            .text(span)
+    /// The statement's words with their offsets, split on anything that is
+    /// not part of an identifier.
+    fn words(&self, span: ByteRange) -> Vec<(usize, String)> {
+        self.text(span)
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .scan(0usize, |offset, word| {
                 let start = *offset;
@@ -673,24 +666,61 @@ impl SyntaxVersions<'_, '_> {
                 Some((start, word.to_string()))
             })
             .filter(|(_, word)| !word.is_empty())
-            .collect();
-        for window in words.windows(2) {
-            let (start, word) = (&window[0].0, window[0].1.as_str());
-            if !window[1].1.eq_ignore_ascii_case("ANALYZER") {
-                continue;
+            .collect()
+    }
+
+    /// `DEFINE INDEX ... SEARCH ANALYZER` became `FULLTEXT ANALYZER` in 3.0:
+    /// the 2.3.10 define parser matches `t!("SEARCH")` and the 3.0.5 one only
+    /// `t!("FULLTEXT")` (docs: "Before SurrealDB version 3.0.0 [the FULLTEXT
+    /// ANALYZER clause] used the syntax SEARCH ANALYZER"). The AST folds both
+    /// into `IndexKind::Search`, so the spelling is read from the statement.
+    ///
+    /// `MTREE` went with the same release's index rework: the 3.2.3 parser
+    /// answers `FIELDS e MTREE DIMENSION 4` with "Unexpected token `an
+    /// identifier`, expected Eof" at `MTREE`, and its KNN error names the
+    /// "`KTree` / `M-Tree`" form as no longer supported. The AST folds every
+    /// vector backing into `IndexKind::Vector`, so this too reads the word.
+    fn define_index(&mut self, span: ByteRange, index: &ast::DefineIndex) {
+        match index.kind {
+            ast::IndexKind::Vector => {
+                for (start, word) in self.words(span) {
+                    if !word.eq_ignore_ascii_case("MTREE") {
+                        continue;
+                    }
+                    let start = span.start() + start as u32;
+                    let word_span =
+                        ByteRange::new(start, start + word.len() as u32).unwrap_or(span);
+                    self.removed(
+                        word_span,
+                        "an `MTREE` index",
+                        Version::new(3, 0, 0),
+                        "define the index as `HNSW DIMENSION <n>` and query it with `<|k, EF|>`",
+                    );
+                }
             }
-            let start = span.start() + *start as u32;
-            let word_span = ByteRange::new(start, start + word.len() as u32).unwrap_or(span);
-            if word.eq_ignore_ascii_case("SEARCH") {
-                self.removed(
-                    word_span,
-                    "`SEARCH ANALYZER`",
-                    Version::new(3, 0, 0),
-                    "write `FULLTEXT ANALYZER`",
-                );
-            } else if word.eq_ignore_ascii_case("FULLTEXT") {
-                self.requires(word_span, "`FULLTEXT ANALYZER`", Version::new(3, 0, 0));
+            ast::IndexKind::Search => {
+                let words = self.words(span);
+                for window in words.windows(2) {
+                    let (start, word) = (&window[0].0, window[0].1.as_str());
+                    if !window[1].1.eq_ignore_ascii_case("ANALYZER") {
+                        continue;
+                    }
+                    let start = span.start() + *start as u32;
+                    let word_span =
+                        ByteRange::new(start, start + word.len() as u32).unwrap_or(span);
+                    if word.eq_ignore_ascii_case("SEARCH") {
+                        self.removed(
+                            word_span,
+                            "`SEARCH ANALYZER`",
+                            Version::new(3, 0, 0),
+                            "write `FULLTEXT ANALYZER`",
+                        );
+                    } else if word.eq_ignore_ascii_case("FULLTEXT") {
+                        self.requires(word_span, "`FULLTEXT ANALYZER`", Version::new(3, 0, 0));
+                    }
+                }
             }
+            _ => {}
         }
     }
 }
@@ -775,6 +805,20 @@ impl Visitor for SyntaxVersions<'_, '_> {
                     "`<future>`",
                     Version::new(3, 0, 0),
                     "store the expression as a `DEFINE FIELD ... COMPUTED <expr>` instead",
+                );
+            }
+            // Engine-verified on 3.2.3: `e <|2|> [...]` fails with "The `<|k|>`
+            // KNN operator (KTree / M-Tree) is no longer supported. Use
+            // `<|k, EF|>` against an HNSW index (...), or `<|k, DISTANCE|>`
+            // for a brute-force KNN with an explicit distance metric." The
+            // two-argument forms are 3.x's; the bare form went with MTREE.
+            ast::Expr::Binary { op, .. } if matches!(&op.node, ast::BinaryOp::Knn(knn) if knn.ef.is_none() && knn.distance.is_none()) =>
+            {
+                self.removed(
+                    op.span,
+                    "the bare `<|k|>` KNN operator",
+                    Version::new(3, 0, 0),
+                    "write `<|k, EF|>` against an `HNSW DIMENSION <n>` index, or `<|k, DISTANCE|>` for a brute-force search",
                 );
             }
             // Docs (surrealql/operators): the fuzzy operators `~`, `!~`, `?~`,

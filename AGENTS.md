@@ -8,9 +8,11 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
 
 ## Using SurrealQL Analyzer in a user's project
 
-1. **Set it up:** `npx surrealql-analyzer init`, then edit `surrealql-analyzer.toml` so
-   `[sources] schema` and `queries` globs point at the project's `.surql` files.
-2. **Check on every change:** `npx surrealql-analyzer check --json`. The JSON is
+1. **Set it up:** the command line is SurrealKit's — `cargo install surrealkit`.
+   It reads the schema layout from `surrealkit.toml`; the analyzer needs no config
+   file of its own. A project without SurrealKit uses a `surrealql-analyzer.toml`
+   whose `[sources] schema` and `queries` globs point at its `.surql` files.
+2. **Check on every change:** `surrealkit check --json`. The JSON is
    `{ summary, diagnostics[] }`; each diagnostic has `code`, `severity`
    (`error`/`warning`/`hint`), `source`, `range { start, end }` (byte offsets),
    `message`, and `help`. The process exit code is non-zero when errors remain
@@ -22,7 +24,7 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
 4. **Type the queries:**
    - Rust: wrap queries in the `query!` macro (`cargo add surrealql-analyzer-rs`). They
      are checked at compile time; a violation fails `cargo check`.
-   - TypeScript: run `surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts`,
+   - TypeScript: run `surrealkit generate --out src/surrealql-analyzer.generated.ts`,
      import `SurrealQLAnalyzerClient` from that file (it extends the `surrealdb` SDK),
      and pass string literals to `db.query("…")` — destructure the first result,
      `const [rows] = await db.query("…")`.
@@ -122,9 +124,9 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     be sequenced (`initialize` → its response → `initialized` → `didOpen` →
     request) or tower-lsp answers "Server not initialized".
   - `crates/codegen/tests/golden.rs` — the **generated-TypeScript golden**.
-    `surrealql-analyzer generate` emits a module nothing used to compile, so a type
+    `generate` emits a module nothing used to compile, so a type
     error in the emitter's output would ship undetected. The test runs the
-    CLI's generation path (`QueryEntry::from_analysis` + `render_registry`)
+    library's generation path (`QueryEntry::from_analysis` + `render_registry`)
     over the fixture workspace `crates/codegen/tests/fixtures/typecheck/`
     (schema with option/record/array/literal-union/object fields, an edge
     table, `fn::` functions, a host `src/queries.ts`) and compares the module
@@ -163,6 +165,9 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
   then run `pnpm docs:diagnostics`. CI fails if the page is stale.
 - `crates/macros` + `crates/rs` — the `query!` / `surql!` macros and runtime
 - `crates/codegen` + `crates/embed` — TypeScript generation + host-file extraction
-- `crates/cli` + `crates/lsp` — the `surrealql-analyzer` and `surrealql-analyzer-lsp` binaries
+- `crates/analyzer` — the `surrealql-analyzer` **library**: `Project`, `check`,
+  `generate`, `watch_loop`. No binary — SurrealKit's `check`/`generate`/`watch`
+  call these, and the LSP consumes `crates/workspace` directly
+- `crates/lsp` — the `surrealql-analyzer-lsp` binary
 - `packages/` — `@surrealdb/analyzer-{client,query,next,svelte}`
 - `docs/DESIGN.md` — architecture; `docs/plans/` — design records

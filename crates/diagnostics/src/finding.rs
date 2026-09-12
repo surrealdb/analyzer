@@ -18,6 +18,17 @@ pub enum Severity {
     Hint,
 }
 
+impl Severity {
+    /// The lowercase name every surface prints: `error`, `warning`, `hint`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Hint => "hint",
+        }
+    }
+}
+
 /// One diagnostic, carrying its *intrinsic* severity class from the
 /// catalog. Findings are policy-free: consumers (CLI, LSP, host adapters)
 /// map classes to their presentation through [`crate::PolicyConfig`] —

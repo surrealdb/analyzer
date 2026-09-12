@@ -12,19 +12,16 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
-# ASSET NAMING SCHEME (must stay identical to the npm launcher
-# npm/surrealql-analyzer/bin/surrealql-analyzer.cjs, crates/cli Cargo.toml
-# [package.metadata.binstall], and the Zed extension's downloader in
-# DrewRidley/zed-surreal src/lib.rs):
+# ASSET NAMING SCHEME (must stay identical to the Zed extension's downloader
+# in DrewRidley/zed-surreal src/lib.rs):
 #
 #   tag:     v{version}
-#   archives (both, per target):
-#     CLI:  surrealql-analyzer-{version}-{target}.tar.gz      (unix)
-#           surrealql-analyzer-{version}-{target}.zip          (windows)
-#     LSP:  surrealql-analyzer-lsp-{version}-{target}.tar.gz   (unix)
-#           surrealql-analyzer-lsp-{version}-{target}.zip       (windows)
-#   binary at archive root: surrealql-analyzer | surrealql-analyzer.exe
-#                           surrealql-analyzer-lsp | surrealql-analyzer-lsp.exe
+#   archive: surrealql-analyzer-lsp-{version}-{target}.tar.gz   (unix)
+#            surrealql-analyzer-lsp-{version}-{target}.zip       (windows)
+#   binary at archive root: surrealql-analyzer-lsp | surrealql-analyzer-lsp.exe
+#
+# The language server is the only binary this repository ships. The analyzer
+# itself is a library; its command line is SurrealKit's.
 
 jobs:
   build:
@@ -84,22 +81,17 @@ jobs:
           echo "CC_${{ matrix.target }}=${{ matrix.gcc-cross }}-gcc" >> "$GITHUB_ENV"
           echo "CXX_${{ matrix.target }}=${{ matrix.gcc-cross }}-g++" >> "$GITHUB_ENV"
 
-      - name: Build CLI + LSP
-        run: cargo build --release -p surrealql-analyzer -p surrealql-analyzer-lsp --target ${{ matrix.target }}
+      - name: Build LSP
+        run: cargo build --release -p surrealql-analyzer-lsp --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           version="${GITHUB_REF_NAME#v}"
           bindir="target/${{ matrix.target }}/release"
-          cli="surrealql-analyzer-${version}-${{ matrix.target }}.tar.gz"
           lsp="surrealql-analyzer-lsp-${version}-${{ matrix.target }}.tar.gz"
-          tar -czf "$cli" -C "$bindir" surrealql-analyzer
           tar -czf "$lsp" -C "$bindir" surrealql-analyzer-lsp
-          {
-            echo "ASSET_CLI=${cli}"
-            echo "ASSET_LSP=${lsp}"
-          } >> "$GITHUB_ENV"
+          echo "ASSET_LSP=${lsp}" >> "$GITHUB_ENV"
 
       - name: Package (windows)
         if: runner.os == 'Windows'
@@ -107,17 +99,13 @@ jobs:
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
           $bindir = "target/${{ matrix.target }}/release"
-          $cli = "surrealql-analyzer-$version-${{ matrix.target }}.zip"
           $lsp = "surrealql-analyzer-lsp-$version-${{ matrix.target }}.zip"
-          Compress-Archive -Path "$bindir/surrealql-analyzer.exe" -DestinationPath $cli -Force
           Compress-Archive -Path "$bindir/surrealql-analyzer-lsp.exe" -DestinationPath $lsp -Force
-          "ASSET_CLI=$cli" | Out-File -FilePath $env:GITHUB_ENV -Append
           "ASSET_LSP=$lsp" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
-            ${{ env.ASSET_CLI }}
             ${{ env.ASSET_LSP }}
           fail_on_unmatched_files: true

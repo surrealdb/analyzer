@@ -26,6 +26,37 @@ history in surrealdb/surrealdb, and the three histories came out differently
   passed silently. Both orders parse now, and the reversed one is reported
   with the order to write instead.
 
+### Changed — the analyzer is a library; the command line is SurrealKit's
+
+`surrealql-analyzer` no longer ships a binary. The crate of that name is now
+the library a host embeds — `Project`, `check`, `generate`, and the
+`notify`-backed `watch_loop` — and the `check`/`generate`/`watch` verbs are
+[SurrealKit](https://github.com/surrealdb/surrealkit)'s to spell
+(`surrealkit check`, `surrealkit generate`, `surrealkit watch`). The language
+server is unchanged and remains the one binary this repository releases.
+
+- **Crate:** `crates/cli` → `crates/analyzer`, still published as
+  `surrealql-analyzer`. `clap`, the spinner and the terminal layout are gone;
+  what moved down is everything a host would otherwise reimplement: source
+  discovery, embedded-query collection, host-span remapping, policy
+  resolution, the JSON document, the rustc-style renderer, and the watcher.
+- **Verbs return data.** `check` returns `Ok(CheckReport)` whether or not it
+  found errors — `report.passed()` decides an exit code — and only a run that
+  could not happen is `Err`. `generate` returns `GenerateReport` or
+  `GenerateError::Blocked` (an error in an embedded query; nothing written).
+  Rendering is a separate, opt-in call with colour as a `Styles` parameter.
+- **No config file required.** `Project::new(root, WorkspaceConfig)` lets a
+  host that knows its own layout build the config directly;
+  `Project::discover(dir)` still walks up for a `surrealql-analyzer.toml`.
+- **Watch is engine-only.** `watch_loop` decides *when* and *why*
+  (`WatchRun { index, reason, changes }`); the host's closure decides what a
+  run does and how it is shown. The project comes from a `load` closure, so a
+  host with a fixed config passes a clone and one with a file re-reads it, and
+  the host names its own config file as an extra input to watch.
+- **Removed:** the `surrealql-analyzer` npm launcher, the `cargo-binstall`
+  metadata, the CLI half of the release workflow, and `surrealql-analyzer init`
+  (the `[sources]` layout is SurrealKit's to know). `scripts/oracle.py` runs the
+  corpus through `cargo run --example check_json` instead of a binary.
 
 ### Changed — the project is now the SurrealQL Analyzer
 

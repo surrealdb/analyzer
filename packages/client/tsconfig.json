@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   // `test-d/gen/surrealql-analyzer.generated.ts` is the codegen golden — real
-  // `surrealql-analyzer generate` output over `crates/codegen/tests/fixtures/typecheck`,
+  // `surrealkit generate` output over `crates/codegen/tests/fixtures/typecheck`,
   // checked byte-for-byte by `cargo test -p surrealql-analyzer-codegen --test golden`.
   // Compiling it here is what proves the generator emits valid TypeScript. It
   // imports the package by name, as a real generated file does; map that to

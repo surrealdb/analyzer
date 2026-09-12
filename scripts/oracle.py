@@ -25,6 +25,7 @@ looks identical to no change).
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -32,10 +33,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BASELINE = REPO / "tests" / "oracle_baseline.txt"
 CORPUS = Path("/Users/drewridley/Documents/Projects/workshop/database")
-# The release build, unless a caller points elsewhere: an agent or a bisect run
-# builds into its own CARGO_TARGET_DIR precisely so it does not disturb the
-# binary the editor is using.
-BIN = Path(os.environ.get("SG_ORACLE_BIN") or REPO / "target" / "release" / "surrealql-analyzer")
+# The analyzer ships no binary, so the check runs through the crate's
+# `check_json` example — the same public API a host calls. Override with
+# SG_ORACLE_CMD (a command prefix; the corpus directory is appended) to point a
+# bisect run at a build in its own CARGO_TARGET_DIR.
+CMD = shlex.split(
+    os.environ.get("SG_ORACLE_CMD")
+    or "cargo run -q --release -p surrealql-analyzer --example check_json --"
+)
 
 HEADER = """\
 # Oracle baseline — every finding the real-world corpus produces, with a verdict.
@@ -60,7 +65,7 @@ def findings():
     # `check` exits non-zero whenever any finding is error-severity, which this
     # corpus has by design — the exit code is not a failure signal here.
     out = subprocess.run(
-        [str(BIN), "check", "--json"], cwd=CORPUS, capture_output=True, text=True
+        [*CMD, str(CORPUS)], cwd=REPO, capture_output=True, text=True
     ).stdout
     got = []
     for d in json.loads(out)["diagnostics"]:

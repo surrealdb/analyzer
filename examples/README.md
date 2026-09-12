@@ -2,9 +2,9 @@
 
 Real, type-checked demos of the round-trip:
 
-**schema (`.surql`) → `surrealql-analyzer generate` → typed queries.**
+**schema (`.surql`) → `surrealkit generate` → typed queries.**
 
-`surrealql-analyzer generate` scans your host files (`.ts`, `.tsx`, `.svelte`, …) for
+`surrealkit generate` scans your host files (`.ts`, `.tsx`, `.svelte`, …) for
 query text — `db.query("…")`, `defineQuery("…")`, `defineLive("…")` — analyzes
 each against your `schema/*.surql`, and writes a module augmentation that keys
 every query by its exact text with its `{ result; params }` types. You import
@@ -69,12 +69,12 @@ From the repo root (the workspace links `@surrealdb/analyzer-*`):
 ```sh
 pnpm install
 
-# 1. Build the CLI.
-CARGO_TARGET_DIR=/tmp/sg cargo build --release -p surrealql-analyzer
+# 1. Install the command line. The analyzer itself is a library SurrealKit embeds.
+cargo install surrealkit
 
 # 2. Generate the typed registry from the schema + the project's queries.
 cd examples/basic
-/tmp/sg/release/surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts
+surrealkit generate --out src/surrealql-analyzer.generated.ts
 
 # 3. Type-check — the generated types make everything typed.
 cd ../..

@@ -786,9 +786,9 @@ fn check_index_backed_operator(
     if !covered {
         let (what, clause) = match required {
             crate::schema::IndexKind::Search => {
-                ("a SEARCH ANALYZER index", "SEARCH ANALYZER <analyzer>")
+                ("a FULLTEXT ANALYZER index", "FULLTEXT ANALYZER <analyzer>")
             }
-            _ => ("an MTREE or HNSW index", "MTREE DIMENSION <n>"),
+            _ => ("an HNSW index", "HNSW DIMENSION <n>"),
         };
         ctx.emit(
             surrealql_analyzer_diagnostics::catalog::finding(
@@ -1066,6 +1066,15 @@ fn check_membership_kind(
     let (collection, element) = match op {
         ast::BinaryOp::Contains => (left, right),
         ast::BinaryOp::In | ast::BinaryOp::Inside => (right, left),
+        ast::BinaryOp::ContainsAny
+        | ast::BinaryOp::ContainsAll
+        | ast::BinaryOp::ContainsNone
+        | ast::BinaryOp::AnyInside
+        | ast::BinaryOp::AllInside
+        | ast::BinaryOp::NoneInside => {
+            check_set_operands(ctx, whole, op, left, right);
+            return;
+        }
         _ => return,
     };
     let elem = match collection {
@@ -1086,6 +1095,85 @@ fn check_membership_kind(
                 crate::render::render_offending(elem, Some(element))
             ),
         );
+    }
+}
+
+/// The set operators compare two collections, and the engine does not say so
+/// when handed a scalar. Verified on 3.2.3 against `tags: array<string>`:
+/// `tags CONTAINSANY 'x'` and `'a' ALLINSIDE ['a']` return no rows, `['a']
+/// CONTAINSNONE 'zzz'` returns every row — the ANY/ALL forms are always
+/// false and the NONE forms always true, and the query quietly answers the
+/// wrong question (7006 family). Two collections whose element kinds can
+/// never compare equal get the same verdict.
+///
+/// Only a *known scalar* on the collection side fires: `Any`, a param, a
+/// union or a sentinel is not ours to judge, and a literal is read as its
+/// base kind so `['x']` is the array it is.
+fn check_set_operands(
+    ctx: &mut AnalysisContext<'_>,
+    whole: &ast::Spanned<ast::Expr>,
+    op: &ast::BinaryOp,
+    left: &Kind,
+    right: &Kind,
+) {
+    let (spelled, collection, other, negated) = match op {
+        ast::BinaryOp::ContainsAny => ("CONTAINSANY", left, right, false),
+        ast::BinaryOp::ContainsAll => ("CONTAINSALL", left, right, false),
+        ast::BinaryOp::ContainsNone => ("CONTAINSNONE", left, right, true),
+        ast::BinaryOp::AnyInside => ("ANYINSIDE", right, left, false),
+        ast::BinaryOp::AllInside => ("ALLINSIDE", right, left, false),
+        ast::BinaryOp::NoneInside => ("NONEINSIDE", right, left, true),
+        _ => return,
+    };
+    let verdict = if negated {
+        "always true"
+    } else {
+        "always false"
+    };
+    let other_base = crate::kinds::literal_base_kind(other).unwrap_or_else(|| other.clone());
+    match &other_base {
+        Kind::Array(elem, _) | Kind::Set(elem, _) => {
+            let collection_elem = match collection {
+                Kind::Array(elem, _) | Kind::Set(elem, _) => elem.as_ref(),
+                _ => return,
+            };
+            if matches!(collection_elem, Kind::Any) || matches!(elem.as_ref(), Kind::Any) {
+                return;
+            }
+            if !comparable_element(elem, collection_elem) {
+                emit(
+                    ctx,
+                    whole.span,
+                    7006,
+                    format!(
+                        "`{spelled}` between a collection of `{}` and a collection of `{}` is {verdict}",
+                        crate::render::render_offending(collection_elem, Some(elem)),
+                        crate::render::render_offending(elem, Some(collection_elem))
+                    ),
+                );
+            }
+        }
+        Kind::String
+        | Kind::Int
+        | Kind::Float
+        | Kind::Decimal
+        | Kind::Number
+        | Kind::Bool
+        | Kind::Datetime
+        | Kind::Duration
+        | Kind::Uuid
+        | Kind::Record(_) => {
+            emit(
+                ctx,
+                whole.span,
+                7006,
+                format!(
+                    "`{spelled}` compares against a collection, and `{}` is not one — this is {verdict}",
+                    crate::render::render_offending(other, None)
+                ),
+            );
+        }
+        _ => {}
     }
 }
 
@@ -1389,6 +1477,29 @@ mod tests {
 
     fn fires(query: &str, code: &str) -> bool {
         codes(query).iter().any(|c| c == code)
+    }
+
+    #[test]
+    fn a_scalar_where_a_set_operator_needs_a_collection_is_7006() {
+        let schema = "DEFINE TABLE p SCHEMAFULL; DEFINE FIELD tags ON p TYPE array<string>;";
+        for op in ["CONTAINSANY", "CONTAINSALL", "CONTAINSNONE"] {
+            let query = format!("{schema} SELECT * FROM p WHERE tags {op} 'x';");
+            assert!(fires(&query, "L7006"), "{op}: {:?}", codes(&query));
+        }
+        assert!(fires(
+            &format!("{schema} SELECT * FROM p WHERE 'x' ANYINSIDE tags;"),
+            "L7006"
+        ));
+        // A collection on both sides is the operator's contract; an unknown
+        // operand is not ours to judge.
+        for ok in [
+            "SELECT * FROM p WHERE tags CONTAINSANY ['x'];",
+            "SELECT * FROM p WHERE tags CONTAINSANY $wanted;",
+            "SELECT * FROM p WHERE ['x'] ALLINSIDE tags;",
+        ] {
+            let query = format!("{schema} {ok}");
+            assert!(!fires(&query, "L7006"), "{ok}: {:?}", codes(&query));
+        }
     }
 
     // ---- parentheses are a semantic no-op, so every rule still applies ----

@@ -15,6 +15,7 @@ pub(crate) fn analyze_update(ctx: &mut AnalysisContext<'_>, stmt: &ast::UpdateSt
 
 pub(crate) fn update_response_kind(stmt: &ast::UpdateStmt, ctx: &mut AnalysisContext<'_>) -> Kind {
     mutation::check_only_on_table(ctx, stmt.only, stmt.targets.first());
+    mutation::check_payload_id_against_target(ctx, &stmt.targets, stmt.data.as_ref());
     mutation::check_whole_table_write(ctx, stmt.targets.first(), stmt.where_clause.as_ref());
     let table_name = mutation::target_table_name(ctx, stmt.targets.first());
     let table_hint = table_name.clone();

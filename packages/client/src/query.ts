@@ -121,11 +121,11 @@ export interface AnyQuery {
  */
 export type DefinedQuery<Q extends string> = Q extends keyof SurqlRegistry
   ? SurqlQuery<ResultOf<Q>, ParamsOf<Q>>
-  : SurqlError<"this query is not in the generated registry - run `surrealql-analyzer generate`">;
+  : SurqlError<"this query is not in the generated registry - run `surrealkit generate`">;
 
 export type DefinedLive<Q extends string> = Q extends keyof SurqlRegistry
   ? SurqlLive<RowOf<Rows<ResultOf<Q>>>, ParamsOf<Q>>
-  : SurqlError<"this query is not in the generated registry - run `surrealql-analyzer generate`">;
+  : SurqlError<"this query is not in the generated registry - run `surrealkit generate`">;
 
 /** Prefix `LIVE ` unless the text already begins with it. */
 function ensureLive(text: string): string {

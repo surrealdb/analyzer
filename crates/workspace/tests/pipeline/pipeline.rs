@@ -471,7 +471,7 @@ fn analyze_workspace_full_coverage_batch_two() {
         ("E2036", "`Pointt` is not a GeoJSON geometry type"),
         ("E3004", "not on a table"),
         ("E3009", "can't start from `age`"),
-        ("E1027", "needs a SEARCH ANALYZER index"),
+        ("E1027", "needs a FULLTEXT ANALYZER index"),
         ("E1029", "covers the same fields as `by_name`"),
         ("E1032", "`klingon` is not a supported snowball language"),
         ("E2035", "needs `(min, max)` with min <= max"),

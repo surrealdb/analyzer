@@ -17,4 +17,5 @@ doc-valid-idents = [
     "MTREE",
     "HNSW",
     "KNN",
+    "SurrealKit",
 ]

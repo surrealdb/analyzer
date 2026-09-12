@@ -1,7 +1,7 @@
 /**
  * `@surrealdb/analyzer-client` — the typed SurrealQL client.
  *
- * The whole guarantee lives in one mechanism: `surrealql-analyzer generate` emits an
+ * The whole guarantee lives in one mechanism: `surrealkit generate` emits an
  * `interface SurqlRegistry` keyed by *exact query text*, and a single
  * conditional generic reads it. There is no permissive `string` overload
  * anywhere (a literal is also a `string`, so a fallback overload would rescue

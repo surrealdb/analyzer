@@ -1,7 +1,7 @@
 //! Golden test for the generated TypeScript — the harness that catches a
 //! generated file that does not compile.
 //!
-//! `surrealql-analyzer generate` writes a module (`SurrealQLAnalyzerClient`, the query
+//! `surrealkit generate` writes a module (`SurrealQLAnalyzerClient`, the query
 //! registry, the response types) and until this test nothing ever handed that
 //! module to `tsc`: a type error in the emitter's output would ship, and the
 //! user would be the first to see it. The check has two halves that meet at
@@ -245,7 +245,7 @@ fn walk(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The CLI's host-file extension set (`is_host_source` in `crates/cli`).
+/// The CLI's host-file extension set (`is_host_source` in `crates/analyzer`).
 fn is_host_source(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|extension| extension.to_str()),

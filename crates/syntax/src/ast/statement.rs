@@ -400,6 +400,10 @@ pub struct DefineIndex {
     pub fields: Vec<Spanned<Idiom>>,
     /// What backs the index.
     pub kind: IndexKind,
+    /// The analyzer a full-text index tokenizes with — the `<name>` after
+    /// `ANALYZER` in `SEARCH ANALYZER <name>` / `FULLTEXT ANALYZER <name>`,
+    /// when the clause names one.
+    pub analyzer: Option<Spanned<String>>,
 }
 
 /// What backs a `DEFINE INDEX`: full-text search, a vector structure, a

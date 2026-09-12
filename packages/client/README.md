@@ -1,7 +1,7 @@
 # @surrealdb/analyzer-client
 
 A typed SurrealQL client. You write the SurrealQL you already know;
-`surrealql-analyzer generate` analyses it against your schema and types the result.
+`surrealkit generate` analyses it against your schema and types the result.
 
 ```ts
 const [people] = await db.query("SELECT id, name, age, team FROM person");
@@ -22,11 +22,13 @@ module the generated file augments by name. `surrealdb` is its peer.
 
 ```sh
 npm install @surrealdb/analyzer-client surrealdb
-npm install -D surrealql-analyzer typescript
+npm install -D typescript
+cargo install surrealkit    # the command line: check, generate, watch
 ```
 
-**2. Point it at your schema.** `npx surrealql-analyzer init` writes a commented
-`surrealql-analyzer.toml`; the part that matters is:
+**2. Point it at your schema.** Under SurrealKit the schema directory comes from
+`surrealkit.toml`. A standalone workspace uses a `surrealql-analyzer.toml`; the part
+that matters is:
 
 ```toml
 [sources]
@@ -51,15 +53,15 @@ you import it:
 
 | Project | Command | Import as |
 | --- | --- | --- |
-| Vanilla TS | `npx surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts` | `./surrealql-analyzer.generated` |
-| SvelteKit | `npx surrealql-analyzer generate --out src/lib/surrealql-analyzer.generated.ts` | `$lib/surrealql-analyzer.generated` |
-| Next (`src/`) | `npx surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts` | `@/surrealql-analyzer.generated` |
-| Next (no `src/`) | `npx surrealql-analyzer generate --out surrealql-analyzer.generated.ts` | `@/surrealql-analyzer.generated` |
+| Vanilla TS | `surrealkit generate --out src/surrealql-analyzer.generated.ts` | `./surrealql-analyzer.generated` |
+| SvelteKit | `surrealkit generate --out src/lib/surrealql-analyzer.generated.ts` | `$lib/surrealql-analyzer.generated` |
+| Next (`src/`) | `surrealkit generate --out src/surrealql-analyzer.generated.ts` | `@/surrealql-analyzer.generated` |
+| Next (no `src/`) | `surrealkit generate --out surrealql-analyzer.generated.ts` | `@/surrealql-analyzer.generated` |
 
 Put it in `package.json` so it is one command and one path forever:
 
 ```json
-{ "scripts": { "generate": "surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts" } }
+{ "scripts": { "generate": "surrealkit generate --out src/surrealql-analyzer.generated.ts" } }
 ```
 
 Commit the generated module — it is what makes a fresh checkout type-check with
@@ -171,7 +173,7 @@ file is stale:
 
 ```
 TS2345: Argument of type 'SurqlError<"this query is not in the generated
-  registry - run `surrealql-analyzer generate`">' is not assignable to …
+  registry - run `surrealkit generate`">' is not assignable to …
 ```
 
 That also catches the case nobody recognises as an edit: reformatting a query
@@ -286,7 +288,7 @@ does for you which cannot be recovered afterwards.
 
 ## How it works
 
-`surrealql-analyzer generate` scans your source for query text — `db.query("…")`,
+`surrealkit generate` scans your source for query text — `db.query("…")`,
 `defineQuery("…")`, `defineLive("…")` — analyses each against your schema, and
 writes one file:
 

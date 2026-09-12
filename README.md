@@ -26,7 +26,7 @@ construct's contract. One engine, four front ends:
 
 | | |
 | --- | --- |
-| **CLI** — `surrealql-analyzer` | `check` your workspace in CI, `generate` TypeScript types, `watch` both while you develop |
+| **SurrealKit** — `surrealkit check` / `generate` / `watch` | The command line: check your workspace in CI, generate TypeScript types, watch both while you develop — built on the `surrealql-analyzer` library |
 | **Language server** — `surrealql-analyzer-lsp` | Diagnostics, hover, inlay hints, go-to-definition, and type-aware completion, in `.surql` files *and* in SurrealQL embedded in TypeScript / Svelte / Vue / Astro |
 | **TypeScript** — `@surrealdb/analyzer-{client,query,next,svelte}` | `db.query("SELECT …")` typed from the query text; live queries as framework-native reactive state |
 | **Rust** — `surrealql-analyzer-rs` | `query!("SELECT …")` checked and typed at compile time |
@@ -48,15 +48,14 @@ typed, span-carrying AST and runs all analysis on that.
 
 ```sh
 npm i @surrealdb/analyzer-client surrealdb
-npm i -D surrealql-analyzer typescript
-npx surrealql-analyzer init          # writes a commented surrealql-analyzer.toml
+npm i -D typescript
+cargo install surrealkit              # the command line: check, generate, watch
 ```
 
-Point `surrealql-analyzer.toml`'s `schema` glob at your `.surql` files, and write a
-schema:
+Put your schema where SurrealKit keeps it (`database/schema/`), and write one:
 
 ```surql
--- schema/schema.surql
+-- database/schema/schema.surql
 DEFINE TABLE team SCHEMAFULL;
 DEFINE FIELD name ON team TYPE string;
 
@@ -90,7 +89,7 @@ for (const person of people) {
 ```
 
 ```sh
-npx surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts
+surrealkit generate --out src/surrealql-analyzer.generated.ts
 ```
 
 ```
@@ -102,7 +101,7 @@ workspace on every save and regenerates when the check passes, so the types
 never go stale behind you:
 
 ```sh
-npx surrealql-analyzer watch --out src/surrealql-analyzer.generated.ts
+surrealkit watch --out src/surrealql-analyzer.generated.ts
 ```
 
 `generate` scanned `src/main.ts`, analyzed the query against the schema, and
@@ -151,7 +150,7 @@ and [`examples/`](examples) for a vanilla-TS and a SvelteKit project you can run
 ## Check in CI
 
 ```sh
-npx surrealql-analyzer check
+surrealkit check
 ```
 
 `check` analyzes both your `.surql` files and the SurrealQL embedded in host
@@ -268,7 +267,7 @@ query's tokens. That matters beyond convenience: the standalone LSP is a
 resolves that competition differently on every keystroke, so an inline query
 flickers between highlighted and plain string. A plugin has nothing to race —
 its answers *are* TypeScript's. It does not load in `tsc` (that is TypeScript's
-design), which is the right split: CI keeps running `surrealql-analyzer check`, which
+design), which is the right split: CI keeps running `surrealkit check`, which
 sees the whole workspace instead of one file at a time. `.svelte` and `.vue`
 still need the LSP; the tools that own those files build their TypeScript
 service directly and never read `compilerOptions.plugins`.
@@ -302,9 +301,11 @@ service directly and never read `compilerOptions.plugins`.
 
 ## Configuration
 
-`surrealql-analyzer.toml` is discovered by walking up from the working directory; the
-directory holding it is the workspace root. `surrealql-analyzer init` writes a fully
-commented starter.
+Under SurrealKit the analyzer needs no config file of its own: the schema layout
+comes from `surrealkit.toml`. The `surrealql-analyzer.toml` below is what the
+language server reads, and what a standalone workspace uses — it is discovered by
+walking up from the working directory, and the directory holding it is the
+workspace root.
 
 ```toml
 [sources]
@@ -334,21 +335,18 @@ glob of their own.
 
 ```sh
 npm i @surrealdb/analyzer-client surrealdb    # + @surrealdb/analyzer-{query,next,svelte}
-npm i -D surrealql-analyzer                   # the CLI, as a project dev dependency
 ```
-
-The `surrealql-analyzer` npm package is a launcher that downloads the prebuilt binary
-matching its version. `npx surrealql-analyzer --help` works without installing.
 
 **Rust:**
 
 ```sh
 cargo add surrealql-analyzer-rs        # the query! / surql! macros
-cargo binstall surrealql-analyzer      # the CLI, prebuilt; `cargo install surrealql-analyzer` builds it
+cargo add surrealql-analyzer           # the library, to embed check/generate/watch in your own tool
+cargo install surrealkit               # the command line: check, generate, watch
 cargo install surrealql-analyzer-lsp   # the language server
 ```
 
-Prebuilt archives for both binaries, every supported target, are attached to each
+Prebuilt archives of the language server, for every supported target, are attached to each
 [GitHub Release](https://github.com/surrealdb/analyzer/releases).
 
 ## Project layout
@@ -364,7 +362,7 @@ surrealql-analyzer/
 │   ├── embed/                 # embedded-SurrealQL extraction from host files
 │   ├── macros/                # the surql! / query! proc-macros
 │   ├── rs/                    # surrealql-analyzer-rs runtime (typed results)
-│   ├── cli/                   # the `surrealql-analyzer` binary
+│   ├── analyzer/              # the `surrealql-analyzer` library: Project, check, generate, watch
 │   ├── lsp/                   # the `surrealql-analyzer-lsp` binary
 │   └── wasm/                  # the browser-playground analyzer build
 ├── packages/          # @surrealdb/analyzer-{client,query,next,svelte} (pnpm workspace)

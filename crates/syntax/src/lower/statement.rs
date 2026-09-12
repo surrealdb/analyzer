@@ -1393,6 +1393,7 @@ fn lower_define_index(node: Node<'_>, text: &str) -> DefineIndex {
         table: Spanned::new(String::new(), span),
         fields: Vec::new(),
         kind: IndexKind::Normal,
+        analyzer: None,
     };
     let mut named = false;
 
@@ -1411,7 +1412,10 @@ fn lower_define_index(node: Node<'_>, text: &str) -> DefineIndex {
                 }
             }
             "FieldsColumnsClause" => def.fields = clause_idioms(child, text),
-            "IndexClause" => def.kind = index_kind_from_clause(child),
+            "IndexClause" => {
+                def.kind = index_kind_from_clause(child);
+                def.analyzer = index_analyzer_from_clause(child, text);
+            }
             "UniqueClause" => def.kind = IndexKind::Unique,
             _ => {}
         }
@@ -1435,6 +1439,21 @@ fn index_kind_from_clause(clause: Node<'_>) -> IndexKind {
         }
     }
     IndexKind::Normal
+}
+
+/// The analyzer a full-text clause names: the `Ident` after `ANALYZER` in
+/// either spelling (`SEARCH ANALYZER a` / `FULLTEXT ANALYZER a`). `FULLTEXT`
+/// alone, with no `ANALYZER`, names none.
+fn index_analyzer_from_clause(clause: Node<'_>, text: &str) -> Option<Spanned<String>> {
+    named_children(clause)
+        .into_iter()
+        .find(|child| matches!(child.kind(), "SearchAnalyzerClause" | "FullTextClause"))
+        .and_then(|full_text| {
+            named_children(full_text)
+                .into_iter()
+                .find(|child| child.kind() == "Ident")
+                .map(|ident| spanned_text(ident, text))
+        })
 }
 
 fn lower_define_event(node: Node<'_>, text: &str) -> DefineEvent {

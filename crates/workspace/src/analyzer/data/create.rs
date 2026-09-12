@@ -17,6 +17,7 @@ pub(crate) fn analyze_create(ctx: &mut AnalysisContext<'_>, stmt: &ast::CreateSt
 pub(crate) fn create_response_kind(stmt: &ast::CreateStmt, ctx: &mut AnalysisContext<'_>) -> Kind {
     mutation::check_relation_write(ctx, stmt.targets.first(), stmt.data.as_ref());
     mutation::check_return_before_on_create(ctx, stmt.ret.as_ref());
+    mutation::check_payload_id_against_target(ctx, &stmt.targets, stmt.data.as_ref());
     let table_hint = mutation::source_table_name(stmt.targets.first());
     mutation::analyze_expression_positions_for(
         ctx,
@@ -83,6 +84,36 @@ mod tests {
             create_response_kind(&stmt, &mut ctx);
         }
         diagnostics
+    }
+
+    #[test]
+    fn a_payload_id_that_disagrees_with_the_record_target_is_4031() {
+        let schema = person_schema();
+        let fires = |query: &str| {
+            diagnostics_for(&schema, query, StatementEnv::default())
+                .iter()
+                .any(|finding| finding.code().number() == 4031)
+        };
+        assert!(fires(
+            "CREATE person:1 CONTENT { id: person:2, name: 'x', age: 1 };"
+        ));
+        assert!(fires(
+            "CREATE person:1 SET id = person:2, name = 'x', age = 1;"
+        ));
+        assert!(fires(
+            "CREATE person:1 CONTENT { id: other:1, name: 'x', age: 1 };"
+        ));
+        // The same id twice is redundant, not wrong; a table target lets the
+        // payload choose; a computed id is not ours to judge.
+        assert!(!fires(
+            "CREATE person:1 CONTENT { id: person:1, name: 'x', age: 1 };"
+        ));
+        assert!(!fires(
+            "CREATE person CONTENT { id: person:9, name: 'x', age: 1 };"
+        ));
+        assert!(!fires(
+            "CREATE person:1 CONTENT { id: $id, name: 'x', age: 1 };"
+        ));
     }
 
     fn missing_fields(diagnostics: &[surrealql_analyzer_diagnostics::Finding]) -> usize {

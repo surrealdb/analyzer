@@ -9,7 +9,7 @@ Current maintained direction:
 - `surrealql-analyzer-syntax`: tree-sitter SurrealQL parsing, source IDs, spans, parse diagnostics.
 - `surrealql-analyzer-diagnostics`: stable finding codes, severities, lint policy, suppression parsing.
 - `surrealql-analyzer-workspace`: source registry, workspace config, schema facts, SELECT semantics, analysis orchestration.
-- `surrealql-analyzer`: CLI surface.
+- `surrealql-analyzer`: the embeddable driver — project discovery, `check`, `generate`, `watch_loop`. No binary: SurrealKit is the command line, the LSP is the editor, both consume the library.
 - `surrealql-analyzer-lsp`: LSP diagnostics surface.
 
 Legacy note: `crates/types` / `surrealql-analyzer-types` was removed during the v3 cleanup. The maintained design must not reintroduce a custom SurrealDB scalar/type hierarchy.
@@ -26,7 +26,7 @@ It analyzes SurrealQL in:
 
 It exposes the same analysis model through:
 
-1. CLI/CI via `surrealql-analyzer check`
+1. CLI/CI via SurrealKit (`surrealkit check`), which embeds the `surrealql-analyzer` crate
 2. LSP diagnostics and editor intelligence
 3. MCP tools for agents (planned; not yet implemented)
 4. host-language adapters, starting with one embedded-query spike
@@ -131,22 +131,22 @@ The current implementation is the analyzer tree under `crates/workspace/src/anal
 
 Each parsed statement should eventually infer a response schema: the statement span and kind, input parameter requirements, result shape/type, and any partial-analysis limitations. Diagnostics should be emitted from that shared semantic model so CLI, LSP, MCP, and host adapters all explain the same facts rather than reimplementing rules per surface.
 
-## CLI contract
+## Driver contract
 
-`surrealql-analyzer check` is the CLI/CI entry point.
+`surrealql_analyzer::check` is the CI entry point; SurrealKit's `check` is its command line. The analyzer ships no binary and parses no arguments — how a verb is spelled, its exit code, and its terminal layout are the host's.
 
 It must:
 
-- load `surrealql-analyzer.toml` from the current directory or a parent
-- discover configured `.surql` and `.surrealql` files
+- take a `Project`: a root plus a `WorkspaceConfig`, either built by the host from its own layout (`Project::new`) or discovered from a `surrealql-analyzer.toml` in the current directory or a parent (`Project::discover`)
+- discover configured `.surql` and `.surrealql` files, and the host files carrying embedded SurrealQL
 - run workspace analysis
-- print rustc-style human diagnostics by default (header, source excerpt with caret, `help:` suggestions, related locations); a clean run still prints surviving warnings, then the summary
-- print stable JSON with `--json`
-- exit non-zero when any finding has effective severity `error`
+- return findings as data, with a rustc-style rendering available on request (header, source excerpt with caret, `help:` suggestions, related locations); a clean run still carries its surviving warnings
+- expose the stable JSON document (`{ summary, diagnostics[] }`)
+- report `passed() == false` when any finding has effective severity `error`; the host turns that into an exit code
 
 ## LSP contract
 
-The LSP must consume the same workspace analysis output as CLI.
+The LSP must consume the same workspace analysis output as the driver.
 
 Current LSP scope:
 
@@ -190,7 +190,7 @@ Two rules keep them from drifting:
   (UTF-16 offsets, diagnostic codes) live there.
 
 The plugin does not load in `tsc`, by TypeScript's design. That is the right
-split rather than a limitation: CI runs `surrealql-analyzer check`, which sees the
+split rather than a limitation: CI runs `surrealkit check`, which sees the
 whole workspace at once.
 
 ## Embedded-source model
