@@ -76,7 +76,7 @@ impl QueryEntry {
 /// Every element is a [`crate::TsContext::Value`]: a tuple slot has no key
 /// to omit, so an `option<T>` result stays `undefined | T` rather than
 /// becoming an optional slot — dropping it would shorten the tuple.
-pub fn response_tuple(statements: &[StatementAnalysis]) -> String {
+pub(crate) fn response_tuple(statements: &[StatementAnalysis]) -> String {
     let elements: Vec<String> = statements
         .iter()
         .map(|statement| {
@@ -280,12 +280,12 @@ mod tests {
         );
     }
 
-    /// The two spellings of one `option<string>`, side by side in the file a
-    /// consumer actually imports. The same two queries sit in the golden
-    /// fixture (`tests/fixtures/typecheck`), so these exact rows also appear
-    /// in the generated `packages/client/test-d/gen/surrealql-analyzer.generated.ts`,
-    /// where `optionality.test-d.ts` proves `tsc` treats them as different
-    /// types.
+    /// The two spellings of one `option<string>`, side by side. The same two
+    /// queries sit in the fixture workspace (`tests/fixtures/typecheck`), so
+    /// these exact rows appear in what `tests/generation.rs` renders. That a
+    /// TypeScript compiler treats the two as different types was once proved
+    /// by a `test-d` file in the client package; nothing in this repository
+    /// compiles TypeScript any more, so this test is the whole check.
     #[test]
     fn an_optional_field_and_an_optional_result_spell_differently() {
         use surrealdb_types::KindLiteral;

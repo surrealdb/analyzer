@@ -1,5 +1,17 @@
 //! TypeScript generation from analysis results.
 //!
+//! # Dormant
+//!
+//! Nothing in this workspace calls this crate. The module
+//! [`render_registry`] emits augments `@surrealdb/analyzer-client`, a package
+//! that has left this repository with the rest of the TypeScript SDKs, and
+//! the CLI has no `generate` verb any more. What is kept — and the reason the
+//! crate is still here — is [`ts_type`]: rendering one
+//! `surrealdb_types::Kind` as a TypeScript type for a named position is the
+//! half of typed-client generation that belongs to the analyzer rather than
+//! to any client. The registry half will be rewritten against whatever the
+//! new client's contract turns out to be.
+//!
 //! Two layers: [`ts_type`] renders one `surrealdb_types::Kind` as a
 //! TypeScript type *for a named position* ([`TsContext`]), and
 //! [`render_registry`] emits the generated `.d.ts`
@@ -39,7 +51,7 @@ use surrealql_analyzer_workspace::analysis::{ParamInference, ValueDomain};
 
 mod registry;
 
-pub use registry::{render_registry, response_tuple, QueryEntry};
+pub use registry::{render_registry, QueryEntry};
 
 /// Where the rendered text is going to sit in a TypeScript type.
 ///
@@ -239,7 +251,7 @@ fn is_identifier(name: &str) -> bool {
 /// [`TsContext::Value`] and the caller keeps its own marker. Folding a
 /// param's `option<T>` into the key as well would change the type (it would
 /// let callers omit a key the query requires), not just its spelling.
-pub fn params_type(params: &[ParamInference]) -> String {
+pub(crate) fn params_type(params: &[ParamInference]) -> String {
     let mut parts = Vec::new();
     for param in params {
         if param.name.starts_with("__host") {
@@ -257,23 +269,6 @@ pub fn params_type(params: &[ParamInference]) -> String {
     } else {
         format!("{{ {} }}", parts.join("; "))
     }
-}
-
-/// The substitution tuple: the constrained type of each `${...}` in
-/// template order. Every element is a [`TsContext::Value`] — a tuple slot has
-/// no key, and an omitted element would shorten the tuple.
-pub fn subs_tuple(params: &[ParamInference]) -> String {
-    let mut hosts: Vec<&ParamInference> = params
-        .iter()
-        .filter(|param| param.name.starts_with("__host"))
-        .collect();
-    hosts.sort_by_key(|param| {
-        param.name["__host".len()..]
-            .parse::<usize>()
-            .unwrap_or(usize::MAX)
-    });
-    let items: Vec<String> = hosts.iter().map(|param| param_value_type(param)).collect();
-    format!("[{}]", items.join(", "))
 }
 
 fn param_value_type(param: &ParamInference) -> String {
@@ -444,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn params_render_named_object_and_subs_tuple() {
+    fn params_render_as_a_named_object() {
         let params = vec![
             ParamInference {
                 name: "age".into(),
@@ -476,7 +471,6 @@ mod tests {
             params_type(&params),
             "{ age: number; status?: \"open\" | \"closed\" }"
         );
-        assert_eq!(subs_tuple(&params), "[string]");
     }
 
     /// The params object looks like a `Property` position and is not one. Its

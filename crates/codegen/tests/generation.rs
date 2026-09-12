@@ -1,32 +1,39 @@
-//! Golden test for the generated TypeScript — the harness that catches a
-//! generated file that does not compile.
+//! What the generation path can still be held to in Rust alone.
 //!
-//! `surrealql-analyzer generate` writes a module (`SurrealQLAnalyzerClient`, the query
-//! registry, the response types) and until this test nothing ever handed that
-//! module to `tsc`: a type error in the emitter's output would ship, and the
-//! user would be the first to see it. The check has two halves that meet at
-//! one committed file:
+//! This file used to be `golden.rs`, and its centrepiece was a byte-for-byte
+//! comparison of the rendered module against a committed golden that lived at
+//! `packages/client/test-d/gen/surrealql-analyzer.generated.ts`. That golden
+//! was load-bearing in two directions at once: this test pinned the emitter's
+//! output against it, and `pnpm -r run typecheck` compiled it as part of
+//! `@surrealdb/analyzer-client`, against that package's source and the real
+//! `surrealdb` types, with `test-d/gen/*.test-d.ts` asserting what the
+//! resolved types were. The second half is what gave the first its meaning:
+//! Rust cannot tell whether a string it produced is valid TypeScript, so the
+//! byte comparison alone only ever proved that today's output equals
+//! yesterday's.
 //!
-//! 1. **This test** runs the CLI's generation path — the same
-//!    `QueryEntry::from_analysis` + `render_registry` `run_generate` calls —
-//!    over the fixture workspace at `tests/fixtures/typecheck/` and compares
-//!    the result byte for byte with the committed golden,
-//!    `packages/client/test-d/gen/surrealql-analyzer.generated.ts`.
-//! 2. **`pnpm -r run typecheck`** compiles that golden as part of
-//!    `@surrealdb/analyzer-client`, against the package's own source and the real
-//!    `surrealdb` types, and `test-d/gen/*.test-d.ts` plus
-//!    `test/generated.test.ts` assert what the resolved types are.
+//! The client package has left this repository, and nothing here compiles
+//! TypeScript any more. A relocated golden would keep the comparison and lose
+//! the compiler — a snapshot of an emitter whose target audience is gone, held
+//! against a file the redesign is going to replace wholesale. Kept, it would
+//! read like coverage of the generated module; it would not be any. So it is
+//! dropped, deliberately, rather than moved.
 //!
-//! So a generator change that alters the output fails here until the golden
-//! is regenerated, and a regenerated golden that no longer typechecks fails
-//! in CI's package job. Regenerate with:
+//! What survives is everything Rust genuinely can check about this path, and
+//! both invariants are about the *analysis* feeding the emitter rather than
+//! about TypeScript:
 //!
-//! ```text
-//! UPDATE_SNAPSHOTS=1 cargo test -p surrealql-analyzer-codegen --test golden
-//! ```
+//! 1. the fixture workspace analyzes clean, so nothing downstream is inferred
+//!    against a broken schema, and
+//! 2. every embedded query the fixture declares reaches the registry — a query
+//!    the extractor silently dropped is a query the generated module would
+//!    never mention.
 //!
-//! The golden records *current* output, not correct output: read the diff
-//! before accepting it, and run the package typecheck after.
+//! The fixture (`tests/fixtures/typecheck/`: schema with option/record/array/
+//! literal-union/object fields, an edge table, `fn::` functions, a host
+//! `src/queries.ts`) is kept for the same reason `surrealql-analyzer-codegen`
+//! itself is: it is the seed of the redesigned typegen, and the shape it
+//! exercises is the shape that will have to be re-emitted.
 
 use std::path::{Path, PathBuf};
 
@@ -41,61 +48,11 @@ fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/typecheck")
 }
 
-/// The committed golden. It lives in the client package, not beside this
-/// test, because the package's `tsconfig` is what compiles it.
-fn golden_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/client/test-d/gen/surrealql-analyzer.generated.ts")
-}
-
-fn updating() -> bool {
-    std::env::var_os("UPDATE_SNAPSHOTS").is_some()
-}
-
-#[test]
-fn generated_module_matches_the_committed_golden() {
-    let actual = generate(&fixture_root());
-    let path = golden_path();
-
-    if updating() {
-        std::fs::create_dir_all(path.parent().expect("golden dir")).expect("create golden dir");
-        std::fs::write(&path, &actual).expect("write golden");
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-        panic!(
-            "missing golden {}\n\
-             create it with: UPDATE_SNAPSHOTS=1 cargo test -p surrealql-analyzer-codegen --test golden",
-            path.display()
-        )
-    });
-
-    if expected != actual {
-        // Leave the full actual output where a `diff` can reach it: the
-        // first-difference excerpt below is for orientation, not review.
-        let actual_path =
-            Path::new(env!("CARGO_TARGET_TMPDIR")).join("surrealql-analyzer.generated.ts");
-        std::fs::write(&actual_path, &actual).expect("write actual output");
-        panic!(
-            "\n\
-             GENERATED OUTPUT CHANGED — `generate` over the fixture no longer matches the golden.\n\
-             {}\n\
-             Golden:  {}\n\
-             Actual:  {}\n\
-             Accept with: UPDATE_SNAPSHOTS=1 cargo test -p surrealql-analyzer-codegen --test golden\n\
-             then run:    pnpm -r run typecheck   (the golden is compiled by tsc there)\n",
-            first_difference(&expected, &actual),
-            path.display(),
-            actual_path.display()
-        );
-    }
-}
-
-/// The fixture must be valid input. `generate` refuses to write a registry
-/// when an embedded query has an error finding, and a golden produced under a
-/// schema error would record types inferred against a broken schema — so the
-/// bar here is stricter than the CLI's: no error finding anywhere.
+/// The fixture must be valid input. Every type this crate renders comes out
+/// of the analysis of these sources, so a fixture with a schema error would
+/// have the emitter exercised against types inferred from a broken schema —
+/// and the other test here would then be pinning nonsense. The bar is
+/// therefore absolute: no error finding anywhere.
 #[test]
 fn fixture_is_free_of_error_findings() {
     let root = fixture_root();
@@ -125,9 +82,11 @@ fn fixture_is_free_of_error_findings() {
     );
 }
 
-/// Every embedded query the fixture declares lands in the golden. A query the
-/// extractor silently dropped would shrink the registry without failing the
-/// byte comparison on first generation, so the count is pinned separately.
+/// Every embedded query the fixture declares reaches the registry, keyed by
+/// the text the caller passes. This is the one end-to-end claim that survives
+/// without a TypeScript compiler: extraction → analysis → entry → rendered
+/// module, with a query that fell out anywhere along the way visible as a
+/// missing key rather than as a module that merely came out shorter.
 #[test]
 fn every_embedded_query_reaches_the_registry() {
     let root = fixture_root();
@@ -167,8 +126,9 @@ type Embedded = (
     String,
 );
 
-/// Runs `generate` over `root` and returns the rendered module — the CLI's
-/// `run_generate` minus the file write and the terminal rendering.
+/// Runs the generation path over `root` and returns the rendered module:
+/// `QueryEntry::from_analysis` over each embedded query's analysis, then
+/// `render_registry`. Nothing compiles the result — see the module docs.
 fn generate(root: &Path) -> String {
     let (workspace, queries, _) = load(root);
     let analysis = analyze_workspace(&workspace);
@@ -188,8 +148,9 @@ fn generate(root: &Path) -> String {
 /// every host file's embedded queries as virtual sources.
 ///
 /// Paths are registered relative to `root` so source ids do not depend on
-/// where the repository is checked out. Nothing in the output names a source
-/// id, but a deterministic registration order is what keeps the golden stable.
+/// where the repository is checked out, and the registration order is
+/// deterministic — nothing in the output names a source id, but the order
+/// decides which definition wins when two sources declare the same name.
 fn load(root: &Path) -> (Workspace, Vec<Embedded>, WorkspaceConfig) {
     let config_text = std::fs::read_to_string(root.join("surrealql-analyzer.toml"))
         .expect("fixture surrealql-analyzer.toml");
@@ -269,27 +230,4 @@ fn relative(root: &Path, path: &Path) -> String {
 
 fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-}
-
-/// The first line that differs, with its line number: enough to see *where*
-/// the output moved. The full actual file is written beside the message.
-fn first_difference(expected: &str, actual: &str) -> String {
-    let mut expected_lines = expected.lines();
-    let mut actual_lines = actual.lines();
-    let mut line = 1;
-    loop {
-        match (expected_lines.next(), actual_lines.next()) {
-            (Some(old), Some(new)) if old == new => line += 1,
-            (None, None) => {
-                return "(no line differences — trailing whitespace or newline only)".into()
-            }
-            (old, new) => {
-                return format!(
-                    "line {line}:\n- {}\n+ {}",
-                    old.unwrap_or("<end of golden>"),
-                    new.unwrap_or("<end of output>")
-                );
-            }
-        }
-    }
 }

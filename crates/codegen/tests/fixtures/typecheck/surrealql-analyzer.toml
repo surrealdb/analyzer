@@ -1,8 +1,9 @@
-# The golden fixture for `crates/codegen/tests/golden.rs`: the smallest
-# workspace that exercises every value convention the generated TypeScript
-# names. `generate` over this tree must reproduce
-# `packages/client/test-d/gen/surrealql-analyzer.generated.ts` byte for byte, and
-# that file is compiled by `tsc` against the real `surrealdb` types.
+# The fixture for `crates/codegen/tests/generation.rs`: the smallest workspace
+# that exercises every value convention the generated TypeScript names. It must
+# analyze free of error findings, and every embedded query in `src/queries.ts`
+# must reach the rendered registry. It used to be held against a golden that
+# `tsc` compiled inside the client package; that package has left, and so has
+# the golden.
 
 [sources]
 schema = ["schema/**/*.surql"]
