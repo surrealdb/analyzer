@@ -51,7 +51,7 @@ use std::collections::{BTreeSet, HashMap};
 use surrealdb_types::Kind;
 
 use crate::document::{FieldStep, FieldTypes, TableTypes, TypesDocument, HOST_PARAM_PREFIX};
-use crate::{ts_type, TsContext};
+use crate::{ts_string, ts_type, TsContext};
 
 /// The npm package the generated module imports its value types from.
 pub const CLIENT_PACKAGE: &str = "@surrealdb/analyzer-client";
@@ -525,43 +525,6 @@ fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
-}
-
-/// One string, as a TypeScript double-quoted literal.
-///
-/// Every character a string literal cannot hold raw is escaped, not just the
-/// three that are common. A query key is arbitrary user text, and the three
-/// classes below each produced a file that does not parse — reported as
-/// TS1002 *inside the generated file*, after `generate` said it succeeded:
-///
-/// * `\r`, from a host file with CRLF line endings. (The key itself no longer
-///   carries one — see `QueryTypes::from_analysis` — but a `\r` can still
-///   reach here inside a literal string in the query.)
-/// * U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are line
-///   terminators in JavaScript and so end a string literal exactly as a
-///   newline does.
-/// * the rest of the C0 controls and DEL, which the grammar does allow raw but
-///   which no reader or diff tool survives; they go out as `\u00XX`.
-fn ts_string(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            control if control.is_control() && (control as u32) < 0x80 => {
-                out.push_str(&format!("\\u{:04x}", control as u32));
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// Whether a rendered type fragment names a value type, as a whole word — so

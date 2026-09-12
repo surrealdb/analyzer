@@ -170,7 +170,7 @@ fn value_type(kind: &Kind) -> String {
 
 fn literal_type(literal: &KindLiteral) -> String {
     match literal {
-        KindLiteral::String(value) => format!("\"{}\"", value.replace('"', "\\\"")),
+        KindLiteral::String(value) => ts_string(value),
         KindLiteral::Integer(value) => value.to_string(),
         KindLiteral::Float(value) => value.to_string(),
         KindLiteral::Decimal(value) => value.to_string(),
@@ -197,7 +197,7 @@ fn object_type<'a>(fields: impl Iterator<Item = (&'a String, &'a Kind)>) -> Stri
         let key = if is_identifier(name) {
             name.clone()
         } else {
-            format!("\"{}\"", name.replace('"', "\\\""))
+            ts_string(name)
         };
         let marker = if rendered.optional { "?" } else { "" };
         parts.push(format!("{key}{marker}: {}", rendered.text));
@@ -230,6 +230,51 @@ fn strip_none(kind: &Kind) -> (Kind, bool) {
         _ => Kind::Either(present),
     };
     (kind, true)
+}
+
+/// One string, as a TypeScript double-quoted literal — the **only** place
+/// this crate quotes one.
+///
+/// There are three emission sites: a query key, a `KindLiteral::String` (a
+/// literal union member, straight from a `DEFINE FIELD ... TYPE 'a' | 'b'`),
+/// and an object key that is not an identifier (a field or table named with a
+/// space or a dash). All three carry user text, all three used to escape a
+/// different subset, and the two that escaped only `"` emitted a file that
+/// does not parse for exactly the inputs below.
+///
+/// Every character a string literal cannot hold raw is escaped, not just the
+/// three that are common. A query key is arbitrary user text, and the three
+/// classes below each produced a file that does not parse — reported as
+/// TS1002 *inside the generated file*, after `generate` said it succeeded:
+///
+/// * `\r`, from a host file with CRLF line endings. (The key itself no longer
+///   carries one — see `QueryTypes::from_analysis` — but a `\r` can still
+///   reach here inside a literal string in the query.)
+/// * U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are line
+///   terminators in JavaScript and so end a string literal exactly as a
+///   newline does.
+/// * the rest of the C0 controls and DEL, which the grammar does allow raw but
+///   which no reader or diff tool survives; they go out as `\u00XX`.
+pub(crate) fn ts_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            control if control.is_control() && (control as u32) < 0x80 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -329,6 +374,33 @@ mod tests {
                 text: "string".into(),
                 optional: true,
             }
+        );
+    }
+
+    /// Every place this crate writes a quoted string writes it the same way.
+    /// A literal union member and a non-identifier key are user text too: a
+    /// backslash in either used to go out raw and swallow the quote after it.
+    #[test]
+    fn a_literal_and_an_awkward_key_are_escaped_like_a_query_key() {
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::String("say \"hi\"".into()))),
+            "\"say \\\"hi\\\"\""
+        );
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::String("back\\slash".into()))),
+            "\"back\\\\slash\""
+        );
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::String("one\r\ntwo".into()))),
+            "\"one\\r\\ntwo\""
+        );
+
+        let mut fields = BTreeMap::new();
+        fields.insert("full name".to_string(), Kind::String);
+        fields.insert("a\"b".to_string(), Kind::Int);
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::Object(fields))),
+            "{ \"a\\\"b\": number; \"full name\": string }"
         );
     }
 
