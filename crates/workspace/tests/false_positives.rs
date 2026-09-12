@@ -95,6 +95,25 @@ const CASES: &[Case] = &[
         accepted: "DEFINE FIELD tags ON t TYPE set<string> DEFAULT [];",
         rejected: "DEFINE FIELD tags ON t TYPE set<string> DEFAULT [1, 2];",
     },
+    // ---- arrays and sets always compare ------------------------------------
+    Case {
+        // The near-miss is collection-against-scalar: only collection *pairs*
+        // became comparable, so comparing an array to a string still reports.
+        code: 2004,
+        engine: "`RETURN (SELECT VALUE id FROM t LIMIT 1) != []` is `true`; \
+                 `[1,2] != []`, `[1,2] != [3]` and `[1] != ['a']` are all `true`",
+        schema: "DEFINE TABLE t SCHEMAFULL;\n\
+                 DEFINE FIELD n ON t TYPE int;\n",
+        accepted: "RETURN (SELECT VALUE id FROM t LIMIT 1) != [];",
+        rejected: "RETURN [1, 2] = 'x';",
+    },
+    Case {
+        code: 7005,
+        engine: "`RETURN [1] = ['a']` is `false` — a result, not an error",
+        schema: "DEFINE TABLE t SCHEMAFULL;\n",
+        accepted: "RETURN [1, 2] != [];",
+        rejected: "RETURN [1, 2] = ['a'];",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
