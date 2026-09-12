@@ -3,19 +3,17 @@
 //! Three layers. [`TypesDocument`] (`document`) is the language-neutral
 //! description of a project's types — tables, functions, globals, and one
 //! entry per analyzed query — built from the schema index and the analysis
-//! output and serializable as it stands. It is the middle on purpose: an
-//! emitter that read the analysis directly would be the only place its facts
-//! existed, and the next language — Rust's `query!` wants named structs,
-//! Python's `.into()` wants dataclasses — would re-derive the same facts from
-//! the same analysis, and the two derivations would drift.
+//! output and serializable as it stands. [`ts_type`] renders one
+//! `surrealdb_types::Kind` as a TypeScript type *for a named position*
+//! ([`TsContext`]). [`render_types_module`] (`typescript`) puts the two
+//! together and emits the generated `.d.ts`: an interface per table, a
+//! `Tables` map, and a `Queries` type keyed by exact query text.
 //!
-//! Above it, [`ts_type`] renders one `surrealdb_types::Kind` as a
-//! TypeScript type *for a named position* ([`TsContext`]), and
-//! [`render_registry`] emits the generated `.d.ts`
-//! — a literal-keyed registry mapping each embedded query to its result
-//! type, substitution tuple, and named-parameter object, plus the
-//! `defineQuery`/`defineLive` re-exports and the `SurqlQuery` carrier the
-//! host code consumes.
+//! The document is the middle on purpose. An emitter that read the analysis
+//! directly would be the only place its facts existed, and the next language
+//! — Rust's `query!` wants named structs, Python's `.into()` wants
+//! dataclasses — would re-derive the same facts from the same analysis, and
+//! the two derivations would drift.
 //!
 //! Value conventions (documented in the generated header) name the values
 //! the SurrealDB SDK **actually decodes**, which are its own value classes:
@@ -44,16 +42,15 @@
 //! spellings are a decision rather than an artifact.
 
 use surrealdb_types::{Kind, KindLiteral};
-use surrealql_analyzer_workspace::analysis::{ParamInference, ValueDomain};
 
 pub mod document;
-mod registry;
+mod typescript;
 
 pub use document::{
     FieldStep, FieldTypes, FunctionTypes, ParamTypes, QueryTypes, RelationTypes, Source,
     TableTypes, TypesDocument,
 };
-pub use registry::{render_registry, response_tuple, QueryEntry};
+pub use typescript::{render_types_module, CLIENT_PACKAGE};
 
 /// Where the rendered text is going to sit in a TypeScript type.
 ///
@@ -241,85 +238,6 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
-/// Renders the named-parameter object for a query from its inferred
-/// parameters, applying `OneOf` domains as literal unions. `__hostN`
-/// substitution parameters are excluded — they type the subs tuple.
-///
-/// This is an object type, but **not** a [`TsContext::Property`] position:
-/// the `?` here answers "does the query need this argument at all" —
-/// `required` is cleared only by a `DEFINE PARAM` default — while a
-/// `Property`'s `?` answers "can the value be absent". They are different
-/// questions with the same syntax, so the param's kind is rendered as a
-/// [`TsContext::Value`] and the caller keeps its own marker. Folding a
-/// param's `option<T>` into the key as well would change the type (it would
-/// let callers omit a key the query requires), not just its spelling.
-pub fn params_type(params: &[ParamInference]) -> String {
-    let mut parts = Vec::new();
-    for param in params {
-        if param.name.starts_with("__host") {
-            continue;
-        }
-        let marker = if param.required { "" } else { "?" };
-        parts.push(format!(
-            "{}{marker}: {}",
-            param.name,
-            param_value_type(param)
-        ));
-    }
-    if parts.is_empty() {
-        "Record<string, never>".into()
-    } else {
-        format!("{{ {} }}", parts.join("; "))
-    }
-}
-
-/// The substitution tuple: the constrained type of each `${...}` in
-/// template order. Every element is a [`TsContext::Value`] — a tuple slot has
-/// no key, and an omitted element would shorten the tuple.
-pub fn subs_tuple(params: &[ParamInference]) -> String {
-    let mut hosts: Vec<&ParamInference> = params
-        .iter()
-        .filter(|param| param.name.starts_with("__host"))
-        .collect();
-    hosts.sort_by_key(|param| {
-        param.name["__host".len()..]
-            .parse::<usize>()
-            .unwrap_or(usize::MAX)
-    });
-    let items: Vec<String> = hosts.iter().map(|param| param_value_type(param)).collect();
-    format!("[{}]", items.join(", "))
-}
-
-fn param_value_type(param: &ParamInference) -> String {
-    if let Some(ValueDomain::OneOf(values)) = &param.domain {
-        let mut literals: Vec<String> = values
-            .iter()
-            .map(|value| match value {
-                surrealdb_types::Value::String(text) => {
-                    format!("\"{}\"", text.replace('"', "\\\""))
-                }
-                other => ts_value_fallback(other),
-            })
-            .collect();
-        literals.dedup();
-        if !literals.is_empty() {
-            return literals.join(" | ");
-        }
-    }
-    param.kind.as_ref().map_or_else(
-        || "unknown".into(),
-        |kind| ts_type(kind, TsContext::Value).text,
-    )
-}
-
-fn ts_value_fallback(value: &surrealdb_types::Value) -> String {
-    match value {
-        surrealdb_types::Value::Number(number) => number.to_string(),
-        surrealdb_types::Value::Bool(flag) => flag.to_string(),
-        _ => "unknown".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,59 +373,5 @@ mod tests {
             )),
             "Array<{ nick?: string }>"
         );
-    }
-
-    #[test]
-    fn params_render_named_object_and_subs_tuple() {
-        let params = vec![
-            ParamInference {
-                name: "age".into(),
-                kind: Some(Kind::Int),
-                domain: None,
-                required: true,
-                spans: Vec::new(),
-            },
-            ParamInference {
-                name: "__host0".into(),
-                kind: Some(Kind::String),
-                domain: None,
-                required: true,
-                spans: Vec::new(),
-            },
-            ParamInference {
-                name: "status".into(),
-                kind: Some(Kind::String),
-                domain: Some(ValueDomain::OneOf(vec![
-                    surrealdb_types::Value::String("open".into()),
-                    surrealdb_types::Value::String("closed".into()),
-                ])),
-                required: false,
-                spans: Vec::new(),
-            },
-        ];
-
-        assert_eq!(
-            params_type(&params),
-            "{ age: number; status?: \"open\" | \"closed\" }"
-        );
-        assert_eq!(subs_tuple(&params), "[string]");
-    }
-
-    /// The params object looks like a `Property` position and is not one. Its
-    /// `?` says the query has a default for the argument; the kind's `none`
-    /// says the query accepts a NONE *value*. Folding the second into the
-    /// first would let a caller omit a key the query requires — a change of
-    /// type, not of spelling — so the kind renders as a value.
-    #[test]
-    fn a_required_param_that_accepts_none_keeps_its_key() {
-        let params = vec![ParamInference {
-            name: "nick".into(),
-            kind: Some(Kind::Either(vec![Kind::None, Kind::String])),
-            domain: None,
-            required: true,
-            spans: Vec::new(),
-        }];
-
-        assert_eq!(params_type(&params), "{ nick: undefined | string }");
     }
 }

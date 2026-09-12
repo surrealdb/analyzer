@@ -1,41 +1,52 @@
-//! `generate`: emit the typed TypeScript client and literal-keyed query
-//! registry for every SurrealQL query embedded in the project's host files.
+//! `generate`: emit the TypeScript declaration file that types every
+//! SurrealQL query embedded in the project's host files, and every table its
+//! schema defines.
+//!
+//! The output is a **`.d.ts`**: types and nothing else. It declares no
+//! values, re-exports no runtime and augments no module; a consumer imports
+//! `Queries` from it and hands that to `createClient<Queries>(…)`. That is
+//! why the verb refuses an output path that is not a declaration file — a
+//! `.ts` would invite `import { createClient } from "./…"`, which used to
+//! work and now resolves to nothing.
 //!
 //! Like [`check`](crate::check), the verb returns data and renders on
 //! request. Findings raised on embedded queries are reported at their host
 //! `file:line`: warnings and hints are carried back but do not block, while
-//! any error-severity finding aborts *before* writing, so a broken registry
+//! any error-severity finding aborts *before* writing, so a broken file
 //! never overwrites a good one.
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use surrealql_analyzer_codegen::QueryEntry;
 use surrealql_analyzer_diagnostics::Severity;
 
 use crate::analyze::{analyze, SourceError};
+use crate::describe::document;
 use crate::diagnostic::{Diagnostic, Findings};
-use crate::project::{display_relative, Project};
+use crate::project::{display_relative, Project, TYPES_EXTENSION};
 use crate::style::Styles;
 
-/// The npm package the generated module imports from and augments.
-pub const CLIENT_PACKAGE: &str = "@surrealdb/analyzer-client";
+/// The npm package the generated module imports its value types from.
+///
+/// Defined by the emitter, restated here because a host asks this crate
+/// whether the package is installed.
+pub use surrealql_analyzer_codegen::CLIENT_PACKAGE;
 
 /// A successful `generate`.
 #[derive(Debug)]
 pub struct GenerateReport {
-    /// Where the registry was written.
+    /// Where the declaration file was written.
     pub path: PathBuf,
     /// The module text that was written.
     pub module: String,
-    /// How many embedded queries landed in the registry, so a repeating
-    /// watch line still shows the run did something.
+    /// How many embedded queries landed in `Queries`, so a repeating watch
+    /// line still shows the run did something.
     pub queries: usize,
     /// Warning/hint findings that survived policy, host-mapped.
     pub warnings: Vec<Diagnostic>,
-    /// Whether the module augments [`CLIENT_PACKAGE`] but that package cannot
-    /// be resolved from the written module's directory. See
+    /// Whether the module imports from [`CLIENT_PACKAGE`] but that package
+    /// cannot be resolved from the written module's directory. See
     /// [`client_package_is_resolvable`] for why this matters so much.
     pub missing_client: bool,
     root: PathBuf,
@@ -62,8 +73,10 @@ pub enum GenerateError {
     /// An embedded query has an error-severity finding, so nothing was
     /// written.
     Blocked(GenerateBlocked),
-    /// A source could not be read, or the registry could not be written.
+    /// A source could not be read, or the output could not be written.
     Io(SourceError),
+    /// The requested output path is not a TypeScript declaration file.
+    NotDeclaration(PathBuf),
 }
 
 impl fmt::Display for GenerateError {
@@ -71,6 +84,14 @@ impl fmt::Display for GenerateError {
         match self {
             Self::Blocked(blocked) => write!(f, "{blocked}"),
             Self::Io(error) => write!(f, "{error}"),
+            Self::NotDeclaration(path) => write!(
+                f,
+                "generate emits types only, so its output must be a TypeScript \
+                 declaration file: `{}` does not end in `{TYPES_EXTENSION}`. \
+                 Nothing in the generated file exists at runtime — import the \
+                 client from `{CLIENT_PACKAGE}` and its types from here.",
+                path.display()
+            ),
         }
     }
 }
@@ -106,7 +127,7 @@ impl fmt::Display for GenerateBlocked {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "generate failed: {} error(s) in embedded queries — registry not written",
+            "generate failed: {} error(s) in embedded queries — types not written",
             self.errors
         )
     }
@@ -115,9 +136,17 @@ impl fmt::Display for GenerateBlocked {
 impl std::error::Error for GenerateBlocked {}
 
 /// Scans host sources for embedded queries, analyzes them against the
-/// project's schema, and writes the typed registry to `out` — or to
+/// project's schema, and writes the declaration file to `out` — or to
 /// [`Project::registry_path`]'s default when `out` is `None`.
+///
+/// `out` must name a `.d.ts`. The check runs before the analysis, so a
+/// mistyped flag fails in milliseconds rather than after a full run.
 pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport, GenerateError> {
+    let path = project.registry_path(out);
+    if !is_declaration_file(&path) {
+        return Err(GenerateError::NotDeclaration(path));
+    }
+
     let analyzed = analyze(project)?;
 
     // Only the embedded queries' findings decide this verb: they are the
@@ -130,11 +159,19 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
         .map(|resolved| (resolved.finding, resolved.severity))
         .collect();
     resolved.sort_by_key(|(_, severity)| *severity != Severity::Error);
+
+    // Described before the findings take ownership of the source texts, and
+    // before the error gate: the document is the single source of truth for
+    // what the project's types are, and the emitter only spells it in
+    // TypeScript. Both halves are the codegen crate's, shared with its
+    // `tsc`-checked golden test, so the module this writes is the module that
+    // test compiles.
+    let described = document(&analyzed);
     let findings = Findings::new(resolved, analyzed.texts, project.root());
 
     let errors = findings.errors();
     if errors > 0 {
-        // Don't overwrite a good registry with a broken one — bail before writing.
+        // Don't overwrite a good file with a broken one — bail before writing.
         return Err(GenerateError::Blocked(GenerateBlocked {
             errors,
             diagnostics: findings.diagnostics(),
@@ -142,25 +179,11 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
         }));
     }
 
-    // Entry construction (the per-statement response tuple, the params) is
-    // the codegen crate's, shared with its `tsc`-checked golden test so the
-    // module this writes is the module that test compiles.
-    let entries: Vec<QueryEntry> = analyzed
-        .embedded
-        .queries
-        .iter()
-        .filter_map(|entry| {
-            let output = analyzed.analysis.sources.get(&entry.source_id)?;
-            Some(QueryEntry::from_analysis(entry.query.parts(), output))
-        })
-        .collect();
-
-    let path = project.registry_path(out);
-    let module = surrealql_analyzer_codegen::render_registry(&entries);
-    // The registry usually lands beside the client code (`src/lib/db.generated.ts`),
+    let module = surrealql_analyzer_codegen::render_types_module(&described);
+    // The file usually lands beside the client code (`src/lib/surrealql-analyzer.d.ts`),
     // and that directory need not exist yet — a fresh project, or an `out` that
     // names a directory the host has not created. Creating it is the obvious
-    // reading of "write the registry here", and the alternative is an ENOENT
+    // reading of "write the types here", and the alternative is an ENOENT
     // that names the file rather than the missing directory.
     if let Some(parent) = path
         .parent()
@@ -185,7 +208,7 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
     Ok(GenerateReport {
         path,
         module,
-        queries: entries.len(),
+        queries: described.queries.len(),
         warnings: findings.diagnostics(),
         missing_client,
         root: project.root().to_path_buf(),
@@ -197,15 +220,15 @@ pub fn generate(project: &Project, out: Option<&Path>) -> Result<GenerateReport,
 /// rule they both use: walk up from the importing file's directory and take the
 /// first `node_modules` that contains the package.
 ///
-/// This is the difference between a generated file that types everything and
-/// one that types nothing. The module ends in
-/// `declare module "@surrealdb/analyzer-client" { … }`, and a module augmentation is
-/// only an augmentation if the target resolves. When it does not, TypeScript
-/// reports `TS2664: Invalid module name in augmentation` **inside the generated
-/// file** and drops the block — so the user's own `db.query(…)` keeps
-/// compiling, silently as `any`, with no error anywhere near it. Nothing about
-/// that failure points at the missing dependency, which is why `generate` has
-/// to say it out loud.
+/// The types-only file no longer augments that package, which removes the
+/// worst version of this failure — a dropped augmentation that left every
+/// query `any` with no error anywhere. What remains is quieter but still
+/// worth saying out loud: the file imports `RecordId`, `Uuid`, `Duration` and
+/// `Decimal` from it, and almost every project sets `skipLibCheck: true`,
+/// which suppresses errors *inside declaration files*. So an unresolvable
+/// import is not reported at all, and every value class it names silently
+/// becomes `any` — a `RecordId<"team">` parameter stops being distinguishable
+/// from a string, which is exactly the bug the generated types exist to catch.
 ///
 /// `package.json` is the marker rather than the directory, because a leftover
 /// empty `node_modules/@surrealdb/analyzer-client/` resolves for neither tool.
@@ -226,7 +249,16 @@ pub fn client_package_is_resolvable(dir: &Path) -> bool {
     false
 }
 
-/// The warning for a written module that augments a package which is not
+/// Whether `path` names a TypeScript declaration file. The double extension
+/// is the whole check: `.d.ts` is what tells every tool in the chain that the
+/// file declares types and emits nothing.
+fn is_declaration_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(TYPES_EXTENSION) && name.len() > TYPES_EXTENSION.len())
+}
+
+/// The warning for a written module that imports from a package which is not
 /// installed. Shaped like a finding — header, location, explanation, fix — so
 /// it reads in the same language as everything else `generate` reports.
 fn missing_client_warning(out_path: &Path, root: &Path, styles: Styles) -> String {
@@ -243,15 +275,21 @@ fn missing_client_warning(out_path: &Path, root: &Path, styles: Styles) -> Strin
     ));
     out.push_str(&format!("{bar}\n"));
     out.push_str(&format!(
-        "{bar} this file augments `declare module \"{CLIENT_PACKAGE}\"`, and an\n"
+        "{bar} this file imports `RecordId`, `Uuid`, `Duration` and `Decimal`\n"
     ));
     out.push_str(&format!(
-        "{bar} augmentation whose target does not resolve is silently dropped —\n"
+        "{bar} from it. `skipLibCheck` — which nearly every project sets —\n"
     ));
     out.push_str(&format!(
-        "{bar} TypeScript reports TS2664 here, and every query typed through it\n"
+        "{bar} suppresses errors inside a `.d.ts`, so an import that does not\n"
     ));
-    out.push_str(&format!("{bar} degrades to `any` with no error on it.\n"));
+    out.push_str(&format!(
+        "{bar} resolve is never reported and every one of those classes\n"
+    ));
+    out.push_str(&format!(
+        "{bar} silently becomes `any` — a record link stops being told apart\n"
+    ));
+    out.push_str(&format!("{bar} from a string.\n"));
     out.push_str(&format!("{bar}\n"));
     out.push_str(&format!(
         "  {} {} npm install {CLIENT_PACKAGE} surrealdb\n",

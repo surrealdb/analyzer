@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use surrealql_analyzer::generate::client_package_is_resolvable;
 use surrealql_analyzer::workspace::config::WorkspaceConfig;
-use surrealql_analyzer::{check, generate, GenerateError, Project, Styles};
+use surrealql_analyzer::{check, describe, generate, GenerateError, Project, Styles};
 
 fn temp_project_dir(name: &str) -> PathBuf {
     let unique = SystemTime::now()
@@ -166,10 +166,88 @@ fn the_registry_path_defaults_to_the_root_and_honours_out() {
     let project = Project::new(&root, WorkspaceConfig::default());
     assert_eq!(
         project.registry_path(None),
-        root.join("surrealql-analyzer.generated.ts")
+        root.join("surrealql-analyzer.d.ts")
     );
-    let explicit = root.join("custom.ts");
+    let explicit = root.join("custom.d.ts");
     assert_eq!(project.registry_path(Some(&explicit)), explicit);
+}
+
+/// `describe` answers with the project's types whatever the findings say. A
+/// document is a description, not a build artifact: a project with one
+/// broken query still has a schema and still has its other queries, and a
+/// host generating documentation or a second language's types should not be
+/// held hostage by an error `check` already reports.
+#[test]
+fn describe_returns_the_types_even_when_a_query_is_broken() {
+    let root = temp_project_dir("describe-with-a-broken-query");
+    fs::create_dir_all(root.join("schema")).expect("schema dir");
+    fs::create_dir_all(root.join("src")).expect("src dir");
+    fs::write(
+        root.join("surrealql-analyzer.toml"),
+        "[sources]\nschema = [\"schema/**/*.surql\"]\n",
+    )
+    .expect("write config");
+    fs::write(
+        root.join("schema/person.surql"),
+        "DEFINE TABLE person SCHEMAFULL;\n\
+         DEFINE FIELD name ON person TYPE string;\n\
+         DEFINE FIELD nick ON person TYPE option<string>;",
+    )
+    .expect("write schema");
+    fs::write(
+        root.join("src/app.ts"),
+        "db.query(\"SELECT name FROM person\");\n\
+         db.query(\"SELECT nope FROM missing\");",
+    )
+    .expect("write host source");
+
+    let project = discover(&root);
+    assert!(
+        generate(&project, Some(&root.join("out.d.ts"))).is_err(),
+        "the fixture must contain a query `generate` refuses to type"
+    );
+
+    let document = describe(&project).expect("describe reads the project");
+    assert_eq!(document.source, surrealql_analyzer::codegen::Source::Static);
+    assert_eq!(
+        document
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect::<Vec<_>>(),
+        ["person"],
+        "the schema is described whatever the queries do"
+    );
+    assert!(
+        document
+            .queries
+            .iter()
+            .any(|query| query.text == "SELECT name FROM person"),
+        "the queries that do analyze are still described"
+    );
+}
+
+/// `generate` emits types and nothing else, so a `.ts` output is refused
+/// rather than written. A `.ts` is compiled as a source file and invites
+/// `import { createClient } from "./…"` — the import that used to work and
+/// now resolves to nothing — so writing one would hand the user a file whose
+/// name promises a runtime it does not have.
+#[test]
+fn generate_refuses_an_output_that_is_not_a_declaration_file() {
+    let root = generatable_project("generate-wrong-extension");
+
+    let out = root.join("src/surrealql-analyzer.generated.ts");
+    let error = generate(&discover(&root), Some(&out)).expect_err("a `.ts` output is refused");
+    let GenerateError::NotDeclaration(refused) = &error else {
+        panic!("expected a refused output path, got {error}");
+    };
+    assert_eq!(refused, &out);
+    let message = error.to_string();
+    assert!(
+        message.contains(".d.ts") && message.contains("types only"),
+        "the refusal must say what the file is and what it must be named: {message}"
+    );
+    assert!(!out.exists(), "nothing is written when the path is refused");
 }
 
 #[test]
@@ -257,7 +335,7 @@ fn generate_is_blocked_by_an_embedded_query_error_and_names_the_host_file() {
     )
     .expect("write host source");
 
-    let out = root.join("surrealql-analyzer.generated.ts");
+    let out = root.join("surrealql-analyzer.d.ts");
     let error = generate(&discover(&root), Some(&out))
         .expect_err("an error-severity embedded query must block generate");
     let GenerateError::Blocked(blocked) = error else {
@@ -280,8 +358,8 @@ fn generate_is_blocked_by_an_embedded_query_error_and_names_the_host_file() {
         "the rendered snippet must underline the offending span: {message}"
     );
     assert!(
-        message.contains("registry not written"),
-        "failure must explain the registry was withheld: {message}"
+        message.contains("types not written"),
+        "failure must explain the types were withheld: {message}"
     );
     assert!(
         blocked
@@ -293,7 +371,7 @@ fn generate_is_blocked_by_an_embedded_query_error_and_names_the_host_file() {
     );
     assert!(
         !out.exists(),
-        "a broken registry must never be written on an error finding"
+        "broken types must never be written on an error finding"
     );
 }
 
@@ -324,7 +402,7 @@ fn generate_writes_registry_for_clean_embedded_queries() {
     )
     .expect("write host source");
 
-    let out = root.join("surrealql-analyzer.generated.ts");
+    let out = root.join("surrealql-analyzer.d.ts");
     let report =
         generate(&discover(&root), Some(&out)).expect("a clean embedded query should generate");
     assert_eq!(report.path, out);
@@ -342,11 +420,28 @@ fn generate_writes_registry_for_clean_embedded_queries() {
         written.contains("params: { team: RecordId<\"team\"> }"),
         "the $team param must be typed from the schema record link:\n{written}"
     );
+    // The schema is described too, not only the queries: a table a user names
+    // in their own signatures is the other half of what `generate` is for.
+    assert!(
+        written.contains("export interface Person {")
+            && written.contains("  id: RecordId<\"person\">;")
+            && written.contains("  team: RecordId<\"team\">;"),
+        "every defined table becomes an interface:\n{written}"
+    );
+    // …and nothing in it exists at runtime. The header *describes* the
+    // one-line augmentation a user may write in their own code, so the check
+    // is on the code, not on a substring of the whole file.
+    assert!(
+        !written
+            .lines()
+            .any(|line| line.trim_start().starts_with("declare module")),
+        "the generated file must not augment the client package:\n{written}"
+    );
 }
 
 #[test]
 fn generate_creates_the_directory_the_registry_is_written_into() {
-    // `out = "src/lib/db.generated.ts"` is the documented shape, and
+    // `out = "src/lib/surrealql-analyzer.d.ts"` is the documented shape, and
     // `src/lib/` does not exist in a project that has not made it yet. The
     // write must create the directory rather than fail with an ENOENT that
     // names the file instead of the missing parent.
@@ -369,7 +464,7 @@ fn generate_creates_the_directory_the_registry_is_written_into() {
     )
     .expect("write host source");
 
-    let out = root.join("src/lib/db.generated.ts");
+    let out = root.join("src/lib/db.d.ts");
     assert!(
         !out.parent().expect("out has a parent").exists(),
         "the fixture must start without the output directory"
@@ -501,19 +596,20 @@ fn generatable_project(name: &str) -> PathBuf {
 }
 
 #[test]
-fn generate_warns_when_the_augmented_package_is_not_installed() {
-    // The worst failure a type generator has: the module augments
-    // `@surrealdb/analyzer-client`, the package is absent, TypeScript reports
-    // TS2664 *inside the generated file*, drops the augmentation, and every
-    // query in the user's own code silently becomes `any` with no error on
-    // it. Nothing in that chain points at the missing dependency, so
-    // `generate` has to.
+fn generate_warns_when_the_imported_package_is_not_installed() {
+    // A quiet failure with a loud consequence: the generated file imports
+    // `RecordId`, `Uuid`, `Duration` and `Decimal` from
+    // `@surrealdb/analyzer-client`, the package is absent, and `skipLibCheck`
+    // — which nearly every project sets — suppresses the error because it is
+    // inside a `.d.ts`. Every one of those classes then resolves to `any`, so
+    // a record link stops being told apart from a string. Nothing in that
+    // chain points at the missing dependency, so `generate` has to.
     let root = generatable_project("generate-missing-client");
 
     let report = generate(&discover(&root), None).expect("generate writes");
     assert!(
         report.missing_client,
-        "an unresolvable augmentation target must be reported"
+        "an unresolvable import must be reported"
     );
     let warning = report
         .render_missing_client(Styles::plain())
@@ -525,8 +621,8 @@ fn generate_warns_when_the_augmented_package_is_not_installed() {
         "the warning must name the command that fixes it: {warning}"
     );
     assert!(
-        warning.contains("TS2664"),
-        "naming the error TypeScript reports is what makes it searchable: {warning}"
+        warning.contains("skipLibCheck"),
+        "naming the setting that hides the error is what makes it findable: {warning}"
     );
     assert!(
         warning.contains("`any`"),
