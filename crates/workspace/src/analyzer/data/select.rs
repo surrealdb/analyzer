@@ -99,11 +99,15 @@ fn select_response_kind_inner(
     check_split_clauses(stmt, table, ctx);
     if let Some(group) = &stmt.group {
         // GROUP BY keys name *result* columns, so a projection alias is a
-        // legal key even though the source table has no such field.
+        // legal key even though the source table has no such field — and an
+        // unprojected key is 4013's, whichever defect it is (see
+        // `check_group_key_projection`). What is left for 1002 is a key the
+        // projection *does* carry, or a statement 4013 does not govern.
+        let governed = group_keys_are_governed_by_the_projection(stmt);
         let projected = projected_row_names(stmt);
         for idiom in &group.keys {
             if let Some(segments) = plain_field_segments(&idiom.node) {
-                if projected_name_covers(&projected, &segments.join(".")) {
+                if governed || projected_name_covers(&projected, &segments.join(".")) {
                     continue;
                 }
                 check_clause_field_path(ctx, table, &segments, idiom.span);
@@ -447,34 +451,38 @@ fn check_split_clauses(stmt: &ast::SelectStmt, table: &TableDef, ctx: &mut Analy
 }
 
 /// ORDER BY's contract (2017): each key names a field available on the
-/// result rows — a field of the source (checked against the schema), and,
-/// when the projection list is explicit, one of the projected names.
-/// SurrealDB's own parser enforces both; our grammar is more permissive, so
-/// the contract is enforced here. `ORDER BY RAND()` is the one non-field form.
+/// result rows. `ORDER BY RAND()` is the one non-field form.
+///
+/// Which code a bad key gets follows the projection list, because that is
+/// what decides what a result row *is*:
+///
+/// - **An explicit projection list** synthesizes the rows, so a key it does
+///   not carry names nothing to sort by — whether or not the source table
+///   happens to declare it. The engine agrees, and says so while parsing:
+///   `SELECT name FROM person ORDER BY age` is `Missing order idiom 'age' in
+///   statement selection` on 3.2.3, and so is `ORDER BY total` for an alias
+///   the query never projects. Both are 2017; sending the second to 1002
+///   ("`person` has no field `total`") pointed the reader at the schema when
+///   the defect is in the projection list two lines up.
+/// - **A wildcard projection** hands the whole source row through, so the key
+///   must be a field *of that row* — 1002's contract, and the one case the
+///   engine itself accepts (it sorts every row by NONE).
+///
+/// `SELECT VALUE` is left on the 1002 path: its rows are bare values with no
+/// named columns at all, so "not among the projected names" would be true of
+/// every key and prove nothing.
 fn check_order_clause(stmt: &ast::SelectStmt, table: &TableDef, ctx: &mut AnalysisContext<'_>) {
     let Some(order) = &stmt.order else {
         return;
     };
-    let explicit_keys: Option<Vec<String>> = if stmt
-        .projections
-        .iter()
-        .any(|projection| matches!(projection, ast::Projection::Wildcard(_)))
-    {
-        None
-    } else {
-        Some(
-            stmt.projections
-                .iter()
-                .filter_map(|projection| match projection {
-                    ast::Projection::Expr { expr, alias } => Some(match alias {
-                        Some(alias) => alias.node.clone(),
-                        None => slice(ctx.source_text(), expr.span).to_string(),
-                    }),
-                    _ => None,
-                })
-                .collect(),
-        )
-    };
+    // An unparseable projection may be the one that carries the key, so an
+    // explicit list is only "explicit" when all of it lowered.
+    let synthesized_rows = !stmt.value
+        && !has_wildcard_projection(stmt)
+        && !stmt
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, ast::Projection::Partial(_)));
     // ORDER BY keys, like GROUP BY keys, name *result* columns: an alias is
     // a legal key even though the source table has no such field.
     let projected = projected_row_names(stmt);
@@ -494,31 +502,33 @@ fn check_order_clause(stmt: &ast::SelectStmt, table: &TableDef, ctx: &mut Analys
             ));
             continue;
         };
-        // A key that names nothing at all is reported as 1002 and nothing
-        // else: 2017's remedy — project the key — does not fix a field the
-        // table does not have, so offering it would send the author the wrong
-        // way about the same single defect.
-        if !projected_name_covers(&projected, &segments.join("."))
-            && check_clause_field_path(ctx, table, &segments, key.expr.span)
-        {
+        let name = segments.join(".");
+        if projected_name_covers(&projected, &name) {
             continue;
         }
-        if let Some(keys) = &explicit_keys {
-            let name = segments.join(".");
-            if !keys.contains(&name) {
-                let span = SourceSpan::new(ctx.source().clone(), key.expr.span);
-                let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
-                    span,
-                    2017,
-                    format!("ORDER BY `{name}` doesn't name a field of this query's rows"),
+        if synthesized_rows {
+            let span = SourceSpan::new(ctx.source().clone(), key.expr.span);
+            let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
+                span,
+                2017,
+                format!("ORDER BY `{name}` doesn't name a field of this query's rows"),
+            )
+            .with_help(format!(
+                "project `{name}`, or order by a name the projection does carry — SurrealDB fails the query while parsing it: \"Missing order idiom '{name}' in statement selection\""
+            ));
+            if let Some(def) = table.fields.get(&name) {
+                finding = finding.with_related(
+                    def.name_span.clone(),
+                    format!(
+                        "`{name}` is a field of `{}`, but this query does not project it",
+                        table.name
+                    ),
                 );
-                if let Some(def) = table.fields.get(&name) {
-                    finding = finding
-                        .with_related(def.name_span.clone(), format!("`{name}` is defined here"));
-                }
-                ctx.emit(finding);
             }
+            ctx.emit(finding);
+            continue;
         }
+        check_clause_field_path(ctx, table, &segments, key.expr.span);
     }
 }
 
@@ -965,39 +975,56 @@ fn has_wildcard_projection(stmt: &ast::SelectStmt) -> bool {
         .any(|projection| matches!(projection, ast::Projection::Wildcard(_)))
 }
 
-/// 4013: a `GROUP BY` key that is not among the projected columns cannot
-/// appear in the result rows — the grouping label is silently dropped, so the
-/// rows can't be told apart. SurrealDB runs the query (it does not reject
-/// this), which is why it is a warning rather than an error. Conservative to
-/// zero false positives: suppressed when an unparseable projection is present
-/// (the key may be covered by it), for `SELECT VALUE` (a single value
-/// projection carries no named keys), and for `GROUP ALL`. A wildcard
-/// projection also suppresses it — not because `*` covers the key (it covers
-/// nothing under a GROUP clause) but because that query is *rejected*, which
-/// 4025 reports as an error at the `*` itself; 4013's premise, that the query
-/// runs and merely returns unlabelled rows, doesn't hold there. A key counts
-/// as projected when its dotted path equals — or is a prefix of — a projected
-/// field path or alias (projecting `address` covers a `GROUP BY address.city`).
+/// Whether 4013 owns this statement's GROUP keys — i.e. whether the
+/// projection list is the thing that decides what a result row carries.
+///
+/// Suppressed for `GROUP ALL` and an empty key list (nothing to label), for
+/// `SELECT VALUE` (a single value projection carries no named keys), when an
+/// unparseable projection is present (it may be the one that covers the key),
+/// and for a wildcard projection — not because `*` covers the key (it covers
+/// nothing under a GROUP clause) but because that query is rejected for the
+/// wildcard itself, which 4025 reports at the `*`.
+fn group_keys_are_governed_by_the_projection(stmt: &ast::SelectStmt) -> bool {
+    let Some(group) = &stmt.group else {
+        return false;
+    };
+    !group.all
+        && !group.keys.is_empty()
+        && !stmt.value
+        && !has_wildcard_projection(stmt)
+        && !stmt
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, ast::Projection::Partial(_)))
+}
+
+/// 4013: a `GROUP BY` key that is not among the projected columns. SurrealDB
+/// 3.x does not run this query — it does not even finish parsing it:
+/// `SELECT age, count() FROM person GROUP BY name` is
+/// `Missing group idiom 'name' in statement selection` on 3.2.3, with the
+/// caret under the projection list. So it is an error, and the same error
+/// whether the key is a real field the query forgot to project or a typo the
+/// table has never had: the engine's complaint is about the *selection* in
+/// both cases, and 1002's "the table has no such field" would send a reader
+/// looking for a schema defect that the fix — projecting the key — does not
+/// touch. When the key is also absent from the table the help says so, so the
+/// typo is still named.
+///
+/// A key counts as projected when its dotted path equals — or is a prefix of
+/// — a projected field path or alias (projecting `address` covers a
+/// `GROUP BY address.city`).
 fn check_group_key_projection(stmt: &ast::SelectStmt, ctx: &mut AnalysisContext<'_>) {
+    if !group_keys_are_governed_by_the_projection(stmt) {
+        return;
+    }
     let Some(group) = &stmt.group else {
         return;
     };
-    if group.all || group.keys.is_empty() || stmt.value || has_wildcard_projection(stmt) {
-        return;
-    }
-    if stmt
-        .projections
-        .iter()
-        .any(|projection| matches!(projection, ast::Projection::Partial(_)))
-    {
-        return;
-    }
     let projected = projected_row_names(stmt);
-    // A key that names nothing on the source table is 1002's to report, and
-    // only 1002's: this warning's remedy is "add the key to the projection",
-    // which cannot label a group by a field that does not exist. The lookup is
-    // the plain, side-effect-free one because the statement's own resolution
-    // (which emits) has not run yet at shape-check time.
+    // Whether the key is also absent from the source table, for the help
+    // text. The lookup is the plain, side-effect-free one because the
+    // statement's own resolution (which emits) has not run yet at
+    // shape-check time.
     let absent: std::collections::BTreeSet<String> = match plain_source_table(stmt, ctx.schema()) {
         Some(table) => group
             .keys
@@ -1013,24 +1040,27 @@ fn check_group_key_projection(stmt: &ast::SelectStmt, ctx: &mut AnalysisContext<
             continue;
         };
         let name = segments.join(".");
-        if absent.contains(&name) {
+        if projected_name_covers(&projected, &name) {
             continue;
         }
-        if !projected_name_covers(&projected, &name) {
-            let span = SourceSpan::new(ctx.source().clone(), key.span);
-            ctx.emit(
-                surrealql_analyzer_diagnostics::catalog::finding(
-                    span,
-                    4013,
-                    format!(
-                        "GROUP BY `{name}` is not projected, so it can't appear in the result rows"
-                    ),
-                )
-                .with_help(format!(
-                    "add `{name}` to the projection so each group is labelled by its key"
-                )),
-            );
-        }
+        let help = if absent.contains(&name) {
+            format!(
+                "`{name}` is not a field of this query's source either — check the spelling, then add it to the projection"
+            )
+        } else {
+            format!("add `{name}` to the projection so each group is labelled by its key")
+        };
+        let span = SourceSpan::new(ctx.source().clone(), key.span);
+        ctx.emit(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                span,
+                4013,
+                format!(
+                    "GROUP BY `{name}` is not projected — SurrealDB fails the query while parsing it: \"Missing group idiom '{name}' in statement selection\""
+                ),
+            )
+            .with_help(help),
+        );
     }
 }
 
@@ -6702,21 +6732,60 @@ mod tests {
     #[test]
     fn group_by_and_order_by_a_genuinely_unknown_field_still_error() {
         // Guard against over-suppression: the alias carve-out must not
-        // disable the check for a key that names nothing.
+        // disable the check for a key that names nothing. Which code it is
+        // follows the projection list — an explicit one synthesizes the rows,
+        // so the engine's own complaint is about the selection (4013/2017);
+        // a wildcard hands the source row through, so the key must be a field
+        // of it (1002).
         let schema = alias_group_schema();
 
-        for query in [
-            "SELECT price AS n FROM product GROUP BY nope;",
-            "SELECT price AS n FROM product ORDER BY nope;",
-            "SELECT * FROM product GROUP BY nope;",
-            "SELECT * FROM product ORDER BY nope;",
+        for (query, expected) in [
+            ("SELECT price AS n FROM product GROUP BY nope;", 4013),
+            ("SELECT price AS n FROM product ORDER BY nope;", 2017),
+            ("SELECT * FROM product GROUP BY nope;", 1002),
+            ("SELECT * FROM product ORDER BY nope;", 1002),
         ] {
             let diagnostics = diagnostics_for(&schema, query);
             assert!(
-                codes(&diagnostics).contains(&1002),
-                "`{query}` must still report an unknown field: {:?}",
+                codes(&diagnostics).contains(&expected),
+                "`{query}` must still report the unknown key as {expected}: {:?}",
                 codes(&diagnostics)
             );
         }
+    }
+
+    #[test]
+    fn an_unprojected_order_key_is_2017_even_when_the_table_has_the_field() {
+        let schema = schema_from("DEFINE TABLE p SCHEMAFULL;\nDEFINE FIELD n ON p TYPE string;\nDEFINE FIELD a ON p TYPE int;");
+        for query in [
+            // A real field the projection drops — the engine's
+            // "Missing order idiom 'a' in statement selection".
+            "SELECT n FROM p ORDER BY a;",
+            // An alias the query never projects: the same defect, and the
+            // one that used to come out as 1002.
+            "SELECT n, count() AS c FROM p GROUP BY n ORDER BY total;",
+        ] {
+            let diagnostics = diagnostics_for(&schema, query);
+            assert!(
+                codes(&diagnostics).contains(&2017),
+                "{query}: {:?}",
+                codes(&diagnostics)
+            );
+            assert!(
+                !codes(&diagnostics).contains(&1002),
+                "{query} should not also be 1002: {:?}",
+                codes(&diagnostics)
+            );
+        }
+        // The near miss: the key IS projected, under its alias.
+        let diagnostics = diagnostics_for(
+            &schema,
+            "SELECT n, count() AS total FROM p GROUP BY n ORDER BY total;",
+        );
+        assert!(
+            !codes(&diagnostics).contains(&2017),
+            "an ordered-by alias the query projects must stay silent: {:?}",
+            codes(&diagnostics)
+        );
     }
 }

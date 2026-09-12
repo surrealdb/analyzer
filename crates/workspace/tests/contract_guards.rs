@@ -219,6 +219,11 @@ const GUARDS: &[Guard] = &[
         "LIVE SELECT name FROM user;",
     ),
     guard(
+        4013,
+        "SELECT age, count() FROM user GROUP BY name;",
+        "SELECT name, count() FROM user GROUP BY name;",
+    ),
+    guard(
         4025,
         "SELECT * FROM user GROUP BY age;",
         "SELECT age, count() FROM user GROUP BY age;",

@@ -84,7 +84,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (4010, "duplicate SET target in one statement", Severity::Warning, Warn),
     (4011, "duplicate projection key/alias", Severity::Warning, Warn),
     (4012, "OMIT without a wildcard projection", Severity::Warning, Warn),
-    (4013, "GROUP BY field not in projections", Severity::Warning, Warn),
+    (4013, "GROUP BY field not in projections", Severity::Error, Deny),
     (4017, "block ends with LET — its value is NONE", Severity::Warning, Warn),
     (4018, "side-effecting subquery in read position", Severity::Warning, Warn),
     (4019, "CREATE/INSERT on a relation table without `in`/`out`", Severity::Warning, Warn),

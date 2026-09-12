@@ -399,18 +399,30 @@ fn analyze_workspace_reports_unknown_select_group_and_split_fields() {
     let unknown_fields: Vec<_> = output.sources[&source]
         .diagnostics
         .iter()
-        .filter(|finding| matches!(finding.code(), code if code == FindingCode::schema(1002) || code == FindingCode::schema(1002)))
+        .filter(|finding| finding.code() == FindingCode::schema(1002))
         .map(|finding| finding.message().to_string())
         .collect();
     let mut unknown_fields = unknown_fields;
     unknown_fields.sort();
 
+    // SPLIT reads the source row, so an unknown field there is 1002. The
+    // GROUP key is the selection's business — the engine refuses to parse
+    // `GROUP BY missing_group` against a projection that does not carry it —
+    // so that one is 4013, which names the absent field in its help.
     assert_eq!(
         unknown_fields,
-        vec![
-            "`person` has no field `missing_group`".to_string(),
-            "`person` has no field `missing_split`".to_string(),
-        ]
+        vec!["`person` has no field `missing_split`".to_string()]
+    );
+    let group_keys: Vec<_> = output.sources[&source]
+        .diagnostics
+        .iter()
+        .filter(|finding| finding.code().number() == 4013)
+        .map(|finding| finding.message().to_string())
+        .collect();
+    assert_eq!(group_keys.len(), 1, "{group_keys:?}");
+    assert!(
+        group_keys[0].contains("missing_group") && group_keys[0].contains("Missing group idiom"),
+        "{group_keys:?}"
     );
 }
 

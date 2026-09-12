@@ -15,6 +15,23 @@ message quotes the engine text it predicts.
   Error/Deny and the message names the engine's own text; the help offers
   both spellings the engine accepts, `OVERWRITE` (replace) and `IF NOT
   EXISTS` (keep the first), where it used to offer only the first.
+- **4013 is an error, and owns a mistyped GROUP key.** `SELECT age, count()
+  FROM person GROUP BY name` is not a query SurrealDB 3.x runs — it is one it
+  refuses to finish parsing: `Missing group idiom 'name' in statement
+  selection`, caret under the projection list. Reported as a warning, it
+  passed `check`. It is now Error/Deny, and it covers the case that used to
+  go to 1002 alone (a key the source table does not have either): the
+  engine's complaint is about the selection whichever it is, and "the table
+  has no field `nmae`" sent the reader at a schema defect that projecting the
+  key would not fix. The help says when the key is absent from the source too,
+  so the typo is still named.
+- **ORDER BY a name the projection does not carry is 2017, not 1002.** Same
+  rule, same engine text (`Missing order idiom 'total' in statement
+  selection`): with an explicit projection list the result rows are
+  synthesized from it, so a key it lacks names nothing to sort by whether or
+  not the table declares it. A wildcard projection stays on 1002 — `*` hands
+  the source row through, so the key really must be a field of it, and that
+  is the one form the engine accepts (it sorts every row by NONE).
 
 ### Fixed — a watch could re-trigger itself forever
 
