@@ -87,7 +87,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (4013, "GROUP BY field not in projections", Severity::Error, Deny),
     (4017, "block ends with LET — its value is NONE", Severity::Warning, Warn),
     (4018, "side-effecting subquery in read position", Severity::Warning, Warn),
-    (4019, "CREATE/INSERT on a relation table without `in`/`out`", Severity::Warning, Warn),
+    (4019, "a relation table's rows are made by RELATE / INSERT RELATION, not CREATE / INSERT", Severity::Error, Deny),
     (4020, "RETURN mode meaningless for the statement", Severity::Warning, Warn),
     (4021, "SHOW CHANGES on a table without CHANGEFEED", Severity::Error, Warn),
     (4022, "SELECT from a DROP table", Severity::Warning, Warn),

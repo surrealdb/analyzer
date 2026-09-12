@@ -543,7 +543,7 @@ fn analyze_workspace_full_coverage_batch_one() {
         ),
         (
             "E4019",
-            "`likes` is a relation; use RELATE (or provide `in` and `out`)",
+            "`likes` is a relation table, and this statement makes an ordinary record — writing `in` and `out` by hand does not make it an edge",
         ),
         (
             "L7009",

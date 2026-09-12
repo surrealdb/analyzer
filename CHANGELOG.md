@@ -32,6 +32,16 @@ message quotes the engine text it predicts.
   not the table declares it. A wildcard projection stays on 1002 — `*` hands
   the source row through, so the key really must be a field of it, and that
   is the one form the engine accepts (it sorts every row by NONE).
+- **4019 is an error, and `in`/`out` no longer buy an exemption.** A row of a
+  `TYPE RELATION` table is a different kind of record, not an ordinary row
+  that happens to carry `in` and `out`, and only `RELATE` / `INSERT RELATION`
+  makes one. `CREATE wrote SET in = user:1, out = post:1` fails on 3.2.3 with
+  `Found record: \`wrote:v9fh…\` which is not a relation, but expected a
+  RELATION IN user OUT post` — as does the `CONTENT` spelling, a literal
+  record-id target, and plain `INSERT INTO`, none of which said anything
+  before. The exemption stood in front of the most misleading spelling: the
+  one that looks like it has done everything right. `INSERT RELATION INTO`
+  stays silent.
 
 ### Fixed — a watch could re-trigger itself forever
 

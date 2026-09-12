@@ -267,98 +267,111 @@ pub fn check_whole_table_write(
     }
 }
 
-/// Relation rows need `in` and `out`; creating one without them makes an
-/// edge connected to nothing (4019).
+/// Whether `name` is a table declared `TYPE RELATION`.
+fn is_relation_table(ctx: &AnalysisContext<'_>, name: &str) -> bool {
+    ctx.schema()
+        .tables
+        .get(name)
+        .is_some_and(|table| table.relation.is_some())
+}
+
+/// 4019 for `CREATE <relation table>`, and the finding both halves share.
+///
+/// A row of a `TYPE RELATION` table is not an ordinary row that happens to
+/// carry `in` and `out` — it is a different kind of record, and only `RELATE`
+/// (or `INSERT RELATION`) makes one. Supplying `in` and `out` by hand does
+/// not help: the row is still built as a normal record and the engine rejects
+/// it on the way out, verified on 3.2.3 for `SET`, `CONTENT`, a table target
+/// and a literal record id alike:
+///
+/// ```text
+/// CREATE wrote SET in = user:1, out = post:1
+///   -> Found record: `wrote:v9fh…` which is not a relation,
+///      but expected a RELATION IN user OUT post
+/// ```
+///
+/// The `in`/`out`-present exemption this used to carry therefore stood in
+/// front of the *most* misleading spelling — the one that looks like it has
+/// done everything right — and the warning tier undersold a statement that
+/// cannot succeed under any input.
 pub fn check_relation_write(
     ctx: &mut AnalysisContext<'_>,
     target: Option<&ast::Spanned<ast::Expr>>,
     data: Option<&ast::DataClause>,
 ) {
+    let _ = data;
     let Some(target) = target else {
         return;
     };
     let Some(name) = source_table_name(Some(target)) else {
         return;
     };
-    let is_relation = ctx
-        .schema()
-        .tables
-        .get(&name)
-        .is_some_and(|table| table.relation.is_some());
-    if !is_relation {
+    if !is_relation_table(ctx, &name) {
         return;
     }
-    let provides = |key: &str| match data {
-        Some(ast::DataClause::Set(assignments)) => assignments.iter().any(|assignment| {
-            crate::analyzer::expression::infer::plain_field_segments(&assignment.target.node)
-                .is_some_and(|segments| segments == [key])
-        }),
-        Some(ast::DataClause::Content(expr) | ast::DataClause::Replace(expr)) => {
-            matches!(&expr.node, ast::Expr::Object(fields)
-                if fields.iter().any(|(k, _)| k.node == key))
-        }
-        _ => false,
-    };
-    if !(provides("in") && provides("out")) {
-        let span =
-            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target.span);
-        ctx.emit(surrealql_analyzer_diagnostics::catalog::finding(
-            span,
-            4019,
-            format!("`{name}` is a relation; use RELATE (or provide `in` and `out`)"),
-        ));
-    }
+    emit_relation_write(ctx, &name, target.span, "RELATE $in -> {name} -> $out");
 }
 
 /// INSERT's variant of the relation contract (4019).
+///
+/// `INSERT RELATION INTO <table>` is the spelling that works and is exempt;
+/// plain `INSERT INTO` is not, whatever the payload carries.
 pub fn check_relation_insert(
     ctx: &mut AnalysisContext<'_>,
+    stmt: &ast::InsertStmt,
     target: Option<&ast::Spanned<ast::Expr>>,
-    data: &ast::InsertData,
 ) {
+    if stmt.relation.is_some() {
+        return;
+    }
     let Some(target) = target else {
         return;
     };
     let Some(name) = source_table_name(Some(target)) else {
         return;
     };
-    let is_relation = ctx
-        .schema()
-        .tables
-        .get(&name)
-        .is_some_and(|table| table.relation.is_some());
-    if !is_relation {
+    if !is_relation_table(ctx, &name) {
         return;
     }
-    let object_has = |expr: &ast::Spanned<ast::Expr>, key: &str| {
-        matches!(&expr.node, ast::Expr::Object(fields)
-            if fields.iter().any(|(k, _)| k.node == key))
-    };
-    let provided = match data {
-        ast::InsertData::Values(values) => values
-            .iter()
-            .flat_map(|value| insert_payload_rows(value))
-            .all(|row| object_has(row, "in") && object_has(row, "out")),
-        ast::InsertData::Rows { rows, .. } => rows.iter().all(|row| {
-            let has = |key: &str| {
-                row.iter().any(|(column, _)| {
-                    crate::analyzer::expression::infer::plain_field_segments(&column.node)
-                        .is_some_and(|segments| segments == [key])
-                })
-            };
-            has("in") && has("out")
-        }),
-        _ => false,
-    };
-    if !provided {
-        let span =
-            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target.span);
-        ctx.emit(surrealql_analyzer_diagnostics::catalog::finding(
+    emit_relation_write(ctx, &name, target.span, "INSERT RELATION INTO {name} …");
+}
+
+/// The shared 4019 finding. `fix` is a template whose `{name}` is the table.
+fn emit_relation_write(
+    ctx: &mut AnalysisContext<'_>,
+    name: &str,
+    target_span: surrealql_analyzer_syntax::span::ByteRange,
+    fix: &str,
+) {
+    let shape = ctx
+        .schema()
+        .tables
+        .get(name)
+        .and_then(|table| table.relation.as_ref())
+        .map_or_else(
+            || "RELATION".to_string(),
+            |relation| match (
+                relation.in_tables.join(" | "),
+                relation.out_tables.join(" | "),
+            ) {
+                (a, b) if a.is_empty() || b.is_empty() => "RELATION".to_string(),
+                (a, b) => format!("RELATION IN {a} OUT {b}"),
+            },
+        );
+    let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target_span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
             span,
             4019,
-            format!("`{name}` is a relation; use RELATE (or provide `in` and `out`)"),
-        ));
-    }
+            format!(
+                "`{name}` is a relation table, and this statement makes an ordinary record — writing `in` and `out` by hand does not make it an edge"
+            ),
+        )
+        .with_help(format!(
+            "write `{}` instead; SurrealDB fails this one with \"Found record: `{name}:…` which is not a relation, but expected a {shape}\"",
+            fix.replace("{name}", name)
+        )),
+    );
 }
 
 /// `CREATE ... RETURN BEFORE` always returns NONE — there is no before

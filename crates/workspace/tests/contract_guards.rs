@@ -224,6 +224,11 @@ const GUARDS: &[Guard] = &[
         "SELECT name, count() FROM user GROUP BY name;",
     ),
     guard(
+        4019,
+        "CREATE wrote SET in = user:a, out = post:b;",
+        "RELATE user:a -> wrote -> post:b;",
+    ),
+    guard(
         4025,
         "SELECT * FROM user GROUP BY age;",
         "SELECT age, count() FROM user GROUP BY age;",

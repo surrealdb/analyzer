@@ -36,6 +36,15 @@ SELECT (DELETE ticket_log) AS gone FROM article WHERE id = article:hello;
 -- 4019: CREATE on a relation table without in / out.
 CREATE likes SET weight = 1.0;
 
+-- 4019: …and supplying them by hand does not help. An edge is a different
+-- kind of record, so the engine rejects this one too ("Found record:
+-- `likes:…` which is not a relation, but expected a RELATION IN account OUT
+-- article"). Only RELATE / INSERT RELATION make edges.
+CREATE likes SET in = account:ada, out = article:hello, weight = 1.0;
+
+-- 4019: the bulk-load spelling of the same mistake.
+INSERT INTO likes { in: account:ada, out: article:hello, weight: 1.0 };
+
 -- 4020: a RETURN mode that is meaningless for the statement.
 CREATE ticket SET subject = 'x', reporter = account:ada RETURN BEFORE;
 
