@@ -36,24 +36,33 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  packages:
-    name: js packages · build · typecheck · test
+  docs:
+    name: diagnostics page · in sync with the catalog
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm -r run build
-      - run: pnpm -r run typecheck
-      - run: pnpm -r --if-present run test
 
-      # The published diagnostics page is generated from
-      # crates/diagnostics/src/catalog.rs. Fail the build if a code was added
-      # or its severity changed without regenerating — that drift is how the
-      # page fell 88 codes behind the catalog once already.
+      # This job used to be `js packages · build · typecheck · test`, running
+      # `pnpm -r` over the five TypeScript SDKs in `packages/`. Those have left
+      # the repository, and with them every `build`, `typecheck` and `test`
+      # script the recursive run had to execute. What is left in the pnpm
+      # workspace is the `surrealql-analyzer` npm shim — a dependency-free
+      # `.cjs` launcher with no scripts of its own — so `pnpm -r run build`
+      # would now either error (no such script) or, with `--if-present`, pass
+      # while doing nothing at all. A job that is green because it ran nothing
+      # is worse than no job: it reads as coverage.
+      #
+      # So the job is named for the one thing it still genuinely checks. The
+      # generator imports only `node:` builtins, so there is nothing to install
+      # and no lockfile step: the published diagnostics page is generated from
+      # crates/diagnostics/src/catalog.rs, and CI fails if a code was added or
+      # its severity changed without regenerating — that drift is how the page
+      # fell 88 codes behind the catalog once already.
       - name: Diagnostics page is in sync with the catalog
-        run: pnpm run docs:diagnostics:check
+        run: node scripts/gen-diagnostics-page.mjs --check
+
+      - name: Diagnostics page agrees with the catalog when re-read
+        run: node scripts/gen-diagnostics-page.mjs --verify

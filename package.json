@@ -3,17 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "packageManager": "pnpm@10.29.3",
-  "description": "TypeScript packages for SurrealQL Analyzer: typed client and framework adapters",
+  "description": "Node-side tooling for the SurrealQL Analyzer: the diagnostics catalogue generator and the npx CLI shim",
   "scripts": {
-    "build": "pnpm -r --if-present run build",
     "docs:diagnostics": "node scripts/gen-diagnostics-page.mjs",
-    "docs:diagnostics:check": "node scripts/gen-diagnostics-page.mjs --check && node scripts/gen-diagnostics-page.mjs --verify",
-    "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test"
-  },
-  "devDependencies": {
-    "tsup": "^8.3.0",
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "docs:diagnostics:check": "node scripts/gen-diagnostics-page.mjs --check && node scripts/gen-diagnostics-page.mjs --verify"
   }
 }

@@ -20,8 +20,6 @@ CRATES=(
   surrealql-analyzer-diagnostics
   surrealql-analyzer-workspace
   surrealql-analyzer-codegen
-  surrealql-analyzer-macros
-  surrealql-analyzer-rs
   surrealql-analyzer-lsp
   surrealql-analyzer
 )
@@ -107,25 +105,19 @@ cmd_bump() {
     echo "   WARNING: some path dependencies still pin an older version"
   fi
 
-  # npm packages that are published (private/example packages are skipped).
-
-  # Every publishable npm package. NOTE the search covers more than packages/:
-  # the `surrealql-analyzer` CLI shim lives in npm/ and was silently skipped when this
-  # only looked at packages/ and only matched the @surrealdb/analyzer- scope — so
-  # `npx surrealql-analyzer` kept installing an old version.
-  for p in $(find packages npm -name package.json -not -path '*/node_modules/*' 2>/dev/null); do
+  # npm packages that are published (private packages are skipped). Since the
+  # TypeScript SDKs left this repository the only one is the `surrealql-analyzer`
+  # CLI shim in npm/ — which is exactly the package a `packages/`-only search
+  # used to miss, leaving `npx surrealql-analyzer` installing an old version.
+  for p in $(find npm -name package.json -not -path '*/node_modules/*' 2>/dev/null); do
     python3 - "$p" "$v" <<'PY'
 import json, sys
 path, ver = sys.argv[1], sys.argv[2]
 d = json.load(open(path))
 name = d.get("name", "")
-if d.get("private") or not (name == "surrealql-analyzer" or name.startswith("@surrealdb/analyzer-")):
+if d.get("private") or name != "surrealql-analyzer":
     raise SystemExit
 d["version"] = ver
-for field in ("dependencies", "devDependencies", "peerDependencies"):
-    for dep in d.get(field, {}):
-        if dep.startswith("@surrealdb/analyzer-"):
-            d[field][dep] = ver
 json.dump(d, open(path, "w"), indent=2)
 open(path, "a").write("\n")
 print(f"   {d['name']} -> {ver}")
@@ -201,13 +193,14 @@ cmd_publish() {
     echo "== npm skipped — tag v$v first, then: pnpm -r publish --access public =="
     exit 0
   fi
-  # `pnpm -r` covers whatever pnpm-workspace.yaml lists. The CLI shim lives in
-  # npm/, which was missing from that list — so this used to publish 4 of the 5
-  # packages and silently leave `npx surrealql-analyzer` on an old version.
+  # `pnpm -r` covers whatever pnpm-workspace.yaml lists, which is now just the
+  # CLI shim in npm/. That entry is load-bearing: when the list named only
+  # packages/, this published 4 of the 5 packages and silently left
+  # `npx surrealql-analyzer` on an old version.
   echo "== npm =="
   pnpm -r publish --access public --no-git-checks
   echo "   published:"
-  pnpm -r list --depth -1 2>/dev/null | grep -E '^(surrealql-analyzer|@surrealdb/analyzer-)' | sed 's/^/     /' 
+  pnpm -r list --depth -1 2>/dev/null | grep -E '^surrealql-analyzer' | sed 's/^/     /' 
 }
 
 case "${1:-check}" in

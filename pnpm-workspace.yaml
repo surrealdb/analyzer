@@ -1,15 +1,11 @@
-# `chore(release)` rewrites every cross-package dependency to an exact
-# version (`"@surrealdb/analyzer-client": "0.5.3"`) so the published tarballs pin
-# each other. Inside the workspace those must still resolve to the sibling
-# directory: pnpm 10 defaults this to false, and with it off `packages/svelte`
-# gets the registry copy of the client while `examples/*` (which ask for
-# `workspace:*`) get the local one — two identities for one type, and every
-# `SurqlQuery` handed across the boundary stops being assignable to itself.
-linkWorkspacePackages: true
-
+# The only npm package this repository still builds is the `surrealql-analyzer`
+# CLI shim, which `scripts/release.sh publish` ships with `pnpm -r publish`.
+# It lives outside a `packages/` directory, and leaving it off this list is how
+# it once sat at 0.1.0 while everything else was released — so it stays listed
+# even though it is now the sole member.
+#
+# The TypeScript client SDKs that used to fill `packages/` have left this
+# repository; `linkWorkspacePackages` went with them, because nothing here
+# depends on a sibling any more.
 packages:
-  - "packages/*"
-  # The `surrealql-analyzer` CLI shim. Outside packages/, so `pnpm -r` skipped it
-  # and it sat at 0.1.0 while everything else was released.
   - "npm/*"
-  - "examples/*"
