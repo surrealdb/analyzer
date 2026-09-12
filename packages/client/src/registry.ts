@@ -1,8 +1,8 @@
 /**
- * The query registry — the contract between `surrealql-analyzer generate` and this
+ * The query registry — the contract between `surrealkit generate` and this
  * client.
  *
- * `surrealql-analyzer generate` emits a module augmentation that adds one entry per
+ * `surrealkit generate` emits a module augmentation that adds one entry per
  * analyzed query, keyed by the exact query text:
  *
  * ```ts

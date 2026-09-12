@@ -6,6 +6,7 @@
 //! sequences, which is what makes piping to a file safe.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use surrealql_analyzer_diagnostics::{render_code, Finding, Severity};
 use surrealql_analyzer_syntax::span::SourceSpan;
@@ -19,12 +20,13 @@ pub fn render_finding(
     finding: &Finding,
     severity: Severity,
     texts: &BTreeMap<String, String>,
+    root: &Path,
     styles: Styles,
 ) -> String {
     let mut out = String::new();
     let header = format!(
         "{}[{}]",
-        severity_label(severity),
+        severity.as_str(),
         render_code(finding.code(), severity)
     );
     out.push_str(&format!(
@@ -32,7 +34,14 @@ pub fn render_finding(
         styles.severity(severity, &header),
         styles.message(finding.message())
     ));
-    let width = push_snippet(&mut out, finding.span(), texts, styles, Some(severity));
+    let width = push_snippet(
+        &mut out,
+        finding.span(),
+        texts,
+        root,
+        styles,
+        Some(severity),
+    );
 
     let pad = " ".repeat(width);
     for help in finding.help() {
@@ -53,7 +62,7 @@ pub fn render_finding(
             styles.label("note:"),
             styles.message(&related.message)
         ));
-        push_snippet(&mut out, &related.span, texts, styles, None);
+        push_snippet(&mut out, &related.span, texts, root, styles, None);
     }
     out
 }
@@ -69,11 +78,12 @@ fn push_snippet(
     out: &mut String,
     span: &SourceSpan,
     texts: &BTreeMap<String, String>,
+    root: &Path,
     styles: Styles,
     severity: Option<Severity>,
 ) -> usize {
     let source = span.source().to_string();
-    let display = display_source(&source);
+    let display = display_source(root, &source);
     let Some(text) = texts.get(&source) else {
         out.push_str(&format!(
             "  {} {}\n",
@@ -136,25 +146,12 @@ fn locate(text: &str, offset: usize) -> (usize, usize, String) {
     (line_no, col, text[line_start..line_end].to_string())
 }
 
-/// File-URL source ids render as paths relative to the working
-/// directory; everything else displays verbatim.
-fn display_source(source: &str) -> String {
+/// File-URL source ids render as paths relative to the project root, so a
+/// host's output reads `src/app.ts` wherever the process was started;
+/// everything else displays verbatim.
+fn display_source(root: &Path, source: &str) -> String {
     let path = source.strip_prefix("file://").unwrap_or(source);
-    match std::env::current_dir() {
-        Ok(cwd) => std::path::Path::new(path).strip_prefix(&cwd).map_or_else(
-            |_| path.to_string(),
-            |relative| relative.display().to_string(),
-        ),
-        Err(_) => path.to_string(),
-    }
-}
-
-fn severity_label(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Hint => "hint",
-    }
+    crate::project::display_relative(root, Path::new(path))
 }
 
 #[cfg(test)]
@@ -182,6 +179,7 @@ mod tests {
             &finding,
             Severity::Error,
             &texts("queries.surql", text),
+            Path::new(""),
             Styles::plain(),
         );
 
@@ -216,6 +214,7 @@ mod tests {
             &finding,
             Severity::Error,
             &texts("q.surql", &text),
+            Path::new(""),
             Styles::plain(),
         );
 
@@ -260,6 +259,7 @@ mod tests {
             &finding,
             Severity::Error,
             &texts("s.surql", text),
+            Path::new(""),
             Styles::plain(),
         );
 
@@ -275,7 +275,13 @@ mod tests {
         );
         let finding = catalog::finding(span, 1001, "unknown table `x`");
 
-        let rendered = render_finding(&finding, Severity::Error, &BTreeMap::new(), Styles::plain());
+        let rendered = render_finding(
+            &finding,
+            Severity::Error,
+            &BTreeMap::new(),
+            Path::new(""),
+            Styles::plain(),
+        );
 
         assert!(rendered.contains("--> gone.surql:3..9"));
         assert!(!rendered.contains(" | "));
@@ -295,8 +301,20 @@ mod tests {
             .with_help("did you mean `person`?");
         let texts = texts("queries.surql", text);
 
-        let plain = render_finding(&finding, Severity::Error, &texts, Styles::plain());
-        let colored = render_finding(&finding, Severity::Error, &texts, Styles::colored());
+        let plain = render_finding(
+            &finding,
+            Severity::Error,
+            &texts,
+            Path::new(""),
+            Styles::plain(),
+        );
+        let colored = render_finding(
+            &finding,
+            Severity::Error,
+            &texts,
+            Path::new(""),
+            Styles::colored(),
+        );
 
         assert!(colored.contains('\x1b'), "colour should paint something");
         assert_eq!(strip_ansi(&colored), plain);
@@ -313,12 +331,14 @@ mod tests {
             &finding,
             Severity::Error,
             &BTreeMap::new(),
+            Path::new(""),
             Styles::colored(),
         );
         let warning = render_finding(
             &finding,
             Severity::Warning,
             &BTreeMap::new(),
+            Path::new(""),
             Styles::colored(),
         );
         assert_ne!(

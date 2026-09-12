@@ -1,6 +1,6 @@
 <!--
   Every read on this page is written where you are looking at it, and every one
-  of them is typed by `surrealql-analyzer generate` — no annotations below, anywhere.
+  of them is typed by `surrealkit generate` — no annotations below, anywhere.
   Change a field name in an attribute and the editor says so before the app runs.
 -->
 <script lang="ts">

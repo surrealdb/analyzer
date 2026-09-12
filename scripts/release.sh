@@ -107,19 +107,14 @@ cmd_bump() {
     echo "   WARNING: some path dependencies still pin an older version"
   fi
 
-  # npm packages that are published (private/example packages are skipped).
-
-  # Every publishable npm package. NOTE the search covers more than packages/:
-  # the `surrealql-analyzer` CLI shim lives in npm/ and was silently skipped when this
-  # only looked at packages/ and only matched the @surrealdb/analyzer- scope — so
-  # `npx surrealql-analyzer` kept installing an old version.
-  for p in $(find packages npm -name package.json -not -path '*/node_modules/*' 2>/dev/null); do
+  # Every publishable npm package (private/example packages are skipped).
+  for p in $(find packages -name package.json -not -path '*/node_modules/*' 2>/dev/null); do
     python3 - "$p" "$v" <<'PY'
 import json, sys
 path, ver = sys.argv[1], sys.argv[2]
 d = json.load(open(path))
 name = d.get("name", "")
-if d.get("private") or not (name == "surrealql-analyzer" or name.startswith("@surrealdb/analyzer-")):
+if d.get("private") or not name.startswith("@surrealdb/analyzer-"):
     raise SystemExit
 d["version"] = ver
 for field in ("dependencies", "devDependencies", "peerDependencies"):
@@ -140,10 +135,9 @@ cmd_publish() {
   local v; v=$(grep -m1 -A2 '\[workspace.package\]' Cargo.toml | grep -m1 '^version' | cut -d'"' -f2)
   [ "$confirm" = "$v" ] || { echo "aborted (expected $v)"; exit 1; }
 
-  # The `surrealql-analyzer` npm shim and the Zed extension both download a prebuilt
-  # binary from the GitHub Release for their version. Publishing either before
-  # that release exists gives users a 404 instead of a stale version — strictly
-  # worse. The `v*` tag is what triggers .github/workflows/release.yml to build
+  # The Zed extension downloads the prebuilt language server from the GitHub
+  # Release for its version. Publishing before that release exists gives users
+  # a 404 instead of a stale version — strictly worse. The `v*` tag is what triggers .github/workflows/release.yml to build
   # and upload those assets, so it must land first.
   # A dirty tree is not a warning here. `cargo publish` reads the working
   # directory, not the tag, so uncommitted changes go to crates.io permanently
@@ -201,13 +195,11 @@ cmd_publish() {
     echo "== npm skipped — tag v$v first, then: pnpm -r publish --access public =="
     exit 0
   fi
-  # `pnpm -r` covers whatever pnpm-workspace.yaml lists. The CLI shim lives in
-  # npm/, which was missing from that list — so this used to publish 4 of the 5
-  # packages and silently leave `npx surrealql-analyzer` on an old version.
+  # `pnpm -r` covers whatever pnpm-workspace.yaml lists.
   echo "== npm =="
   pnpm -r publish --access public --no-git-checks
   echo "   published:"
-  pnpm -r list --depth -1 2>/dev/null | grep -E '^(surrealql-analyzer|@surrealdb/analyzer-)' | sed 's/^/     /' 
+  pnpm -r list --depth -1 2>/dev/null | grep -E '^@surrealdb/analyzer-' | sed 's/^/     /' 
 }
 
 case "${1:-check}" in

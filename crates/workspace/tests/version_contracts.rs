@@ -417,3 +417,35 @@ fn omit_under_an_explicit_projection_is_4012() {
     assert_eq!(count("SELECT *, a OMIT c FROM t LIMIT 1;"), 0);
     assert_eq!(count("SELECT a, b FROM t LIMIT 1;"), 0);
 }
+
+#[test]
+fn mtree_and_the_bare_knn_operator_left_with_3_0() {
+    let mtree = "DEFINE TABLE t SCHEMAFULL; DEFINE FIELD e ON t TYPE array<float>; \
+                 DEFINE INDEX i ON t FIELDS e MTREE DIMENSION 4;";
+    assert!(
+        codes(Some("3.2"), mtree).contains(&8002),
+        "{:?}",
+        codes(Some("3.2"), mtree)
+    );
+    assert!(!codes(Some("2.3"), mtree).contains(&8002));
+    assert!(
+        !codes(None, mtree).contains(&8002),
+        "unconfigured never fires"
+    );
+
+    let bare = "DEFINE TABLE t SCHEMAFULL; DEFINE FIELD e ON t TYPE array<float>; \
+                DEFINE INDEX i ON t FIELDS e HNSW DIMENSION 4; \
+                SELECT id FROM t WHERE e <|2|> [1.0, 2.0, 3.0, 4.0];";
+    assert!(
+        codes(Some("3.2"), bare).contains(&8002),
+        "{:?}",
+        codes(Some("3.2"), bare)
+    );
+    assert!(!codes(Some("2.3"), bare).contains(&8002));
+    let with_ef = bare.replace("<|2|>", "<|2, 40|>");
+    assert!(
+        !codes(Some("3.2"), &with_ef).contains(&8002),
+        "{:?}",
+        codes(Some("3.2"), &with_ef)
+    );
+}

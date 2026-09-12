@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Fixed — a watch could re-trigger itself forever
+
+`resolve_output` canonicalized the registry's *parent* to get the spelling the
+watcher reports. When that parent does not exist yet — the first `generate`
+creates it — canonicalization failed and the raw path was kept, so under a
+symlinked ancestor (`/tmp`, `/var`, a symlinked home) the path written and the
+path excluded never matched: `generate` wrote, the watcher called the write an
+input, and the loop ran continuously. Resolution now starts at the nearest
+ancestor that does exist and re-appends the rest.
+
+### Changed — `source` in the JSON document is relative to the project root
+
+A `Diagnostic`'s `source` was whatever the source id happened to be: a bare
+absolute path for a finding in a host file, `file:///abs/...` for one in a
+`.surql` file, and always `file://` for `related[].source` — while the same
+finding rendered as text said `src/app.ts`. Every one of them is now the
+root-relative path the renderer shows, so a consumer need not know which kind
+of source it is holding, and two machines analyzing the same commit produce the
+same document. A file outside the root keeps its absolute path.
+
+### Fixed — `generate` creates the directory it writes the registry into
+
+`generate` wrote the registry with a bare `fs::write`, so an `out` naming a
+directory that does not exist yet — `src/lib/db.generated.ts` in a project
+without a `src/lib/`, the shape the documentation uses — failed with an ENOENT
+that named the *file*, not the missing parent. The parent is created first now.
+
 ### Fixed — three places the grammar accepted syntax the engine does not
 
 Each was established against a live SurrealDB 3.2.3 and against the version
@@ -26,6 +53,58 @@ history in surrealdb/surrealdb, and the three histories came out differently
   passed silently. Both orders parse now, and the reversed one is reported
   with the order to write instead.
 
+### Changed — the analyzer is a library; the command line is SurrealKit's
+
+`surrealql-analyzer` no longer ships a binary. The crate of that name is now
+the library a host embeds — `Project`, `check`, `generate`, and the
+`notify`-backed `watch_loop` — and the `check`/`generate`/`watch` verbs are
+[SurrealKit](https://github.com/surrealdb/surrealkit)'s to spell
+(`surrealkit check`, `surrealkit generate`, `surrealkit watch`). The language
+server is unchanged and remains the one binary this repository releases.
+
+- **Crate:** `crates/cli` → `crates/analyzer`, still published as
+  `surrealql-analyzer`. `clap`, the spinner and the terminal layout are gone;
+  what moved down is everything a host would otherwise reimplement: source
+  discovery, embedded-query collection, host-span remapping, policy
+  resolution, the JSON document, the rustc-style renderer, and the watcher.
+- **Verbs return data.** `check` returns `Ok(CheckReport)` whether or not it
+  found errors — `report.passed()` decides an exit code — and only a run that
+  could not happen is `Err`. `generate` returns `GenerateReport` or
+  `GenerateError::Blocked` (an error in an embedded query; nothing written).
+  Rendering is a separate, opt-in call with colour as a `Styles` parameter.
+- **No config file required.** `Project::new(root, WorkspaceConfig)` lets a
+  host that knows its own layout build the config directly;
+  `Project::discover(dir)` still walks up for a `surrealql-analyzer.toml`.
+- **Watch is engine-only.** `watch_loop` decides *when* and *why*
+  (`WatchRun { index, reason, changes }`); the host's closure decides what a
+  run does and how it is shown. The project comes from a `load` closure, so a
+  host with a fixed config passes a clone and one with a file re-reads it, and
+  the host names its own config file as an extra input to watch.
+- **Removed:** the `surrealql-analyzer` npm launcher, the `cargo-binstall`
+  metadata, the CLI half of the release workflow, and `surrealql-analyzer init`
+  (the `[sources]` layout is SurrealKit's to know). `scripts/oracle.py` runs the
+  corpus through `cargo run --example check_json` instead of a binary.
+
+### Added — diagnostics found by probing, verified on SurrealDB 3.2.3
+
+- **E4031** — a payload `id` that disagrees with the statement's record target
+  (`CREATE p:1 CONTENT { id: p:2 }`); the engine refuses the write outright.
+- **W4032** — `ORDER BY`/`LIMIT`/`START` on a single record id: `START` skips
+  the only row and the statement returns nothing.
+- **W7006** now covers the set operators handed a scalar (`tags CONTAINSANY
+  'x'`): the ANY/ALL forms are always false, the NONE forms always true.
+- **E1033** now covers `REFERENCE` on a non-record type, which the engine
+  rejects.
+- **E1012** now covers the analyzer a `FULLTEXT`/`SEARCH ANALYZER` index names —
+  the engine accepts the definition and fails only on first search.
+- **E8002** now covers `MTREE` and the bare `<|k|>` KNN operator (with a
+  configured 3.x target); E1027's message names HNSW/FULLTEXT instead.
+- **W7012** reaches `DEFINE EVENT … THEN` bodies (blocking calls and `SLEEP`).
+
+### Fixed
+
+- `sleep(1s)` no longer reports E5001: the builtin was registered only under
+  `sleep::sleep`, a spelling SurrealQL does not have.
 
 ### Changed — the project is now the SurrealQL Analyzer
 

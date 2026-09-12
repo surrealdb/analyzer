@@ -109,12 +109,61 @@ pub(crate) fn analyze_define_event(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
                         crate::analyzer::expression::analyze_expr(ctx, then);
                     }
                 }
+                check_blocking_calls_in_body(ctx, then, &stmt.name.node);
             }
         });
     });
 
     check_event_references(ctx, stmt);
     Kind::None
+}
+
+/// 7012 in an event body. The body runs inside every write that fires the
+/// event, so a blocking call — `http::*`, `sleep()`, or a `SLEEP` statement —
+/// stalls the write that triggered it, exactly as it would in a field's
+/// `VALUE`. The field clauses had this check and the event body did not:
+/// `DEFINE FIELD remote ON p VALUE http::get(...)` reported while the same
+/// call in `THEN { http::get(...) }` was silent.
+fn check_blocking_calls_in_body(
+    ctx: &mut AnalysisContext<'_>,
+    body: &ast::Spanned<ast::Expr>,
+    event: &str,
+) {
+    use super::field::{check_call_in_clause, FieldClause};
+    use surrealql_analyzer_syntax::ast::visit::{walk_expr, walk_statement, Visitor};
+
+    struct BlockingCalls<'c, 'a> {
+        ctx: &'c mut AnalysisContext<'a>,
+        event: &'c str,
+    }
+
+    impl Visitor for BlockingCalls<'_, '_> {
+        fn visit_expr(&mut self, expr: &ast::Spanned<ast::Expr>) {
+            if let ast::Expr::Call(call) = &expr.node {
+                check_call_in_clause(self.ctx, call, FieldClause::EventThen, self.event);
+            }
+            walk_expr(self, expr);
+        }
+
+        fn visit_statement(&mut self, statement: &ast::Spanned<ast::Statement>) {
+            if let ast::Statement::Sleep(_) = &statement.node {
+                let span = SourceSpan::new(self.ctx.source().clone(), statement.span);
+                self.ctx.emit(
+                    surrealql_analyzer_diagnostics::catalog::finding(
+                        span,
+                        7012,
+                        format!("`SLEEP` pauses every write that fires `{}`", self.event),
+                    )
+                    .with_help(
+                        "an event body runs inside the write that triggered it; move the delay out of the event",
+                    ),
+                );
+            }
+            walk_statement(self, statement);
+        }
+    }
+
+    BlockingCalls { ctx, event }.visit_expr(body);
 }
 
 /// An event's catalog contracts: a known target table (1001), one definition

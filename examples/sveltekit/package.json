@@ -10,8 +10,8 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "generate": "surrealql-analyzer generate --out src/lib/surrealql-analyzer.generated.ts",
-    "generate:watch": "surrealql-analyzer generate --out src/lib/surrealql-analyzer.generated.ts --watch",
+    "generate": "surrealkit generate --out src/lib/surrealql-analyzer.generated.ts",
+    "generate:watch": "surrealkit watch --out src/lib/surrealql-analyzer.generated.ts",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "verify": "node scripts/verify.mjs"
   },

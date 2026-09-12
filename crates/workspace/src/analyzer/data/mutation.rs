@@ -592,6 +592,94 @@ pub fn check_only_on_table(
     }
 }
 
+/// 4031: a payload `id` that disagrees with the statement's record target.
+///
+/// `CREATE p:1 CONTENT { id: p:2, … }` names the row twice, differently, and
+/// the engine refuses to pick: "Found p:2 for the `id` field, but a specific
+/// record has been specified" — verified on 3.2.3 for CREATE, UPDATE and
+/// UPSERT, and for SET, CONTENT and MERGE alike. Only a *literal* record id
+/// that differs from the target fires: the same id twice is redundant and
+/// accepted, a table target (`CREATE p CONTENT { id: p:9 }`) is how a payload
+/// chooses its id, and a computed id is not ours to judge.
+pub fn check_payload_id_against_target(
+    ctx: &mut AnalysisContext<'_>,
+    targets: &[ast::Spanned<ast::Expr>],
+    data: Option<&ast::DataClause>,
+) {
+    fn text_at(text: &str, range: surrealql_analyzer_syntax::span::ByteRange) -> &str {
+        text[range.start() as usize..range.end() as usize].trim()
+    }
+
+    let payload_id = match data {
+        Some(ast::DataClause::Set(assignments)) => assignments
+            .iter()
+            .find(|assignment| {
+                matches!(assignment.op.node, ast::AssignOp::Assign)
+                    && plain_field_segments(&assignment.target.node)
+                        .is_some_and(|segments| segments == ["id"])
+            })
+            .map(|assignment| &assignment.value),
+        Some(
+            ast::DataClause::Content(expr)
+            | ast::DataClause::Merge(expr)
+            | ast::DataClause::Replace(expr),
+        ) => match &expr.node {
+            ast::Expr::Object(fields) => fields
+                .iter()
+                .find(|(key, _)| key.node == "id")
+                .map(|(_, value)| value),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(value) = payload_id else {
+        return;
+    };
+    let ast::Expr::RecordId {
+        table: value_table,
+        id: value_id,
+        range: false,
+    } = &value.node
+    else {
+        return;
+    };
+
+    let text = ctx.source_text();
+    let mut findings = Vec::new();
+    for target in targets {
+        let ast::Expr::RecordId {
+            table,
+            id,
+            range: false,
+        } = &target.node
+        else {
+            continue;
+        };
+        if table.node == value_table.node && text_at(text, *id) == text_at(text, *value_id) {
+            continue;
+        }
+        let written = text_at(text, value.span).to_string();
+        let targeted = text_at(text, target.span).to_string();
+        findings.push(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), value.span),
+                4031,
+                format!("`id` is `{written}`, but this statement targets `{targeted}`"),
+            )
+            .with_help(
+                "SurrealDB fails the write (\"Found … for the `id` field, but a specific record has been specified\"); drop `id` from the payload, or target the table and let the payload choose",
+            )
+            .with_related(
+                surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target.span),
+                "the record this statement targets".to_string(),
+            ),
+        );
+    }
+    for finding in findings {
+        ctx.emit(finding);
+    }
+}
+
 /// `SET target = value`: the written value must inhabit the field's
 /// declared type (2001); compound operators check as operator
 /// applications against the field's kind (2004); `id` is not writable

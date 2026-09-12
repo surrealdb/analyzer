@@ -1,6 +1,6 @@
 // A vanilla-TypeScript SurrealQL Analyzer demo.
 //
-// `surrealql-analyzer generate` scanned this project, found every query text in it,
+// `surrealkit generate` scanned this project, found every query text in it,
 // analyzed each one against `schema/schema.surql`, and wrote
 // `src/surrealql-analyzer.generated.ts` — a module augmentation that types every
 // query by its exact text. We import the entry points from that generated file,

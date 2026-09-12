@@ -58,7 +58,7 @@ impl QueryEntry {
     /// step the CLI's `generate` runs for every embedded query it finds. It
     /// lives here rather than in the CLI so `tests/golden.rs` — which compiles
     /// the rendered module with `tsc` — exercises the same code path a user's
-    /// `surrealql-analyzer generate` does, not a re-implementation of it.
+    /// `surrealkit generate` does, not a re-implementation of it.
     pub fn from_analysis(parts: Vec<String>, output: &AnalysisOutput) -> Self {
         Self {
             parts,

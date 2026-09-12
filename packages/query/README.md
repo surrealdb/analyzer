@@ -36,8 +36,8 @@ to the workspace root, which is usually not where your import points:
 
 ```sh
 npm install @surrealdb/analyzer-query @surrealdb/analyzer-client surrealdb
-npm install -D surrealql-analyzer
-npx surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts
+cargo install surrealkit    # the command line: check, generate, watch
+surrealkit generate --out src/surrealql-analyzer.generated.ts
 ```
 
 ```ts

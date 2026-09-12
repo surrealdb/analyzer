@@ -24,7 +24,7 @@ import {
 } from "../src/index.js";
 import type { Equal, Expect, IsAny } from "./assert.js";
 
-// Stand in for what `surrealql-analyzer generate` emits. Each `result` is the
+// Stand in for what `surrealkit generate` emits. Each `result` is the
 // per-statement response tuple: one element per statement, `null` for a
 // non-responder. A single-statement query is a one-element tuple.
 //
@@ -228,7 +228,7 @@ async function main() {
   // A registry miss is a HARD failure, not a silent degrade to `unknown`. The
   // message rides inside the type, so the compiler prints the remedy:
   //   TS2345: Argument of type 'SurqlError<"this query is not in the generated
-  //   registry - run `surrealql-analyzer generate`">' is not assignable to …
+  //   registry - run `surrealkit generate`">' is not assignable to …
   const stale = defineQuery("SELECT nope FROM nowhere");
   // @ts-expect-error the generated registry has no such query
   await db.run(stale);

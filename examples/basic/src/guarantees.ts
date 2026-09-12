@@ -50,10 +50,10 @@ export async function guarantees() {
   // A query text the registry does not contain is a hard error carrying its own
   // remedy, not a silent degrade to `unknown[]`:
   //   Argument of type 'SurqlError<"this query is not in the generated
-  //   registry - run `surrealql-analyzer generate`">' is not assignable to …
+  //   registry - run `surrealkit generate`">' is not assignable to …
   //
   // That guarantee CANNOT be demonstrated here, and the reason is worth stating.
-  // `surrealql-analyzer generate` extracts every `defineQuery` / `defineLive` literal
+  // `surrealkit generate` extracts every `defineQuery` / `defineLive` literal
   // in this project, so any query written in this file is, by construction, in
   // the generated file. A registry miss is therefore only ever a *stale*
   // registry — and an example that regenerates cleanly is exactly one that

@@ -1,5 +1,5 @@
 // The codegen golden, consumed end to end. `test-d/gen/surrealql-analyzer.generated.ts`
-// is real `surrealql-analyzer generate` output over the fixture workspace in
+// is real `surrealkit generate` output over the fixture workspace in
 // `crates/codegen/tests/fixtures/typecheck` (pinned byte-for-byte by
 // `cargo test -p surrealql-analyzer-codegen --test golden`). This file is compiled by
 // `tsc` as part of `pnpm typecheck` — so the `expectTypeOf` lines below are

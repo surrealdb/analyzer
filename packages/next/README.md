@@ -34,7 +34,7 @@ registry is silently dropped.
 
 ```sh
 npm install @surrealdb/analyzer-next @surrealdb/analyzer-client surrealdb
-npm install -D surrealql-analyzer
+cargo install surrealkit    # the command line: check, generate, watch
 ```
 
 **2. Generate where your `@/` alias points.** Bare `generate` writes to the
@@ -42,14 +42,14 @@ workspace root; check `paths` in `tsconfig.json` and match it. A
 `create-next-app` project with a `src` directory maps `@/*` to `./src/*`:
 
 ```sh
-npx surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts   # with src/
-npx surrealql-analyzer generate --out surrealql-analyzer.generated.ts       # without src/
+surrealkit generate --out src/surrealql-analyzer.generated.ts   # with src/
+surrealkit generate --out surrealql-analyzer.generated.ts       # without src/
 ```
 
 Put it in `package.json` so the path is written once:
 
 ```json
-{ "scripts": { "generate": "surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts" } }
+{ "scripts": { "generate": "surrealkit generate --out src/surrealql-analyzer.generated.ts" } }
 ```
 
 Commit the generated module — it is what makes a fresh checkout type-check

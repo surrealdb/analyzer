@@ -10,7 +10,7 @@ pub mod sleep;
 
 /// Every `sleep::` built-in the analyzer resolves, in dispatch order.
 pub(crate) static CATALOG: &[BuiltinEntry] = &[BuiltinEntry::new(
-    "sleep::sleep",
+    "sleep",
     "Pauses execution for the given duration.",
     sleep::signature,
     sleep::analyze_sleep_sleep,

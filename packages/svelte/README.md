@@ -41,20 +41,20 @@ registry is silently dropped.
 
 ```sh
 npm install @surrealdb/analyzer-svelte @surrealdb/analyzer-client surrealdb
-npm install -D surrealql-analyzer
+cargo install surrealkit    # the command line: check, generate, watch
 ```
 
 **2. Generate into `src/lib`,** so `$lib/surrealql-analyzer.generated` resolves. Bare
 `generate` writes to the workspace root, which is not where that import points:
 
 ```sh
-npx surrealql-analyzer generate --out src/lib/surrealql-analyzer.generated.ts
+surrealkit generate --out src/lib/surrealql-analyzer.generated.ts
 ```
 
 Put it in `package.json` so the path is written once:
 
 ```json
-{ "scripts": { "generate": "surrealql-analyzer generate --out src/lib/surrealql-analyzer.generated.ts" } }
+{ "scripts": { "generate": "surrealkit generate --out src/lib/surrealql-analyzer.generated.ts" } }
 ```
 
 Commit the generated module — it is what makes a fresh checkout type-check
@@ -344,7 +344,7 @@ Forget the preprocessor and nothing misbehaves quietly: the string reaches
 
 Two things this does not do yet, both external:
 
-- `surrealql-analyzer generate` extracts queries from call expressions, not from
+- `surrealkit generate` extracts queries from call expressions, not from
   markup attributes, so the skeleton has to reach the registry another way until
   it does.
 - `svelte2tsx` — what `svelte-check` and the editor use — applies `script` and

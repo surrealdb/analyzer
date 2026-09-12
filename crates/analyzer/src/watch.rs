@@ -1,5 +1,4 @@
-//! The watch loop behind `surrealql-analyzer watch`, `check --watch` and
-//! `generate --watch`.
+//! The watch loop behind a host's `watch` verb (SurrealKit's `surrealkit watch`).
 //!
 //! Generated types go stale silently: you edit a `.surql` file or a host file
 //! and nothing re-runs. Watching closes that loop — run once, then re-run on
@@ -7,21 +6,19 @@
 //!
 //! # Output
 //!
-//! See [`report`]. The short version: a watch is a display of the workspace's
-//! current state, not a log of its history, so each run repaints the screen
-//! rather than scrolling the last one away, and the verdict is a coloured band
-//! that reads as PASS or FAIL without being read.
+//! None. The engine decides *when* a run happens and *why* ([`WatchRun`]);
+//! the host's closure decides what a run does and how it is shown. A watch is
+//! a display of the workspace's current state, not a log of its history, and
+//! how that display is drawn — a repainted screen, a status band — belongs to
+//! whoever owns the terminal.
 //!
 //! # What is watched
 //!
-//! Exactly the inputs `check`/`generate` read:
-//!
-//! * every `.surql` / `.surrealql` file under the workspace root,
-//! * every host file ([`crate::is_host_source`]: `.ts`/`.tsx`/`.js`/`.jsx`/
-//!   `.svelte`/`.vue`/`.astro`) — the files
-//!   [`crate::discover_host_sources`] scans for embedded queries,
-//! * `surrealql-analyzer.toml` itself, because a config change alters which files
-//!   matter and how findings are graded.
+//! Exactly the inputs `check`/`generate` read — every `.surql` / `.surrealql`
+//! file and every host file under the project root, as [`Project::sources`]
+//! discovers them — plus whatever extra inputs the host names: the file its
+//! configuration lives in, because a config change alters which files matter
+//! and how findings are graded.
 //!
 //! Everything the config's `[sources] ignore` covers is dropped — twice over:
 //! ignored top-level directories are never handed to the watcher at all (so
@@ -50,29 +47,27 @@ use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 use std::collections::BTreeSet;
 use std::error::Error;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
-use surrealql_analyzer_workspace::config::WorkspaceConfig;
 
-use crate::style::{Outcome, Styles};
+use crate::project::Project;
 
 /// How long the loop waits for the change stream to go quiet before re-running.
 /// Editors emit several events per save; 150ms is comfortably longer than the
 /// gap between them and still below the threshold where a human notices lag.
-pub(crate) const DEBOUNCE: Duration = Duration::from_millis(150);
+const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// Upper bound on how long [`coalesce`] will keep extending its quiet window.
 /// Without it, an editor that writes on every keystroke could postpone the
 /// re-run indefinitely; with it, the loop always makes progress.
-pub(crate) const MAX_COALESCE: Duration = Duration::from_secs(2);
+const MAX_COALESCE: Duration = Duration::from_secs(2);
 
 /// What happened to a watched path. Purely presentational — every verb
 /// triggers the same re-run — but "created"/"deleted" is the difference between
 /// a log line that explains itself and one that doesn't.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Verb {
+enum Verb {
     /// The file appeared.
     Created,
     /// The file's contents changed.
@@ -99,7 +94,7 @@ impl Verb {
 /// session still arrives carrying `Create`, and a delete can arrive carrying
 /// `Create | Remove`. Comparing "does it exist now" against "was it an input at
 /// the last run" gets it right on every platform.
-pub(crate) fn verb_for(path: &Path, known: &BTreeSet<PathBuf>) -> Verb {
+fn verb_for(path: &Path, known: &BTreeSet<PathBuf>) -> Verb {
     if !path.exists() {
         Verb::Deleted
     } else if known.contains(path) {
@@ -111,57 +106,45 @@ pub(crate) fn verb_for(path: &Path, known: &BTreeSet<PathBuf>) -> Verb {
 
 /// The paths that changed in one debounced burst, deduplicated. Sorted so a
 /// repeating log line stays readable.
-pub(crate) type ChangeSet = BTreeSet<PathBuf>;
+pub type ChangeSet = BTreeSet<PathBuf>;
 
-/// Why a path matters to the analysis.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Watched {
-    /// `surrealql-analyzer.toml` — changes which files are inputs at all.
-    Config,
-    /// A `.surql` / `.surrealql` source.
-    Surql,
-    /// A host file that may carry embedded queries.
-    Host,
-}
-
-/// Classifies a filesystem path against the workspace, or `None` when a change
-/// to it cannot affect the analysis.
+/// Whether a change to `path` can affect the analysis.
 ///
 /// This is deliberately path-only: a deleted file cannot be stat'd, and a
 /// deletion must be as watchable as a write.
 ///
-/// `exclude` is the generated registry — `generate` writes it, so treating it
-/// as an input would make every run trigger the next one.
-pub(crate) fn classify(
+/// `extra_inputs` are files the host reads that source discovery never
+/// returns — its configuration. `exclude` is the generated registry —
+/// `generate` writes it, so treating it as an input would make every run
+/// trigger the next one.
+fn is_input(
     root: &Path,
     path: &Path,
     ignore: &[String],
+    extra_inputs: &[PathBuf],
     exclude: Option<&Path>,
-) -> Option<Watched> {
+) -> bool {
     if exclude.is_some_and(|excluded| excluded == path) {
-        return None;
+        return false;
     }
     // A path the watcher reported from outside the root cannot be an input.
-    let relative = path.strip_prefix(root).ok()?;
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
     if relative.as_os_str().is_empty() {
-        return None;
+        return false;
     }
     if ignore
         .iter()
-        .any(|pattern| crate::matches_simple_ignore(relative, pattern))
+        .any(|pattern| crate::project::matches_simple_ignore(relative, pattern))
     {
-        return None;
+        return false;
     }
-    if relative == Path::new("surrealql-analyzer.toml") {
-        return Some(Watched::Config);
-    }
-    if crate::is_surrealql_source(path) {
-        return Some(Watched::Surql);
-    }
-    if crate::is_host_source(path) {
-        return Some(Watched::Host);
-    }
-    None
+    extra_inputs
+        .iter()
+        .any(|extra| extra.strip_prefix(root).unwrap_or(extra) == relative)
+        || crate::project::is_surrealql_source(path)
+        || crate::project::is_host_source(path)
 }
 
 /// The absolute, symlink-resolved form of a path the command is going to
@@ -170,13 +153,19 @@ pub(crate) fn classify(
 /// Getting this wrong is a feedback loop, not a cosmetic bug: `generate` writes
 /// the registry, the watcher sees the write, `generate` runs again. So every
 /// way the path can differ from the watcher's spelling is handled here —
-/// `--out` may be relative (it is resolved against the working directory the
-/// command writes through), may contain `..`, and on macOS the watcher reports
+/// the path may be relative (it is resolved against the working directory the
+/// host writes through), may contain `..`, and on macOS the watcher reports
 /// `/private/tmp/...` for a working directory spelled `/tmp/...`.
 ///
-/// The file usually does not exist yet on the first run, so the *parent* is
-/// canonicalized and the file name re-attached.
-pub(crate) fn resolve_output(root: &Path, out: &Path) -> PathBuf {
+/// Neither the file nor its directory need exist yet, so canonicalization
+/// starts at the nearest ancestor that *does* and the remaining components are
+/// re-appended. Canonicalizing only the parent was not enough: with
+/// `out = "src/lib/db.generated.ts"` and no `src/lib` yet, the parent does not
+/// resolve, the raw path is kept, and under a symlinked ancestor (`/tmp`,
+/// `/var`, a symlinked home) it never matches the `/private/...` spelling the
+/// watcher reports — so `generate` writes, the watcher calls the write an
+/// input, and the loop runs forever.
+fn resolve_output(root: &Path, out: &Path) -> PathBuf {
     let absolute = if out.is_absolute() {
         out.to_path_buf()
     } else {
@@ -184,13 +173,27 @@ pub(crate) fn resolve_output(root: &Path, out: &Path) -> PathBuf {
             .unwrap_or_else(|_| root.to_path_buf())
             .join(out)
     };
-    match (absolute.parent(), absolute.file_name()) {
-        (Some(parent), Some(name)) => parent
-            .canonicalize()
-            .map_or_else(|_| absolute.clone(), |resolved| resolved.join(name)),
-        // A path with no parent or no file name is not something `fs::write`
-        // will succeed on either; leave it alone and let the run report it.
-        _ => absolute,
+
+    // Walk up to the first existing ancestor, remembering what was stripped.
+    let mut tail = Vec::new();
+    let mut current = absolute.as_path();
+    loop {
+        if let Ok(resolved) = current.canonicalize() {
+            return tail
+                .iter()
+                .rev()
+                .fold(resolved, |path, part| path.join(part));
+        }
+        match (current.file_name(), current.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                current = parent;
+            }
+            // Nothing on the path exists and there is nothing left to strip;
+            // `fs::write` will not succeed on it either. Leave it alone and
+            // let the run report it.
+            _ => return absolute,
+        }
     }
 }
 
@@ -200,9 +203,9 @@ pub(crate) fn resolve_output(root: &Path, out: &Path) -> PathBuf {
 /// Watching the root recursively would be one line shorter and would drag
 /// `node_modules/` and `target/` into the watcher, which on Linux means an
 /// inotify watch per directory in them. Splitting at the top level keeps the
-/// named ignores off the watcher entirely; the per-event [`classify`] check
+/// named ignores off the watcher entirely; the per-event [`is_input`] check
 /// catches anything ignored deeper down.
-pub(crate) fn watch_dirs(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
+fn watch_dirs(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -216,7 +219,7 @@ pub(crate) fn watch_dirs(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
             let relative = path.strip_prefix(root).unwrap_or(path);
             !ignore
                 .iter()
-                .any(|pattern| crate::matches_simple_ignore(relative, pattern))
+                .any(|pattern| crate::project::matches_simple_ignore(relative, pattern))
         })
         .collect();
     dirs.sort();
@@ -233,11 +236,7 @@ pub(crate) fn watch_dirs(root: &Path, ignore: &[String]) -> Vec<PathBuf> {
 ///
 /// Returns `None` only when the channel is disconnected before any batch
 /// arrives — i.e. the watcher is gone and the loop should end.
-pub(crate) fn coalesce(
-    rx: &Receiver<ChangeSet>,
-    window: Duration,
-    max_wait: Duration,
-) -> Option<ChangeSet> {
+fn coalesce(rx: &Receiver<ChangeSet>, window: Duration, max_wait: Duration) -> Option<ChangeSet> {
     let mut merged = rx.recv().ok()?;
     let deadline = Instant::now() + max_wait;
     loop {
@@ -256,15 +255,19 @@ pub(crate) fn coalesce(
     Some(merged)
 }
 
-/// The result of one watched run, in the shape the log line needs.
-pub(crate) struct RunOutcome {
-    /// Clean, warned, or failed — what the status band shows.
-    pub(crate) outcome: Outcome,
-    /// One line: `12 sources · no diagnostics · wrote
-    /// surrealql-analyzer.generated.ts (3 queries)`.
-    pub(crate) summary: String,
-    /// Rendered diagnostic blocks (or an error message) printed beneath.
-    pub(crate) detail: String,
+/// One iteration of the loop, handed to the caller's run closure.
+///
+/// The engine owns *when* to run and *why*; it does not own what a run does or
+/// how the result is shown. That split is what lets an embedding host drive the
+/// same watcher without inheriting this crate's terminal output.
+#[derive(Debug)]
+pub struct WatchRun<'a> {
+    /// 1 for the initial run, incrementing on every re-run.
+    pub index: usize,
+    /// What triggered it: `"initial run"`, or `"schema.surql changed"`.
+    pub reason: &'a str,
+    /// The paths whose change triggered this run. Empty on the initial run.
+    pub changes: &'a ChangeSet,
 }
 
 /// Renders the `what changed` half of a run's log line.
@@ -282,67 +285,6 @@ fn describe(root: &Path, changes: &ChangeSet, known: &BTreeSet<PathBuf>) -> Stri
         2 => format!("{}, {}", names[0], names[1]),
         n => format!("{}, {}, +{}", names[0], names[1], n - 2),
     }
-}
-
-/// Prints one run, replacing the previous one.
-///
-/// A watch is not a log — it is a *display*, and the only thing that matters is
-/// the current state of the workspace. So on a terminal the screen is cleared
-/// first and each run repaints it, which is why the answer is always at the
-/// same place on the screen instead of scrolling away under the last twelve
-/// runs. Piped output cannot be cleared, so it gets a rule between runs
-/// instead; either way one run is one visually bounded block.
-///
-/// The scrollback (`\x1b[3J`) is deliberately *not* cleared — a run whose
-/// diagnostics were longer than the window still has to be scrollable.
-fn report(
-    root: &Path,
-    run: usize,
-    reason: &str,
-    outcome: &RunOutcome,
-    elapsed: Duration,
-    styles: Styles,
-) {
-    if styles.is_colored() {
-        // Erase the display and home the cursor.
-        print!("\x1b[2J\x1b[H");
-    } else if run > 1 {
-        println!("{}", "-".repeat(72));
-    }
-
-    println!(
-        "{} {}",
-        styles.message("surrealql-analyzer watch"),
-        styles.dim(&root.display().to_string())
-    );
-    println!(
-        "{}",
-        styles.dim(&format!("run {run} · {reason} · {}ms", elapsed.as_millis()))
-    );
-    println!();
-
-    if !outcome.detail.is_empty() {
-        // Both streams go to stdout in watch mode: a terminal reading a live
-        // log needs the blocks interleaved with their run line, and split
-        // streams reorder the moment the output is piped.
-        print!("{}", outcome.detail);
-        if !outcome.detail.ends_with('\n') {
-            println!();
-        }
-        println!();
-    }
-
-    println!(
-        "{} {}",
-        styles.badge(outcome.outcome.word(), outcome.outcome),
-        crate::style::tint(styles, outcome.outcome, &outcome.summary)
-    );
-    println!();
-    println!(
-        "{}",
-        styles.dim("watching .surql, host files and surrealql-analyzer.toml — Ctrl-C to stop")
-    );
-    let _ = std::io::stdout().flush();
 }
 
 /// Adds a watch for every directory that should have one and drops the ones
@@ -372,59 +314,70 @@ fn sync_watches(
 }
 
 /// Runs `run` once, then again on every change to a watched input, until the
-/// process is interrupted.
+/// watcher is gone.
 ///
-/// `exclude` is the file the command writes (the generated registry), kept out
-/// of the input set so a run cannot trigger itself.
+/// `load` is called before every run. It yields the [`Project`] whose sources
+/// and ignore patterns decide the watch set, so a host whose configuration
+/// lives in a file re-reads it there — an edit re-targets the watcher on the
+/// next tick, and while the file is half-typed the closure falls back (to the
+/// last good project, say) and lets `run` report the parse error. A host with
+/// a fixed configuration returns a clone:
 ///
-/// The config is re-read on every burst: it decides the ignore patterns and
-/// therefore the watch set, so editing `surrealql-analyzer.toml` re-targets the
-/// watcher on the next tick. A config that stops parsing keeps the previous
-/// patterns — `run` is what reports the parse error, and it keeps reporting it
-/// until the file is fixed.
-pub(crate) fn watch_loop(
-    root: &Path,
+/// ```ignore
+/// watch_loop(|| project.clone(), &[], None, |run| { … })
+/// ```
+///
+/// `extra_inputs` are files the host reads that source discovery does not
+/// return — its configuration file ([`Project::config_path`], for a
+/// discovered project). A change to one re-runs like any other. `exclude` is
+/// the file the run writes (the generated registry), kept out of the input
+/// set so a run cannot trigger itself; it may be relative, and is resolved
+/// the way the watcher will report it.
+pub fn watch_loop(
+    mut load: impl FnMut() -> Project,
+    extra_inputs: &[PathBuf],
     exclude: Option<&Path>,
-    styles: Styles,
-    mut run: impl FnMut() -> RunOutcome,
+    mut run: impl FnMut(&WatchRun<'_>),
 ) -> Result<(), Box<dyn Error>> {
-    let mut config = workspace_config(root);
+    let mut project = load();
+    let root = project.root().to_path_buf();
+    let exclude = exclude.map(|out| resolve_output(&root, out));
 
     let (tx, rx) = std::sync::mpsc::channel::<ChangeSet>();
     let mut debouncer = new_debouncer(DEBOUNCE, None, forward_to(tx))?;
 
-    // The root itself is watched non-recursively: it carries
-    // `surrealql-analyzer.toml` and any top-level source, and it is where a new
-    // top-level directory shows up.
-    debouncer.watch(root, RecursiveMode::NonRecursive)?;
+    // The root itself is watched non-recursively: it carries the config file
+    // and any top-level source, and it is where a new top-level directory
+    // shows up.
+    debouncer.watch(&root, RecursiveMode::NonRecursive)?;
     let mut watched = BTreeSet::new();
-    sync_watches(&mut debouncer, root, &config.sources.ignore, &mut watched);
+    sync_watches(
+        &mut debouncer,
+        &root,
+        &project.config().sources.ignore,
+        &mut watched,
+    );
 
     // The inputs that existed at the last run — what makes "created" mean
     // created rather than "the event kind said so".
-    let mut known = input_paths(root, &config);
+    let mut known = input_paths(&project, extra_inputs);
     let mut run_index = 1usize;
-    let started = Instant::now();
-    let outcome = run();
-    report(
-        root,
-        run_index,
-        "initial run",
-        &outcome,
-        started.elapsed(),
-        styles,
-    );
+    run(&WatchRun {
+        index: run_index,
+        reason: "initial run",
+        changes: &ChangeSet::new(),
+    });
 
     while let Some(batch) = coalesce(&rx, DEBOUNCE, MAX_COALESCE) {
         // A config edit can change the ignore patterns and the source globs;
-        // re-read before deciding what the batch means and what to watch.
-        config = workspace_config(root);
-        let ignore = &config.sources.ignore;
-        let appeared = sync_watches(&mut debouncer, root, ignore, &mut watched);
+        // re-load before deciding what the batch means and what to watch.
+        project = load();
+        let ignore = &project.config().sources.ignore;
+        let appeared = sync_watches(&mut debouncer, &root, ignore, &mut watched);
 
         let mut changes: ChangeSet = batch
             .into_iter()
-            .filter(|path| classify(root, path, ignore, exclude).is_some())
+            .filter(|path| is_input(&root, path, ignore, extra_inputs, exclude.as_deref()))
             .collect();
         // A directory that appeared complete (a checkout, a `mv`) emits no
         // per-file events once it is watched, so treat its arrival as a change.
@@ -433,19 +386,14 @@ pub(crate) fn watch_loop(
             continue;
         }
 
-        let reason = describe(root, &changes, &known);
+        let reason = describe(&root, &changes, &known);
         run_index += 1;
-        let started = Instant::now();
-        let outcome = run();
-        report(
-            root,
-            run_index,
-            &reason,
-            &outcome,
-            started.elapsed(),
-            styles,
-        );
-        known = input_paths(root, &config);
+        run(&WatchRun {
+            index: run_index,
+            reason: &reason,
+            changes: &changes,
+        });
+        known = input_paths(&project, extra_inputs);
     }
 
     Ok(())
@@ -476,29 +424,26 @@ fn forward_to(tx: Sender<ChangeSet>) -> impl FnMut(DebounceEventResult) + Send +
     }
 }
 
-/// The workspace config, falling back to the defaults when it is missing or
-/// currently unparseable. A half-typed `surrealql-analyzer.toml` must not stop the
-/// watcher — `run` is what reports the parse error, on every run, until it is
-/// fixed.
-fn workspace_config(root: &Path) -> WorkspaceConfig {
-    crate::load_workspace_config(root).unwrap_or_default()
+/// Every input the analysis currently reads — the sources discovery returns,
+/// and the host's extra inputs that exist. Recorded after each run so the
+/// next one can tell a new file from an edited one.
+fn input_paths(project: &Project, extra_inputs: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let sources = project.sources();
+    let mut paths: BTreeSet<PathBuf> = sources.surrealql.into_iter().chain(sources.host).collect();
+    paths.extend(extra_inputs.iter().filter(|path| path.exists()).cloned());
+    paths
 }
 
-/// Every input the analysis currently reads: the `.surql` sources, the host
-/// files, and the config. Recorded after each run so the next one can tell a
-/// new file from an edited one.
-fn input_paths(root: &Path, config: &WorkspaceConfig) -> BTreeSet<PathBuf> {
-    let mut paths: BTreeSet<PathBuf> = crate::discover_surrealql_sources(root, config)
-        .into_iter()
-        .chain(crate::discover_host_sources(root, config))
-        .collect();
-    // Neither discovery function returns the config — it is an input all the
-    // same, and without it every `surrealql-analyzer.toml` edit would read "created".
-    let config_path = root.join("surrealql-analyzer.toml");
-    if config_path.exists() {
-        paths.insert(config_path);
-    }
-    paths
+/// A fresh, uniquely named directory under the system temp dir.
+#[cfg(test)]
+fn temp_project_dir(name: &str) -> PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time is after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("surrealql-analyzer-{name}-{unique}"));
+    std::fs::create_dir_all(&root).expect("create temp project root");
+    root
 }
 
 #[cfg(test)]
@@ -519,18 +464,18 @@ mod tests {
     fn surql_host_and_config_paths_are_watched_inputs() {
         let root = Path::new("/w");
         let ignore = ignore();
-        for (path, expected) in [
-            ("/w/schema/user.surql", Watched::Surql),
-            ("/w/queries/a.surrealql", Watched::Surql),
-            ("/w/src/probe.ts", Watched::Host),
-            ("/w/src/App.svelte", Watched::Host),
-            ("/w/src/page.astro", Watched::Host),
-            ("/w/surrealql-analyzer.toml", Watched::Config),
+        let extra = [PathBuf::from("/w/surrealql-analyzer.toml")];
+        for path in [
+            "/w/schema/user.surql",
+            "/w/queries/a.surrealql",
+            "/w/src/probe.ts",
+            "/w/src/App.svelte",
+            "/w/src/page.astro",
+            "/w/surrealql-analyzer.toml",
         ] {
-            assert_eq!(
-                classify(root, Path::new(path), &ignore, None),
-                Some(expected),
-                "{path} should classify as {expected:?}"
+            assert!(
+                is_input(root, Path::new(path), &ignore, &extra, None),
+                "{path} is an analysis input"
             );
         }
     }
@@ -540,9 +485,8 @@ mod tests {
         let root = Path::new("/w");
         let ignore = ignore();
         for path in ["/w/README.md", "/w/Cargo.toml", "/w/src/styles.css", "/w"] {
-            assert_eq!(
-                classify(root, Path::new(path), &ignore, None),
-                None,
+            assert!(
+                !is_input(root, Path::new(path), &ignore, &[], None),
                 "{path} is not an analysis input"
             );
         }
@@ -561,35 +505,30 @@ mod tests {
             "/w/target/debug/build/x.ts",
             "/w/.git/COMMIT_EDITMSG.surql",
         ] {
-            assert_eq!(
-                classify(root, Path::new(path), &ignore, None),
-                None,
+            assert!(
+                !is_input(root, Path::new(path), &ignore, &[], None),
                 "{path} is ignored and must not trigger a run"
             );
         }
         // ...while the same extension outside them still counts.
-        assert_eq!(
-            classify(
-                root,
-                Path::new("/w/packages/app/src/q.surql"),
-                &ignore,
-                None
-            ),
-            Some(Watched::Surql)
-        );
+        assert!(is_input(
+            root,
+            Path::new("/w/packages/app/src/q.surql"),
+            &ignore,
+            &[],
+            None
+        ));
     }
 
     #[test]
     fn a_path_outside_the_workspace_root_is_not_an_input() {
-        assert_eq!(
-            classify(
-                Path::new("/w"),
-                Path::new("/elsewhere/schema.surql"),
-                &ignore(),
-                None
-            ),
+        assert!(!is_input(
+            Path::new("/w"),
+            Path::new("/elsewhere/schema.surql"),
+            &ignore(),
+            &[],
             None
-        );
+        ));
     }
 
     #[test]
@@ -598,11 +537,10 @@ mod tests {
         // watcher would re-trigger itself forever.
         let root = Path::new("/w");
         let out = PathBuf::from("/w/surrealql-analyzer.generated.ts");
-        assert_eq!(classify(root, &out, &ignore(), Some(&out)), None);
+        assert!(!is_input(root, &out, &ignore(), &[], Some(&out)));
         // It is a plain host file to any other command.
-        assert_eq!(
-            classify(root, &out, &ignore(), None),
-            Some(Watched::Host),
+        assert!(
+            is_input(root, &out, &ignore(), &[], None),
             "excluding it is the watch loop's job, not the extension check's"
         );
     }
@@ -612,9 +550,9 @@ mod tests {
         // The loop that this prevents: `generate` writes the registry, the
         // watcher reports the write under its absolute, symlink-resolved name,
         // an exclusion spelled `src/registry.ts` fails to match, `generate`
-        // runs again — forever. Exercised with `--out` *inside* a watched
+        // runs again — forever. Exercised with an output *inside* a watched
         // directory, which is the common case.
-        let root = crate::tests::temp_project_dir("watch-out-relative");
+        let root = temp_project_dir("watch-out-relative");
         std::fs::create_dir_all(root.join("src")).expect("dir");
         let canonical_root = root.canonicalize().expect("canonical root");
 
@@ -631,21 +569,21 @@ mod tests {
         assert!(resolved.is_absolute(), "must be absolute: {resolved:?}");
         assert_eq!(resolved, canonical_root.join("src/registry.ts"));
         // And with that spelling, the write is no longer an input.
-        assert_eq!(
-            classify(
+        assert!(
+            !is_input(
                 &canonical_root,
                 &canonical_root.join("src/registry.ts"),
                 &ignore(),
+                &[],
                 Some(&resolved),
             ),
-            None,
             "the registry `generate` writes must never trigger the next run"
         );
     }
 
     #[test]
     fn an_output_path_with_parent_traversal_resolves_to_the_same_file() {
-        let root = crate::tests::temp_project_dir("watch-out-traversal");
+        let root = temp_project_dir("watch-out-traversal");
         std::fs::create_dir_all(root.join("src")).expect("dir");
         let canonical_root = root.canonicalize().expect("canonical root");
 
@@ -655,8 +593,55 @@ mod tests {
     }
 
     #[test]
+    fn an_output_whose_directory_does_not_exist_yet_still_resolves_symlinks() {
+        // The first `generate` creates `src/lib/`, so on the run that decides
+        // the exclusion neither the file nor its parent exists. Canonicalizing
+        // only the parent gave up there and kept the raw path -- which under a
+        // symlinked ancestor never matches what the watcher reports, so every
+        // write triggered the next run, forever. Resolution has to start at
+        // the nearest ancestor that does exist.
+        let root = temp_project_dir("watch-out-missing-parent");
+        let link = root.join("link");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).expect("real dir");
+        symlink_dir(&real, &link).expect("symlink");
+
+        // `link/src/lib/` does not exist: two missing components under a
+        // symlinked ancestor.
+        let resolved = resolve_output(&root, &link.join("src/lib/db.generated.ts"));
+        let expected = real
+            .canonicalize()
+            .expect("canonical target")
+            .join("src/lib/db.generated.ts");
+        assert_eq!(
+            resolved, expected,
+            "the symlinked ancestor must resolve even though the leaf directories do not exist"
+        );
+
+        // Which is the whole point: the path `generate` will write, once the
+        // directories exist, is the path the exclusion already names.
+        std::fs::create_dir_all(real.join("src/lib")).expect("create out dir");
+        std::fs::write(real.join("src/lib/db.generated.ts"), "//").expect("write registry");
+        assert_eq!(
+            resolve_output(&root, &link.join("src/lib/db.generated.ts")),
+            resolved,
+            "resolution must not change once the directories appear"
+        );
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+
+    #[test]
     fn ignored_top_level_directories_are_never_handed_to_the_watcher() {
-        let root = crate::tests::temp_project_dir("watch-dirs");
+        let root = temp_project_dir("watch-dirs");
         for name in ["schema", "src", "target", "node_modules", ".git"] {
             std::fs::create_dir_all(root.join(name)).expect("create dir");
         }
@@ -734,7 +719,7 @@ mod tests {
         // decided by what is on disk against what was an input last run — which
         // is also the only way "created" can be right the first time a file
         // appears.
-        let root = crate::tests::temp_project_dir("watch-verbs");
+        let root = temp_project_dir("watch-verbs");
         let edited = root.join("edited.surql");
         let fresh = root.join("fresh.surql");
         let gone = root.join("gone.surql");
@@ -808,7 +793,7 @@ mod tests {
     fn the_recorded_input_set_is_what_the_run_reads() {
         // `known` must be the same set `check`/`generate` discover, or the
         // verbs drift from what actually happened.
-        let root = crate::tests::temp_project_dir("watch-inputs");
+        let root = temp_project_dir("watch-inputs");
         std::fs::create_dir_all(root.join("schema")).expect("dir");
         std::fs::create_dir_all(root.join("src")).expect("dir");
         std::fs::create_dir_all(root.join("node_modules/dep")).expect("dir");
@@ -818,9 +803,10 @@ mod tests {
         std::fs::write(root.join("README.md"), "# docs").expect("doc");
         std::fs::write(root.join("node_modules/dep/i.ts"), "// dep").expect("dep");
 
-        let config = workspace_config(&root);
-        let inputs = input_paths(&root, &config);
+        let project = Project::discover(&root).expect("config parses");
+        let inputs = input_paths(&project, &[project.config_path()]);
         assert!(inputs.contains(&root.join("schema/t.surql")));
+        assert!(inputs.contains(&project.config_path()));
         assert!(inputs.contains(&root.join("src/app.ts")));
         assert!(!inputs.contains(&root.join("README.md")));
         assert!(

@@ -31,6 +31,7 @@ pub(crate) fn analyze_define_field(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     check_field_definition(ctx, stmt, partial);
     check_id_field_clauses(ctx, stmt);
     check_record_targets(ctx, stmt, declared.as_ref());
+    check_reference_type(ctx, stmt, declared.as_ref());
     check_reference_back_target(ctx, stmt);
 
     // `COMPUTED` is the third clause that supplies the field's value, and it
@@ -200,6 +201,60 @@ fn check_record_targets(
             }
             ctx.emit(finding);
         }
+    }
+}
+
+/// 1033 — `REFERENCE` is a clause only a record-typed field accepts. Verified
+/// on 3.2.3: `DEFINE FIELD label ON p TYPE string REFERENCE` fails with
+/// "Cannot use the `REFERENCE` keyword with `TYPE string`. Specify only a
+/// `record` type, or a type containing only records, instead." The accepted
+/// shapes are `record<…>`, `option<record<…>>`, `array<record<…>>` /
+/// `set<record<…>>`, and unions of those; a field with no `TYPE` is not
+/// judged here.
+fn check_reference_type(
+    ctx: &mut AnalysisContext<'_>,
+    stmt: &ast::DefineField,
+    declared: Option<&Kind>,
+) {
+    if !stmt.reference {
+        return;
+    }
+    let Some(declared) = declared else {
+        return;
+    };
+    if holds_only_records(declared) {
+        return;
+    }
+    let span = stmt.ty.as_ref().map_or(stmt.path.span, |ty| ty.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), span),
+            1033,
+            format!(
+                "`REFERENCE` needs a record type, and this field is `{}`",
+                crate::render::render_offending(declared, None)
+            ),
+        )
+        .with_help(
+            "SurrealDB fails this definition: \"Cannot use the `REFERENCE` keyword with this type. Specify only a `record` type, or a type containing only records, instead.\"",
+        ),
+    );
+}
+
+/// Whether every value of `kind` is a record: a `record<…>`, or a collection
+/// or optional/union of nothing but records.
+fn holds_only_records(kind: &Kind) -> bool {
+    match kind {
+        Kind::Record(_) => true,
+        Kind::Array(element, _) | Kind::Set(element, _) => holds_only_records(element),
+        Kind::Either(variants) => {
+            let mut records = variants
+                .iter()
+                .filter(|variant| !matches!(variant, Kind::None | Kind::Null))
+                .peekable();
+            records.peek().is_some() && records.all(holds_only_records)
+        }
+        _ => false,
     }
 }
 
@@ -475,7 +530,7 @@ fn with_value_bound<T>(
 /// *when* they run, which is what decides whether a call is a mistake there
 /// (7012).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FieldClause {
+pub(crate) enum FieldClause {
     /// `DEFAULT` — evaluated once, when a row is created without the field.
     Default,
     /// `VALUE` — recomputed on every write to the row.
@@ -484,6 +539,11 @@ enum FieldClause {
     Computed,
     /// `ASSERT` — evaluated on every write to the row.
     Assert,
+    /// A `DEFINE EVENT … THEN` body — run inside every write that fires the
+    /// event. A fresh value is at home here (an event that stamps
+    /// `time::now()` or draws an id is the point of writing one); a blocking
+    /// call is not, because it stalls the write that triggered it.
+    EventThen,
 }
 
 /// Why a call does not belong in a field clause.
@@ -506,7 +566,7 @@ impl FieldClause {
     /// Why `path` should not be called in this clause, or `None` when it is
     /// at home here.
     fn objection(self, path: &str) -> Option<CallObjection> {
-        if path.starts_with("http::") || path == "sleep::sleep" || path == "sleep" {
+        if path.starts_with("http::") || path == "sleep" {
             return Some(CallObjection::Blocking);
         }
         let draws_fresh = path == "rand"
@@ -525,7 +585,8 @@ impl FieldClause {
             FieldClause::Default
             | FieldClause::Value
             | FieldClause::Computed
-            | FieldClause::Assert => None,
+            | FieldClause::Assert
+            | FieldClause::EventThen => None,
         }
     }
 
@@ -535,6 +596,7 @@ impl FieldClause {
             FieldClause::Default => "on every create of this row",
             FieldClause::Value | FieldClause::Assert => "on every write to this row",
             FieldClause::Computed => "on every read of this row",
+            FieldClause::EventThen => "on every write that fires this event",
         }
     }
 
@@ -544,6 +606,7 @@ impl FieldClause {
             FieldClause::Value => "VALUE",
             FieldClause::Computed => "COMPUTED",
             FieldClause::Assert => "ASSERT",
+            FieldClause::EventThen => "THEN",
         }
     }
 }
@@ -552,7 +615,7 @@ impl FieldClause {
 /// (7012). One code, one contract — "this call does not belong in a clause
 /// that runs this often" — and the message names which of the two ways it
 /// fails: it blocks, or it answers differently each time.
-fn check_computed_calls(
+pub(crate) fn check_computed_calls(
     ctx: &mut AnalysisContext<'_>,
     expr: &ast::Spanned<ast::Expr>,
     clause: FieldClause,
@@ -560,38 +623,7 @@ fn check_computed_calls(
 ) {
     match &expr.node {
         ast::Expr::Call(call) => {
-            let path = call.path.node.as_str();
-            if let Some(objection) = clause.objection(path) {
-                let span = surrealql_analyzer_syntax::span::SourceSpan::new(
-                    ctx.source().clone(),
-                    call.path.span,
-                );
-                let finding = match objection {
-                    CallObjection::Blocking => surrealql_analyzer_diagnostics::catalog::finding(
-                        span,
-                        7012,
-                        format!("`{path}` runs {}", clause.runs()),
-                    )
-                    .with_help(format!(
-                        "this clause is computed {}; avoid blocking or side-effecting calls here",
-                        clause.runs()
-                    )),
-                    CallObjection::Nondeterministic => surrealql_analyzer_diagnostics::catalog::finding(
-                        span,
-                        7012,
-                        format!(
-                            "`{path}` gives `{field}` a different value {}",
-                            clause.runs()
-                        ),
-                    )
-                    .with_help(format!(
-                        "`{}` is recomputed {}; a value that should be chosen once belongs in `DEFAULT`",
-                        clause.keyword(),
-                        clause.runs()
-                    )),
-                };
-                ctx.emit(finding);
-            }
+            check_call_in_clause(ctx, call, clause, field);
             for arg in &call.args {
                 check_computed_calls(ctx, arg, clause, field);
             }
@@ -641,6 +673,52 @@ fn check_computed_calls(
     }
 }
 
+/// One call, judged against the clause it sits in (7012). The walker above
+/// and the event-body visitor both land here, so the message is written once.
+pub(crate) fn check_call_in_clause(
+    ctx: &mut AnalysisContext<'_>,
+    call: &ast::Call,
+    clause: FieldClause,
+    field: &str,
+) {
+    {
+        {
+            let path = call.path.node.as_str();
+            if let Some(objection) = clause.objection(path) {
+                let span = surrealql_analyzer_syntax::span::SourceSpan::new(
+                    ctx.source().clone(),
+                    call.path.span,
+                );
+                let finding = match objection {
+                    CallObjection::Blocking => surrealql_analyzer_diagnostics::catalog::finding(
+                        span,
+                        7012,
+                        format!("`{path}` runs {}", clause.runs()),
+                    )
+                    .with_help(format!(
+                        "this clause is computed {}; avoid blocking or side-effecting calls here",
+                        clause.runs()
+                    )),
+                    CallObjection::Nondeterministic => surrealql_analyzer_diagnostics::catalog::finding(
+                        span,
+                        7012,
+                        format!(
+                            "`{path}` gives `{field}` a different value {}",
+                            clause.runs()
+                        ),
+                    )
+                    .with_help(format!(
+                        "`{}` is recomputed {}; a value that should be chosen once belongs in `DEFAULT`",
+                        clause.keyword(),
+                        clause.runs()
+                    )),
+                };
+                ctx.emit(finding);
+            }
+        }
+    }
+}
+
 /// D1 — a `DEFAULT` that provably violates the field's own `ASSERT` (2037).
 /// When a field carries BOTH clauses, SurrealDB substitutes the DEFAULT and
 /// then enforces the ASSERT on that same value at write time, so a DEFAULT
@@ -680,4 +758,64 @@ fn idiom_text(idiom: &ast::Idiom) -> String {
     crate::analyzer::expression::infer::plain_field_segments(idiom)
         .map(|segments| segments.join("."))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::analysis::{analyze_query, Workspace};
+
+    fn codes(query: &str) -> Vec<String> {
+        let mut workspace = Workspace::default();
+        analyze_query(&mut workspace, query)
+            .diagnostics
+            .iter()
+            .map(|finding| finding.code().to_string())
+            .collect()
+    }
+
+    fn fires(query: &str, code: &str) -> bool {
+        codes(query).iter().any(|c| c == code)
+    }
+
+    #[test]
+    fn reference_on_a_non_record_type_is_1033() {
+        let base = "DEFINE TABLE p SCHEMAFULL; DEFINE TABLE q SCHEMAFULL;";
+        for bad in ["TYPE string", "TYPE array<string>", "TYPE option<int>"] {
+            let query = format!("{base} DEFINE FIELD r ON p {bad} REFERENCE;");
+            assert!(fires(&query, "E1033"), "{bad}: {:?}", codes(&query));
+        }
+        for ok in [
+            "TYPE record<q>",
+            "TYPE option<record<q>>",
+            "TYPE array<record<q>>",
+            "TYPE set<record<q>>",
+            "TYPE record<q> | record<p>",
+        ] {
+            let query = format!("{base} DEFINE FIELD r ON p {ok} REFERENCE;");
+            assert!(!fires(&query, "E1033"), "{ok}: {:?}", codes(&query));
+        }
+    }
+
+    #[test]
+    fn a_blocking_call_in_an_event_body_is_7012() {
+        let base = "DEFINE TABLE p SCHEMAFULL; DEFINE FIELD n ON p TYPE string;";
+        for body in [
+            "{ http::get('https://example.com'); }",
+            "{ SLEEP 1s; }",
+            "{ LET $x = sleep(1s); }",
+        ] {
+            let query = format!("{base} DEFINE EVENT e ON p WHEN true THEN {body};");
+            assert!(fires(&query, "L7012"), "{body}: {:?}", codes(&query));
+        }
+        // A fresh value is what an event body is for.
+        let stamp = format!(
+            "{base} DEFINE EVENT e ON p WHEN true THEN {{ UPDATE p SET n = rand::uuid(); }};"
+        );
+        assert!(!fires(&stamp, "L7012"), "{:?}", codes(&stamp));
+    }
+
+    #[test]
+    fn sleep_is_a_known_builtin() {
+        assert!(!fires("RETURN sleep(1ms);", "E5001"));
+    }
 }

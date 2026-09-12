@@ -772,6 +772,7 @@ pub fn walk_define_index<V: Visitor>(visitor: &mut V, index: &DefineIndex) {
         table,
         fields,
         kind: _,
+        analyzer: _,
     } = index;
     visitor.visit_table_ref(table);
     visitor.visit_row_scope(Some(&table.node), |visitor| {

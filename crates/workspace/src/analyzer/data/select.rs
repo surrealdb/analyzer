@@ -795,6 +795,7 @@ fn check_select_statement_shape(
     check_group_key_projection(stmt, ctx);
     check_non_key_projection_under_group(stmt, ctx);
     check_page_without_order(stmt, ctx);
+    check_clauses_on_single_record(stmt, ctx);
 
     // `SELECT *, age` — the explicit field is already inside `*`.
     if has_wildcard_projection(stmt) {
@@ -1213,6 +1214,53 @@ fn check_page_without_order(stmt: &ast::SelectStmt, ctx: &mut AnalysisContext<'_
             "add an `ORDER BY` (e.g. `ORDER BY id`), or allow this with `7016 = \"allow\"` (it is off by default)",
         ),
     );
+}
+
+/// 4032: `ORDER BY`, `LIMIT` and `START` on a single record id — a target
+/// that is at most one row. `ORDER BY` and `LIMIT` do nothing; `START` skips
+/// the row and the statement returns nothing (engine-verified on 3.2.3:
+/// `SELECT * FROM p:1 ORDER BY id LIMIT 5 START 2` → `[]`). A record-id
+/// *range* and a multi-source FROM are many rows and stay silent, as do
+/// `START 0` and a bare `LIMIT 1` — the harmless belt-and-braces spelling
+/// beside `ONLY`.
+fn check_clauses_on_single_record(stmt: &ast::SelectStmt, ctx: &mut AnalysisContext<'_>) {
+    let [from] = stmt.from.as_slice() else {
+        return;
+    };
+    if !matches!(from.node, ast::Expr::RecordId { range: false, .. }) {
+        return;
+    }
+    let target = slice(ctx.source_text(), from.span).to_string();
+
+    let mut clauses: Vec<(&str, surrealql_analyzer_syntax::span::ByteRange, &str)> = Vec::new();
+    if let Some(start) = &stmt.start {
+        if constant_row_limit(&start.node) != Some(0) {
+            clauses.push((
+                "START",
+                start.span,
+                "skips it, so the statement returns nothing",
+            ));
+        }
+    }
+    if let Some(limit) = &stmt.limit {
+        if stmt.start.is_some() || !literal_limit(stmt).is_some_and(|limit| limit <= 1) {
+            clauses.push(("LIMIT", limit.span, "does nothing"));
+        }
+    }
+    if let Some(key) = stmt.order.as_ref().and_then(|order| order.keys.first()) {
+        clauses.push(("ORDER BY", key.expr.span, "does nothing"));
+    }
+
+    for (clause, span, consequence) in clauses {
+        ctx.emit(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                SourceSpan::new(ctx.source().clone(), span),
+                4032,
+                format!("`{clause}` on `{target}` {consequence} — a record id is at most one row"),
+            )
+            .with_help("drop the clause, or select from the table to page or sort its rows"),
+        );
+    }
 }
 
 /// The source table's definition when the FROM clause names one plainly.
@@ -5207,6 +5255,38 @@ mod tests {
 
     fn codes(diagnostics: &[surrealql_analyzer_diagnostics::Finding]) -> Vec<u16> {
         diagnostics.iter().map(|d| d.code().number()).collect()
+    }
+
+    #[test]
+    fn paging_or_ordering_a_single_record_id_is_4032() {
+        let schema = schema_from("DEFINE TABLE p SCHEMAFULL;\nDEFINE FIELD n ON p TYPE string;");
+        for query in [
+            "SELECT * FROM p:1 START 2;",
+            "SELECT * FROM p:1 LIMIT 5;",
+            "SELECT * FROM p:1 ORDER BY n;",
+            "SELECT * FROM p:1 LIMIT 1 START 1;",
+        ] {
+            let (_, diagnostics) = analyze_diagnostics(&schema, query);
+            assert!(
+                codes(&diagnostics).contains(&4032),
+                "{query}: {:?}",
+                codes(&diagnostics)
+            );
+        }
+        for query in [
+            "SELECT * FROM ONLY p:1 LIMIT 1;",
+            "SELECT * FROM p:1 START 0;",
+            "SELECT * FROM p:1, p:2 ORDER BY n;",
+            "SELECT * FROM p:1..5 LIMIT 2;",
+            "SELECT * FROM p ORDER BY n LIMIT 5 START 2;",
+        ] {
+            let (_, diagnostics) = analyze_diagnostics(&schema, query);
+            assert!(
+                !codes(&diagnostics).contains(&4032),
+                "{query}: {:?}",
+                codes(&diagnostics)
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,42 @@
+[package]
+name = "surrealql-analyzer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "Static analysis for SurrealQL — the library a host embeds to check a workspace, generate a typed client, and watch its inputs"
+
+# A library, deliberately. The analyzer ships no binary of its own: SurrealKit
+# owns the command line (`surrealkit check|generate|watch`) and the language
+# server owns the editor, and both consume this crate. Argument parsing, exit
+# codes and terminal layout are a host's concerns, so none of them live here.
+
+[dependencies]
+surrealql-analyzer-codegen = { path = "../codegen", version = "0.5.3" }
+surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.5.3" }
+surrealql-analyzer-embed = { path = "../embed", version = "0.5.3" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
+surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
+# The `watch` feature. `notify-debouncer-full` is the `notify` project's own
+# debouncer: it merges the event storm one save produces and tracks renames by
+# file id, so the loop does not hand-roll either. It re-exports `notify`, which
+# keeps the two on one version. Default features only (no crossbeam/flume/serde).
+notify-debouncer-full = { version = "0.7.0", optional = true }
+walkdir = "2.5.0"
+glob = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = ["watch"]
+# The filesystem watch loop behind a host's `watch` verb. Optional so a host
+# that only runs one-shot `check`/`generate` (CI) does not link `notify`.
+watch = ["dep:notify-debouncer-full"]
+
+[lints]
+workspace = true

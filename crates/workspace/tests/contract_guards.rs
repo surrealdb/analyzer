@@ -228,6 +228,11 @@ const GUARDS: &[Guard] = &[
         "INSERT IGNORE RELATION INTO wrote { in: user:a, out: post:b };",
         "INSERT RELATION IGNORE INTO wrote { in: user:a, out: post:b };",
     ),
+    guard(
+        4031,
+        "CREATE user:1 CONTENT { id: user:2, name: 'a', age: 1, vec: [] };",
+        "CREATE user:1 CONTENT { id: user:1, name: 'a', age: 1, vec: [] };",
+    ),
     // 5xxx — functions
     guard(5001, "RETURN ghost::fn(1);", "RETURN string::len('a');"),
     guard(

@@ -2,8 +2,10 @@
 //!
 //! An index must target a known table (1001) over fields that table declares
 //! (1002), is defined once (1022), and two indexes over the same field set do
-//! the same work twice (1029). The `1012` index-target check for `REBUILD`/`REMOVE INDEX` lives
-//! here too, since it is the same catalog reference from the other side.
+//! the same work twice (1029), and a full-text index tokenizes with an
+//! analyzer that exists (1012). The `1012` index-target check for
+//! `REBUILD`/`REMOVE INDEX` lives here too, since it is the same catalog
+//! reference from the other side.
 
 use surrealdb_types::Kind;
 use surrealql_analyzer_syntax::ast;
@@ -95,6 +97,35 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         ctx.emit(finding);
     }
 
+    // A full-text index tokenizes with a named analyzer. The engine accepts
+    // `FULLTEXT ANALYZER ghost` at definition time (verified on 3.2.3: the
+    // DEFINE returns NONE) and fails only when the index is first searched,
+    // so nothing else catches the misspelling (1012).
+    if let Some(analyzer) = &stmt.analyzer {
+        let missing = ctx.schema().analyzer(&analyzer.node).is_none();
+        if missing {
+            let names: Vec<String> = ctx.schema().analyzers.keys().cloned().collect();
+            let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
+                SourceSpan::new(ctx.source().clone(), analyzer.span),
+                1012,
+                format!(
+                    "index `{}` tokenizes with `{}`, which is not a defined analyzer",
+                    stmt.name.node, analyzer.node
+                ),
+            )
+            .with_help(format!(
+                "no `DEFINE ANALYZER {}` exists in the workspace",
+                analyzer.node
+            ));
+            if let Some(nearest) =
+                crate::suggest::closest(&analyzer.node, names.iter().map(String::as_str))
+            {
+                finding = finding.with_help(format!("did you mean `{nearest}`?"));
+            }
+            ctx.emit(finding);
+        }
+    }
+
     if let Some(existing) = duplicate {
         ctx.emit(
             surrealql_analyzer_diagnostics::catalog::finding(
@@ -137,5 +168,42 @@ pub(crate) fn check_index_target(
             ));
         }
         Some(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::analysis::{analyze_query, Workspace};
+
+    fn codes(query: &str) -> Vec<String> {
+        let mut workspace = Workspace::default();
+        analyze_query(&mut workspace, query)
+            .diagnostics
+            .iter()
+            .map(|finding| finding.code().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_full_text_index_naming_an_undefined_analyzer_is_1012() {
+        let base = "DEFINE TABLE p SCHEMAFULL; DEFINE FIELD n ON p TYPE string; DEFINE ANALYZER simple TOKENIZERS blank;";
+        for clause in [
+            "FULLTEXT ANALYZER simpel BM25",
+            "SEARCH ANALYZER simpel BM25",
+        ] {
+            let query = format!("{base} DEFINE INDEX ft ON p FIELDS n {clause};");
+            assert!(
+                codes(&query).contains(&"E1012".to_string()),
+                "{clause}: {:?}",
+                codes(&query)
+            );
+        }
+        let defined =
+            format!("{base} DEFINE INDEX ft ON p FIELDS n FULLTEXT ANALYZER simple BM25;");
+        assert!(
+            !codes(&defined).contains(&"E1012".to_string()),
+            "{:?}",
+            codes(&defined)
+        );
     }
 }
