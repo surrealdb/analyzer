@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `i64: From<&str>` is not satisfied
- --> tests/ui/wrong_param_type.rs:3:13
+ --> tests/ui/toolchain/wrong_param_type.rs:3:13
   |
 3 |     let _ = surrealql_analyzer_rs::query!("SELECT name FROM user WHERE age > $min;", min = "18");
   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `From<&str>` is not implemented for `i64`

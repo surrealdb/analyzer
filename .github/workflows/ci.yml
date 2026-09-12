@@ -34,7 +34,15 @@ jobs:
         run: cargo clippy --workspace --all-targets
 
       - name: Test
+        # `SURREALQL_ANALYZER_UI_TOOLCHAIN` adds the one trybuild case whose
+        # expected output is rustc's own prose rather than ours
+        # (`crates/rs/tests/ui/toolchain/`). It is off by default so a
+        # contributor on a different stable release does not lose the whole
+        # fail-fast suite to a reworded compiler diagnostic; CI runs a known
+        # toolchain, so here it is on. Bless it with `TRYBUILD=overwrite`.
         run: cargo test --workspace
+        env:
+          SURREALQL_ANALYZER_UI_TOOLCHAIN: "1"
 
   packages:
     name: js packages · build · typecheck · test

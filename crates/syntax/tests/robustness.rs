@@ -191,7 +191,8 @@ fn check(text: &str) -> Result<(), String> {
         let range = diagnostic.span().range();
         check_span(text, "syntax diagnostic", range)?;
     }
-    if tree_has_error != !parsed.syntax_diagnostics().is_empty() {
+    let has_syntax_diagnostics = !parsed.syntax_diagnostics().is_empty();
+    if tree_has_error != has_syntax_diagnostics {
         return Err(format!(
             "has_error() is {tree_has_error} but {} syntax diagnostics were collected",
             parsed.syntax_diagnostics().len()

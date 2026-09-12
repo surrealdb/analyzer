@@ -25,6 +25,23 @@ history in surrealdb/surrealdb, and the three histories came out differently
   the two backwards, so the valid spelling failed to parse and the invalid one
   passed silently. Both orders parse now, and the reversed one is reported
   with the order to write instead.
+### Fixed — the workspace suite no longer depends on which stable rustc you have
+
+`cargo test --workspace` is fail-fast across test targets, and one `trybuild`
+case expected rustc's own wording for an unsatisfied `From` bound. rustc
+reworded that help between 1.95 and 1.98, so a contributor on a different
+stable release lost every test after `surrealql-analyzer-rs`'s `compile_fail`
+— which is how a real regression hides.
+
+The six cases whose expected text is *ours* (the `query!` macro's
+`compile_error!` strings and the `#[diagnostic::on_unimplemented]` message on
+the `fetch_all` bound) still run always. The one that snapshots compiler prose
+moved to `crates/rs/tests/ui/toolchain/` and runs only under
+`SURREALQL_ANALYZER_UI_TOOLCHAIN=1`, which CI sets — so the rejection is still
+enforced, on a known toolchain.
+
+Two `clippy::nonminimal_bool` findings that only fire on 1.95 are fixed with
+it, so `cargo clippy --workspace --all-targets` is clean on both releases.
 
 
 ### Changed — the project is now the SurrealQL Analyzer

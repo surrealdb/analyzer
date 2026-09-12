@@ -3702,10 +3702,11 @@ fn field_is_opaque_boundary(table: &TableDef, prefix: &[String]) -> bool {
     match table.fields.get(&prefix.join(".")) {
         // A link under `option`/`array`/`set` wrappers is traversable, so it
         // is not a boundary — the remainder is checked on the linked table.
-        Some(field) => !field
+        // An untyped field (no kind at all) is opaque: nothing enumerates it.
+        Some(field) => field
             .kind
             .as_ref()
-            .is_some_and(|kind| crate::kinds::record_link_shape(kind).is_some()),
+            .is_none_or(|kind| crate::kinds::record_link_shape(kind).is_none()),
         None => false,
     }
 }

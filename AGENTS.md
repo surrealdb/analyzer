@@ -121,6 +121,17 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     and so cannot catch a surface that is wrong only over the wire. Requests must
     be sequenced (`initialize` → its response → `initialized` → `didOpen` →
     request) or tower-lsp answers "Server not initialized".
+  - `crates/rs/tests/compile_fail.rs` — the **compile-time rejections**,
+    `trybuild` over `crates/rs/tests/ui/`. Two sets: `tests/ui/*.rs` expect
+    the macro's *own* error text and run always; `tests/ui/toolchain/*.rs`
+    expect **rustc's** wording (`wrong_param_type` snapshots the `From`
+    impl-list help, which moves with both the compiler release and the
+    dependency graph) and run only under
+    `SURREALQL_ANALYZER_UI_TOOLCHAIN=1`, which CI sets. `cargo test
+    --workspace` is fail-fast across targets, so leaving a compiler-prose
+    snapshot in the default set cost a contributor on a different stable
+    release the entire rest of the suite. Bless with `TRYBUILD=overwrite` on
+    stable.
   - `crates/codegen/tests/golden.rs` — the **generated-TypeScript golden**.
     `surrealql-analyzer generate` emits a module nothing used to compile, so a type
     error in the emitter's output would ship undetected. The test runs the
