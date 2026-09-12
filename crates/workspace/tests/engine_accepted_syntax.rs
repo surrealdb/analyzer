@@ -127,3 +127,38 @@ fn a_bracket_segment_in_a_set_target_parses_and_still_checks_the_write() {
     let finding = only("UPDATE person:1 SET nope[0] = 1;", "E1002");
     assert_eq!(finding.message(), "`person` has no field `nope`");
 }
+
+/// `PATCH` took an array *literal* in the grammar, so a payload the engine
+/// applies (`PATCH $ops`) and the common slip (one operation written without
+/// its list) were both `S0001` — and an `S0001` suppresses every other
+/// finding in the file.
+///
+/// 3.2.3 parses whatever follows `PATCH` and judges it when it runs: "The
+/// JSON Patch contains invalid operations. Failed to parse JSON patch
+/// structure: Patch operations should be an array of objects". That is 2033's
+/// contract, and it could never fire while the parser rejected the statement
+/// first.
+#[test]
+fn a_patch_payload_is_any_expression_and_2033_judges_it() {
+    silent("UPDATE person:1 PATCH [{ op: 'replace', path: '/name', value: 'x' }];");
+    // How a payload is normally passed — and it applies on 3.2.3, so a kind
+    // that could still be a list at run time stays silent.
+    silent("UPDATE person:1 PATCH $ops;");
+    silent(
+        "LET $ops = [{ op: 'replace', path: '/name', value: 'x' }]; UPDATE person:1 PATCH $ops;",
+    );
+
+    let finding = only(
+        "UPDATE person:1 PATCH { op: 'replace', path: '/name', value: 'x' };",
+        "E2033",
+    );
+    assert_eq!(
+        finding.message(),
+        "PATCH takes an array of operations, not a single object"
+    );
+    let finding = only("UPDATE person:1 PATCH 'x';", "E2033");
+    assert_eq!(
+        finding.message(),
+        "PATCH takes an array of operations, but this is a `string`"
+    );
+}

@@ -325,5 +325,7 @@
  "UPDATE user:1 SET tags[0] = 'ok';",
  "UPDATE user:1 SET meta['score'] = 5;",
  "UPDATE user:1 SET tags[$] = 'z';",
- "UPDATE user:1 SET tags[WHERE $this = 'a'] = 'z';"
+ "UPDATE user:1 SET tags[WHERE $this = 'a'] = 'z';",
+ "UPDATE user:1 PATCH { op: 'replace', path: '/age', value: 1 };",
+ "UPDATE user:1 PATCH $ops;"
 ]

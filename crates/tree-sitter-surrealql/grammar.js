@@ -1437,7 +1437,15 @@ export default grammar({
 		SetClause: ($) =>
 			seq(alias($._kw_set, $.Keyword), csep($.FieldAssignment)),
 		MergeClause: ($) => seq(alias($._kw_merge, $.Keyword), $._value),
-		PatchClause: ($) => seq(alias($._kw_patch, $.Keyword), $.Array),
+		// Any expression, not only an array literal. 3.2.3 parses whatever
+		// follows `PATCH` and complains at run time if it is not a list of
+		// operations — "The JSON Patch contains invalid operations. Failed to
+		// parse JSON patch structure: Patch operations should be an array of
+		// objects" — so the array literal was never the grammar's rule to
+		// enforce. Requiring it made `PATCH $ops`, which the engine applies,
+		// a syntax error, and turned the single-object slip into a collapsed
+		// file instead of the 2033 that names it.
+		PatchClause: ($) => seq(alias($._kw_patch, $.Keyword), $._value),
 		ReplaceClause: ($) => seq(alias($._kw_replace, $.Keyword), $.Object),
 		// UNSET removes fields by name (`UNSET a, b`), so it takes a field
 		// list — the same shape as OMIT — rather than assignments.

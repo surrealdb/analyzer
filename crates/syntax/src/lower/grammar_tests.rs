@@ -1065,3 +1065,26 @@ fn a_bracket_segment_in_a_set_target_lowers_to_its_idiom_part() {
     assert_eq!(parts.len(), 4);
     assert!(matches!(parts[3].node, IdiomPart::Field(ref name) if name == "x"));
 }
+
+// ---- engine parity: a PATCH payload is any expression ----
+
+#[test]
+fn a_patch_payload_is_any_expression() {
+    // 3.2.3 parses all three and judges the payload when it runs; only the
+    // first applies.
+    parses(&[
+        "UPDATE user:1 PATCH [{ op: 'replace', path: '/age', value: 1 }];",
+        "UPDATE user:1 PATCH { op: 'replace', path: '/age', value: 1 };",
+        "UPDATE user:1 PATCH $ops;",
+    ]);
+    let Statement::Update(update) = statement(
+        "UPDATE user:1 PATCH { op: 'replace', path: '/age', value: 1 };",
+        "UpdateStatement",
+    ) else {
+        panic!("expected UPDATE");
+    };
+    let Some(DataClause::Patch(payload)) = update.data else {
+        panic!("expected PATCH, got {:?}", update.data);
+    };
+    assert!(matches!(payload.node, Expr::Object(_)));
+}

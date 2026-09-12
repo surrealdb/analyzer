@@ -380,6 +380,55 @@ pub fn check_return_before_on_create(
     }
 }
 
+/// A `PATCH` payload that is provably not a list of operations (2033).
+///
+/// The grammar used to require an array literal after `PATCH`, so the common
+/// slip — one operation written bare, `PATCH { op: 'replace', path: '/age',
+/// value: 1 }` — was an `S0001` that suppressed every other finding in the
+/// file. 3.2.3 parses it and answers at run time: "The JSON Patch contains
+/// invalid operations. Failed to parse JSON patch structure: Patch operations
+/// should be an array of objects". Now that the clause takes any expression,
+/// that is 2033's to say.
+///
+/// Only what can be *proved* reports. `PATCH $ops` is how the payload is
+/// normally passed and applies cleanly when it holds a list, so a kind that
+/// could still be an array at run time is left alone — the same
+/// [`Strictness::Possible`] rule every other kind contract uses.
+fn check_patch_payload_is_a_list(ctx: &mut AnalysisContext<'_>, expr: &ast::Spanned<ast::Expr>) {
+    let Some(kind) = infer_expression_fact(expr, ctx).kind else {
+        return;
+    };
+    let list = Kind::Array(Box::new(Kind::Any), None);
+    if !crate::analyzer::contract::decide(
+        &kind,
+        &list,
+        crate::analyzer::contract::Strictness::Possible,
+    )
+    .is_violation()
+    {
+        return;
+    }
+    // An object is one operation written without its list, which is worth
+    // saying in those words; anything else is named by its kind, as every
+    // other kind contract names it.
+    let message = if matches!(expr.node, ast::Expr::Object(_)) {
+        "PATCH takes an array of operations, not a single object".to_string()
+    } else {
+        format!(
+            "PATCH takes an array of operations, but this is a `{}`",
+            crate::render_kind(&kind)
+        )
+    };
+    let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), expr.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(span, 2033, message).with_help(
+            "wrap it in `[ … ]` — the engine answers anything else with \"Patch operations \
+             should be an array of objects\""
+                .to_string(),
+        ),
+    );
+}
+
 /// PATCH operations must be well-formed JSON-Patch (2033): known ops and
 /// `/`-prefixed paths. Only constant payloads are checkable.
 ///
@@ -395,6 +444,7 @@ fn check_patch_operations(
 ) {
     const OPS: &[&str] = &["add", "remove", "replace", "move", "copy", "test", "change"];
     let ast::Expr::Array(operations) = &expr.node else {
+        check_patch_payload_is_a_list(ctx, expr);
         return;
     };
     for operation in operations {
