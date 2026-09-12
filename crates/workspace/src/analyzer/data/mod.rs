@@ -85,8 +85,8 @@ pub(crate) fn with_table_suggestion(
 }
 
 /// Emits `code` when a plain field path does not resolve on `table`,
-/// anchored on the path. Field checks fire only for tables with declared
-/// fields (schemaless rows are open by design).
+/// anchored on the path. Field checks fire only on SCHEMAFULL tables —
+/// a schemaless row is open by design and accepts any field.
 pub(crate) fn check_field_path(
     ctx: &mut crate::analyzer::context::AnalysisContext<'_>,
     table: &crate::schema::TableDef,
@@ -94,7 +94,7 @@ pub(crate) fn check_field_path(
     span: surrealql_analyzer_syntax::span::ByteRange,
     code: u16,
 ) {
-    if table.fields.is_empty() || select::kind_for_path(table, segments).is_some() {
+    if !table.schemafull || select::kind_for_path(table, segments).is_some() {
         return;
     }
     let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), span);

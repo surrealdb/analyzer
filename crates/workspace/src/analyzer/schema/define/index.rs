@@ -31,10 +31,17 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         return Kind::None;
     };
 
+    // Same gate as every other 1002: only a SCHEMAFULL table has a closed
+    // field set to check against. A schemaless table accepts any field, and a
+    // view's columns are its projection's aliases, which the schema index does
+    // not carry — `DEFINE INDEX itotal ON stats FIELDS total` over
+    // `DEFINE TABLE stats AS SELECT count() AS total …` builds on 3.2.3.
     let mut unknown_fields = Vec::new();
-    for (path, text, span) in &refs {
-        if !crate::schema::index_field_path_exists_on_table(table, path) {
-            unknown_fields.push((text.clone(), span.clone()));
+    if table.schemafull {
+        for (path, text, span) in &refs {
+            if !crate::schema::index_field_path_exists_on_table(table, path) {
+                unknown_fields.push((text.clone(), span.clone()));
+            }
         }
     }
 

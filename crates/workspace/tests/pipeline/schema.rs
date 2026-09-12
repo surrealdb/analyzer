@@ -651,7 +651,7 @@ fn analyze_workspace_reports_define_index_unknown_table_and_fields() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "schema".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nDEFINE INDEX by_email ON TABLE person FIELDS email;\nDEFINE INDEX missing_table_idx ON TABLE ghost FIELDS name;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nDEFINE INDEX by_email ON TABLE person FIELDS email;\nDEFINE INDEX missing_table_idx ON TABLE ghost FIELDS name;".into(),
     );
 
     let output = analyze_workspace(&workspace);

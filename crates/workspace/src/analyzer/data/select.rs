@@ -3601,7 +3601,7 @@ pub(crate) fn field_path_is_absent(
     }
     // The same two escapes `check_field_path` makes before it emits: a
     // schemaless row is open by design, and a path that resolves is present.
-    !table.fields.is_empty() && kind_for_path(table, segments).is_none()
+    table.schemafull && kind_for_path(table, segments).is_none()
 }
 
 /// Validates a (possibly link-crossing) field path against the schema, emitting
@@ -6202,12 +6202,14 @@ mod tests {
 
     #[test]
     fn destructure_against_schemaless_target_emits_no_1002() {
-        // `user` here has no declared fields (schemaless): field-level checks
-        // are skipped by design, so a destructure emits no false positive.
+        // `user` here is schemaless: field-level checks are skipped by design,
+        // so a destructure emits no false positive. (The fixture used to spell
+        // it `SCHEMAFULL` and rely on its *field map* being empty, which is
+        // the confusion the 1002 gate itself had.)
         let schema = schema_from(
             "DEFINE TABLE person SCHEMAFULL;\n\
              DEFINE FIELD name ON person TYPE string;\n\
-             DEFINE TABLE user SCHEMAFULL;\n\
+             DEFINE TABLE user SCHEMALESS;\n\
              DEFINE TABLE friend TYPE RELATION IN person OUT user;",
         );
 

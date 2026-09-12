@@ -114,6 +114,28 @@ const CASES: &[Case] = &[
         accepted: "RETURN [1, 2] != [];",
         rejected: "RETURN [1, 2] = ['a'];",
     },
+    // ---- 1002 is a SCHEMAFULL contract -------------------------------------
+    Case {
+        code: 1002,
+        engine: "`CREATE loose:a SET name = 'x', other = 5` on a SCHEMALESS \
+                 table keeps `other`; only a SCHEMAFULL table drops it",
+        schema: "DEFINE TABLE loose SCHEMALESS;\n\
+                 DEFINE FIELD name ON loose TYPE string;\n\
+                 DEFINE TABLE strict SCHEMAFULL;\n\
+                 DEFINE FIELD name ON strict TYPE string;\n",
+        accepted: "SELECT other FROM loose;",
+        rejected: "SELECT other FROM strict;",
+    },
+    Case {
+        code: 1002,
+        engine: "a view materialises its projection's aliases, so \
+                 `DEFINE INDEX itotal ON stats FIELDS total` builds",
+        schema: "DEFINE TABLE t SCHEMAFULL;\n\
+                 DEFINE FIELD n ON t TYPE int;\n\
+                 DEFINE TABLE stats AS SELECT count() AS total FROM t GROUP ALL;\n",
+        accepted: "DEFINE INDEX itotal ON stats FIELDS total;",
+        rejected: "DEFINE INDEX ibad ON t FIELDS nope;",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
