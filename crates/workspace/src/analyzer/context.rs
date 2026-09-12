@@ -4,7 +4,7 @@
 //! facts, source text, diagnostics, and source/span helpers. Individual
 //! analyzers should return only what their construct evaluates to.
 
-use surrealql_analyzer_diagnostics::{Finding, FindingCode, Severity};
+use surrealql_analyzer_diagnostics::Finding;
 use surrealql_analyzer_syntax::source::SourceId;
 use surrealql_analyzer_syntax::span::SourceSpan;
 
@@ -247,12 +247,6 @@ impl<'a> AnalysisContext<'a> {
             return;
         }
         self.diagnostics.push(finding);
-    }
-
-    /// Emits an error-severity finding at `span` — a convenience over
-    /// building the [`Finding`] and calling [`Self::emit`].
-    pub fn emit_error(&mut self, span: SourceSpan, code: FindingCode, message: impl Into<String>) {
-        self.emit(Finding::new(span, code, Severity::Error, message));
     }
 
     /// The environment holding this scope's `LET` bindings and parameter uses.

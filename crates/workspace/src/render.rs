@@ -134,7 +134,7 @@ pub fn render_kind(kind: &Kind) -> String {
 /// The *declared* side of the same message — the type the reader can go and
 /// look at in a `DEFINE` — stays [`render_kind`]. Which of the two a call site
 /// wants is never in doubt, and now it is written down.
-pub fn render_offending(kind: &Kind, blame: Option<&Kind>) -> String {
+pub(crate) fn render_offending(kind: &Kind, blame: Option<&Kind>) -> String {
     render(kind, KindContext::Diagnostic { blame }).text
 }
 

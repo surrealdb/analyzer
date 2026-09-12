@@ -6,7 +6,7 @@ use crate::{EmbeddedQuery, Segment, Substitution, HOST_PARAM_PREFIX};
 
 /// Finds every embedded SurrealQL query in a TypeScript source. `tsx`
 /// selects the TSX grammar (needed for files with JSX).
-pub fn extract_typescript(text: &str, tsx: bool) -> Vec<EmbeddedQuery> {
+pub(crate) fn extract_typescript(text: &str, tsx: bool) -> Vec<EmbeddedQuery> {
     let language = if tsx {
         tree_sitter_typescript::LANGUAGE_TSX
     } else {

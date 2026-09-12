@@ -84,23 +84,9 @@ pub enum SuppressionParseError {
     MalformedReason,
 }
 
-/// Parses a directive from a comment body, returning `Ok(None)` when the
-/// comment is not a `surrealql-analyzer:` directive at all. Use this when
-/// scanning ordinary comments; malformed directives still return `Err`.
-pub fn parse_optional_suppression_directive(
-    text: &str,
-    span: SourceSpan,
-) -> Result<Option<Suppression>, SuppressionParseError> {
-    let Some(body) = text.trim().strip_prefix(DIRECTIVE_PREFIX) else {
-        return Ok(None);
-    };
-
-    parse_allow_body(body.trim(), span).map(Some)
-}
-
 /// Parses a comment body that is required to be a `surrealql-analyzer:`
-/// directive, erroring if the prefix is absent. Use this when the caller
-/// has already committed to the comment being a directive.
+/// directive, erroring if the prefix is absent — the analyzer has already
+/// decided the comment is one by the time it calls this.
 pub fn parse_suppression_directive(
     text: &str,
     span: SourceSpan,
@@ -237,11 +223,11 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_suppression_comments() {
+    fn a_comment_without_the_prefix_is_not_a_directive() {
         assert_eq!(
-            parse_optional_suppression_directive("ordinary query comment", span(0, 22))
-                .expect("ordinary comments should not error"),
-            None
+            parse_suppression_directive("ordinary query comment", span(0, 22))
+                .expect_err("an ordinary comment is not a directive"),
+            SuppressionParseError::MalformedDirective
         );
     }
 

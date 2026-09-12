@@ -121,12 +121,6 @@ impl StatementEnv {
         self.let_bindings.push(binding);
     }
 
-    /// Every `LET`/`FOR` binding recorded in this scope (and merged from
-    /// children), in source order.
-    pub fn let_bindings(&self) -> &[LetBindingAnalysis] {
-        &self.let_bindings
-    }
-
     /// Records that a guard narrowed `path` to `kind` over `span`. Read-only
     /// w.r.t. diagnostics. Exact duplicates are dropped: an expression may be
     /// re-inferred (const folding, closure re-inference at a call site), and
@@ -136,11 +130,6 @@ impl StatementEnv {
             return;
         }
         self.narrowings.push(narrowing);
-    }
-
-    /// Every flow narrowing recorded in this scope (and merged from children).
-    pub fn narrowings(&self) -> &[NarrowingAnalysis] {
-        &self.narrowings
     }
 
     /// The scope's editor-facing facts — its `LET`/`FOR` bindings and its
@@ -257,11 +246,6 @@ impl StatementEnv {
         self.lets.get(name)
     }
 
-    /// Every `LET` binding currently in scope.
-    pub fn let_facts(&self) -> &BTreeMap<String, ExpressionFact> {
-        &self.lets
-    }
-
     /// Records the `DEFINE PARAM` default for `name`, whose kind seeds the
     /// inferred param and makes it optional at the call site.
     pub fn define_param_default(&mut self, name: String, fact: ExpressionFact) {
@@ -328,11 +312,6 @@ impl StatementEnv {
             entry.required |= param.required;
             entry.spans.extend(param.spans);
         }
-    }
-
-    /// Consumes the scope and returns its collected param inferences.
-    pub fn into_params(self) -> Vec<ParamInference> {
-        self.params.into_values().collect()
     }
 
     /// Records a typed constraint on a parameter from a checkable use
@@ -556,7 +535,7 @@ mod tests {
         env.record_param_use("name".into(), second);
 
         let params: BTreeMap<_, _> = env
-            .into_params()
+            .params()
             .into_iter()
             .map(|param| (param.name.clone(), param))
             .collect();
@@ -593,7 +572,7 @@ mod tests {
             "records of different tables do not conflict"
         );
 
-        let kind = env.into_params().into_iter().next().unwrap().kind.unwrap();
+        let kind = env.params().into_iter().next().unwrap().kind.unwrap();
         assert_eq!(
             kind,
             Kind::Record(vec![
@@ -615,7 +594,7 @@ mod tests {
         let conflict = env.constrain_param_comparable("p".into(), span(5), record("account"), None);
         assert_eq!(conflict, None, "`none` is comparable with any record");
 
-        let kind = env.into_params().into_iter().next().unwrap().kind.unwrap();
+        let kind = env.params().into_iter().next().unwrap().kind.unwrap();
         assert_eq!(kind, record("account"));
     }
 

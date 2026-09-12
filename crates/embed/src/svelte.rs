@@ -40,16 +40,16 @@ use crate::{EmbeddedQuery, Segment, Substitution, HOST_PARAM_PREFIX};
 /// findings that matter and train the reader to ignore the tool. These two
 /// names are the components that exist to run a query, so their `q` is
 /// SurrealQL by construction.
-pub const QUERY_ELEMENTS: [(&str, bool); 2] = [("Query", false), ("LiveQuery", true)];
+pub(crate) const QUERY_ELEMENTS: [(&str, bool); 2] = [("Query", false), ("LiveQuery", true)];
 
 /// The one attribute read on a [`QUERY_ELEMENTS`] element.
-pub const QUERY_ATTRIBUTE: &str = "q";
+pub(crate) const QUERY_ATTRIBUTE: &str = "q";
 
 /// Finds every SurrealQL query embedded in a Svelte source's markup
 /// attributes. Offsets are already in whole-file coordinates — the grammar
 /// parses the file, not a fragment of it — so callers do not shift them.
 #[must_use]
-pub fn extract_svelte_markup(text: &str) -> Vec<EmbeddedQuery> {
+pub(crate) fn extract_svelte_markup(text: &str) -> Vec<EmbeddedQuery> {
     let mut parser = Parser::new();
     if parser
         .set_language(&tree_sitter_svelte_ng::LANGUAGE.into())

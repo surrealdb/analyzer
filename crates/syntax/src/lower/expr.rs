@@ -35,26 +35,26 @@ use crate::ast::{
 use crate::span::ByteRange;
 
 /// Lowers an expression-position CST node.
-pub fn lower_expr(node: Node<'_>, text: &str) -> Spanned<Expr> {
+pub(crate) fn lower_expr(node: Node<'_>, text: &str) -> Spanned<Expr> {
     Lowerer { text }.expr(node)
 }
 
 /// Lowers a type-position node (`Type`, `TypeName`, `ParameterizedType`,
 /// `UnionType`, `LiteralType`) — used by DEFINE FIELD/cast lowering and
 /// schema extraction.
-pub fn lower_type_expr(node: Node<'_>, text: &str) -> Spanned<TypeExpr> {
+pub(crate) fn lower_type_expr(node: Node<'_>, text: &str) -> Spanned<TypeExpr> {
     Lowerer { text }.type_expr(node)
 }
 
 /// Lowers a `Block` node — used by statement lowering for IF/FOR bodies and
 /// statement-position blocks.
-pub fn lower_block_node(node: Node<'_>, text: &str) -> Block {
+pub(crate) fn lower_block_node(node: Node<'_>, text: &str) -> Block {
     Lowerer { text }.block(node)
 }
 
 /// Lowers a path-position node (`Path`, `Idiom`, or bare `Ident`) to an
 /// [`Idiom`] — used by statement lowering for clause paths.
-pub fn lower_idiom_node(node: Node<'_>, text: &str) -> Idiom {
+pub(crate) fn lower_idiom_node(node: Node<'_>, text: &str) -> Idiom {
     let lowerer = Lowerer { text };
     match node.kind() {
         "Ident" => Idiom {

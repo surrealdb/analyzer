@@ -12,7 +12,7 @@ mod expr;
 mod grammar_tests;
 mod statement;
 
-pub use expr::{lower_expr, lower_type_expr};
+pub(crate) use expr::lower_expr;
 pub(crate) use statement::lower_statement;
 pub use statement::lower_statements;
 

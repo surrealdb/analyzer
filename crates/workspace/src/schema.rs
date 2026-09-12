@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use surrealdb_types::Kind;
 use surrealql_analyzer_syntax::ast;
+#[cfg(test)]
 use surrealql_analyzer_syntax::parse::ParsedSource;
 use surrealql_analyzer_syntax::source::SourceId;
 use surrealql_analyzer_syntax::span::{ByteRange, SourceSpan};
@@ -434,9 +435,12 @@ impl EventTriggers {
 }
 
 /// The result of building a schema from a batch of sources: the index plus
-/// any findings raised while defining it.
+/// any findings raised while defining it. Test-only: the production paths go
+/// through [`crate::analysis::analyze_workspace`], which carries config and
+/// per-source outputs this drops.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchemaExtraction {
+pub(crate) struct SchemaExtraction {
     /// The assembled catalog.
     pub schema: SchemaIndex,
     /// Findings raised during extraction.
@@ -858,8 +862,10 @@ pub(crate) fn apply_schema_statement_effects(
 
 /// Builds the schema for a batch of parsed sources by running the full
 /// analysis pipeline, which owns statement sequencing, catalog effects, and
-/// every contract check that references a definition.
-pub fn extract_schema(parsed_sources: &[ParsedSource]) -> SchemaExtraction {
+/// every contract check that references a definition. Test-only: see
+/// [`SchemaExtraction`].
+#[cfg(test)]
+pub(crate) fn extract_schema(parsed_sources: &[ParsedSource]) -> SchemaExtraction {
     let output = crate::analyzer::pipeline::analyze_sources(parsed_sources);
     SchemaExtraction {
         schema: output.schema,

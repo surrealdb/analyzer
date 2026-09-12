@@ -13,20 +13,26 @@
 //! order, dispatching every lowered statement to its analyzer against the
 //! schema built so far.
 
-pub mod const_eval;
-pub mod context;
+// The engine's internals. Only [`contract`] is public, and only because the
+// contract table it holds is an enumeration of every checked position — a
+// thing a consumer can legitimately want to enumerate, and what
+// `tests/contract_positions.rs` holds the catalog against. Everything else
+// here is an implementation detail of `analyze_workspace`: making these
+// `pub` again would re-expose ~500 modules that no consumer has ever named.
+pub(crate) mod const_eval;
+pub(crate) mod context;
 pub mod contract;
-pub mod data;
-pub mod expression;
+pub(crate) mod data;
+pub(crate) mod expression;
 pub(crate) mod facts;
-pub mod flow;
-pub mod function;
-pub mod omit;
-pub mod pipeline;
-pub mod schema;
-pub mod statement;
-pub mod system;
-pub mod version;
+pub(crate) mod flow;
+pub(crate) mod function;
+pub(crate) mod omit;
+pub(crate) mod pipeline;
+pub(crate) mod schema;
+pub(crate) mod statement;
+pub(crate) mod system;
+pub(crate) mod version;
 
 #[cfg(test)]
 pub(crate) mod test_support;

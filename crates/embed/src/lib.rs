@@ -21,15 +21,21 @@
 //!
 //! Svelte files carry queries in a second place: **markup attributes**, on
 //! the components that run them — `<Query q="SELECT …">`. Those are found
-//! by [`svelte::extract_svelte_markup`] over the Svelte grammar, and they
-//! produce the same [`EmbeddedQuery`] with the same span map, so everything
-//! downstream treats a markup query exactly like a script one.
+//! over the Svelte grammar, and they produce the same [`EmbeddedQuery`] with
+//! the same span map, so everything downstream treats a markup query exactly
+//! like a script one.
+//!
+//! [`extract`] is the whole public surface — one function, dispatching on the
+//! file extension. The per-language extractors and the Svelte component names
+//! behind it are deliberately not exported: which grammar ran is not something
+//! a caller should have to know, and a caller who branched on it would have to
+//! be revisited every time a host language is added.
 
 mod svelte;
 mod typescript;
 
-pub use svelte::{extract_svelte_markup, QUERY_ATTRIBUTE, QUERY_ELEMENTS};
-pub use typescript::extract_typescript;
+use svelte::extract_svelte_markup;
+use typescript::extract_typescript;
 
 /// The prefix of the parameter names generated for host substitutions:
 /// `${...}` in a TypeScript template, `{...}` in a Svelte markup attribute.

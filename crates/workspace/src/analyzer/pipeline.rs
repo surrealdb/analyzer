@@ -724,6 +724,10 @@ pub(crate) fn build_run_schema<P: std::borrow::Borrow<ParsedSource>>(
     schema
 }
 
+/// Test-only entry point: the whole pipeline over a batch of sources with
+/// default policy. Production callers go through
+/// [`crate::analysis::analyze_workspace`], which supplies config.
+#[cfg(test)]
 pub(crate) fn analyze_sources(parsed_sources: &[ParsedSource]) -> PipelineOutput {
     analyze_sources_with(parsed_sources, false, None)
 }

@@ -3,15 +3,20 @@
 Workspace, schema, and analysis-orchestration layer for
 [SurrealQL Analyzer](https://github.com/surrealdb/analyzer).
 
-This crate owns the middle of the pipeline: it holds the source registry and
-config, extracts the schema catalog from `DEFINE`/`REMOVE` statements, runs type
-inference over the lowered AST (`analyzer::*`), and produces the findings the CLI
-and LSP consume. It also backs editor features (hover, go-to-definition,
-completion suggestions).
+This crate is the engine. It holds the source registry and config, extracts the
+schema catalog from `DEFINE`/`REMOVE` statements, runs type inference over the
+lowered AST, and produces the findings the CLI and the language server consume.
+It also answers the editor questions — hover, go-to-definition, completion,
+inlay hints — from the same analysis.
 
-The public API is not yet stable; pin an exact version. Most users should reach
-for the [`surrealql-analyzer`](https://crates.io/crates/surrealql-analyzer) CLI or
-[`surrealql-analyzer-rs`](https://crates.io/crates/surrealql-analyzer-rs) instead.
+Start at the crate root documentation: it names the entry points, the order to
+call them in, and the shape of what comes back. In short: build a `Workspace`,
+register schema sources before query sources, call `analyze_workspace`, read
+the `AnalysisOutput` per source.
+
+The public API is not yet stable; pin an exact version. If all you want is to
+check a project, reach for the
+[`surrealql-analyzer`](https://crates.io/crates/surrealql-analyzer) CLI.
 
 ## License
 

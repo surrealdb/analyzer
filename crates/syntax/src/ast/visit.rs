@@ -367,7 +367,7 @@ pub trait Visitor: Sized {
 /// The table whose rows a statement's clauses evaluate against, when its
 /// sources/targets name exactly one plain table or record id. Any other shape
 /// — none, several, a subquery, a parameter — leaves the row table unknown.
-pub fn row_table(sources: &[Spanned<Expr>]) -> Option<&str> {
+pub(crate) fn row_table(sources: &[Spanned<Expr>]) -> Option<&str> {
     match sources {
         [only] => expr_table_name(&only.node),
         _ => None,
@@ -376,7 +376,7 @@ pub fn row_table(sources: &[Spanned<Expr>]) -> Option<&str> {
 
 /// The table a source/target expression names, if it is a bare table or a
 /// record id (`person` / `person:one`).
-pub fn expr_table_name(expr: &Expr) -> Option<&str> {
+pub(crate) fn expr_table_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Table(name) => Some(name.node.as_str()),
         Expr::RecordId { table, .. } => Some(table.node.as_str()),
