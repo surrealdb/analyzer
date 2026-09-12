@@ -65,8 +65,59 @@ fn next(raw: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, St
     raw.next().ok_or_else(|| format!("{flag} needs a value"))
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// Tokio worker stack size, mirroring SurrealDB's own language-test runner
+/// (`language-tests/src/main.rs`) and honouring the same override.
+///
+/// The default 2 MiB thread stack is not enough for the engine's parser,
+/// planner and executor recursion over this corpus: a debug build overflows it
+/// and aborts the whole process, which is how CI found this. Upstream settled
+/// on 20 MiB for debug builds; there is no reason to disagree with the people
+/// who run this corpus every day.
+fn worker_stack_size() -> usize {
+    std::env::var("SURREAL_RUNTIME_STACK_SIZE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(if cfg!(debug_assertions) {
+            20 * 1024 * 1024
+        } else {
+            10 * 1024 * 1024
+        })
+}
+
+fn main() -> ExitCode {
+    // `block_on` polls the future on the calling thread, so the thread that
+    // drives the runtime needs the same stack its workers get — sizing only
+    // the workers would move the overflow rather than fix it.
+    let stack = worker_stack_size();
+    match std::thread::Builder::new()
+        .name("type-oracle".to_string())
+        .stack_size(stack)
+        .spawn(move || drive(stack))
+    {
+        Ok(handle) => handle.join().unwrap_or(ExitCode::from(2)),
+        Err(error) => {
+            eprintln!("type-oracle: could not start: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn drive(stack: usize) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(stack)
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("type-oracle: could not start a runtime: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> ExitCode {
     let args = match parse_args() {
         Ok(args) => args,
         Err(error) => {
