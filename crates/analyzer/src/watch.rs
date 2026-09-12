@@ -157,8 +157,14 @@ fn is_input(
 /// host writes through), may contain `..`, and on macOS the watcher reports
 /// `/private/tmp/...` for a working directory spelled `/tmp/...`.
 ///
-/// The file usually does not exist yet on the first run, so the *parent* is
-/// canonicalized and the file name re-attached.
+/// Neither the file nor its directory need exist yet, so canonicalization
+/// starts at the nearest ancestor that *does* and the remaining components are
+/// re-appended. Canonicalizing only the parent was not enough: with
+/// `out = "src/lib/db.generated.ts"` and no `src/lib` yet, the parent does not
+/// resolve, the raw path is kept, and under a symlinked ancestor (`/tmp`,
+/// `/var`, a symlinked home) it never matches the `/private/...` spelling the
+/// watcher reports — so `generate` writes, the watcher calls the write an
+/// input, and the loop runs forever.
 fn resolve_output(root: &Path, out: &Path) -> PathBuf {
     let absolute = if out.is_absolute() {
         out.to_path_buf()
@@ -167,13 +173,27 @@ fn resolve_output(root: &Path, out: &Path) -> PathBuf {
             .unwrap_or_else(|_| root.to_path_buf())
             .join(out)
     };
-    match (absolute.parent(), absolute.file_name()) {
-        (Some(parent), Some(name)) => parent
-            .canonicalize()
-            .map_or_else(|_| absolute.clone(), |resolved| resolved.join(name)),
-        // A path with no parent or no file name is not something `fs::write`
-        // will succeed on either; leave it alone and let the run report it.
-        _ => absolute,
+
+    // Walk up to the first existing ancestor, remembering what was stripped.
+    let mut tail = Vec::new();
+    let mut current = absolute.as_path();
+    loop {
+        if let Ok(resolved) = current.canonicalize() {
+            return tail
+                .iter()
+                .rev()
+                .fold(resolved, |path, part| path.join(part));
+        }
+        match (current.file_name(), current.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                current = parent;
+            }
+            // Nothing on the path exists and there is nothing left to strip;
+            // `fs::write` will not succeed on it either. Leave it alone and
+            // let the run report it.
+            _ => return absolute,
+        }
     }
 }
 
@@ -570,6 +590,53 @@ mod tests {
         let direct = resolve_output(&root, &canonical_root.join("src/registry.ts"));
         let traversed = resolve_output(&root, &canonical_root.join("src/../src/registry.ts"));
         assert_eq!(direct, traversed);
+    }
+
+    #[test]
+    fn an_output_whose_directory_does_not_exist_yet_still_resolves_symlinks() {
+        // The first `generate` creates `src/lib/`, so on the run that decides
+        // the exclusion neither the file nor its parent exists. Canonicalizing
+        // only the parent gave up there and kept the raw path -- which under a
+        // symlinked ancestor never matches what the watcher reports, so every
+        // write triggered the next run, forever. Resolution has to start at
+        // the nearest ancestor that does exist.
+        let root = temp_project_dir("watch-out-missing-parent");
+        let link = root.join("link");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).expect("real dir");
+        symlink_dir(&real, &link).expect("symlink");
+
+        // `link/src/lib/` does not exist: two missing components under a
+        // symlinked ancestor.
+        let resolved = resolve_output(&root, &link.join("src/lib/db.generated.ts"));
+        let expected = real
+            .canonicalize()
+            .expect("canonical target")
+            .join("src/lib/db.generated.ts");
+        assert_eq!(
+            resolved, expected,
+            "the symlinked ancestor must resolve even though the leaf directories do not exist"
+        );
+
+        // Which is the whole point: the path `generate` will write, once the
+        // directories exist, is the path the exclusion already names.
+        std::fs::create_dir_all(real.join("src/lib")).expect("create out dir");
+        std::fs::write(real.join("src/lib/db.generated.ts"), "//").expect("write registry");
+        assert_eq!(
+            resolve_output(&root, &link.join("src/lib/db.generated.ts")),
+            resolved,
+            "resolution must not change once the directories appear"
+        );
+    }
+
+    #[cfg(unix)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(target, link)
     }
 
     #[test]
