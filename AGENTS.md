@@ -19,13 +19,14 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
    3xxx graph, 4xxx statement misuse, 5xxx functions, 6xxx parameters, 7xxx
    lints. The `range` is a byte offset into `source`
    — apply edits there.
-4. **Type the queries:**
-   - Rust: wrap queries in the `query!` macro (`cargo add surrealql-analyzer-rs`). They
-     are checked at compile time; a violation fails `cargo check`.
-   - TypeScript: run `surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts`,
-     import `SurrealQLAnalyzerClient` from that file (it extends the `surrealdb` SDK),
-     and pass string literals to `db.query("…")` — destructure the first result,
-     `const [rows] = await db.query("…")`.
+4. **Queries in host files count.** `check` scans `.ts`/`.tsx`/`.js`/`.jsx`/
+   `.svelte`/`.vue`/`.astro` for SurrealQL in string literals passed to a query
+   sink (`db.query("…")`), analyzes them against the schema, and reports at the
+   host file's own `line:col`. There is no separate step and no query manifest.
+
+There is no typed-client generation right now: the TypeScript SDKs and the Rust
+`query!` / `surql!` macros have left this repository for a client library, and
+typegen will be redesigned against the new client.
 
 ## Working inside this repository
 
@@ -33,8 +34,12 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
   `RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets` is the CI gate
   and must stay clean. `missing_docs` is enforced — every public item needs a doc
   comment. Format with `cargo fmt --all`.
-- **TypeScript packages** (`packages/`, pnpm workspace): `pnpm -r run build`,
-  `pnpm -r run typecheck`, `pnpm -r --if-present run test`.
+- **Node** is one script, not a package tree: `pnpm docs:diagnostics`
+  regenerates `web/public/docs/diagnostics.html` from the catalog, and
+  `pnpm docs:diagnostics:check` is the CI gate. The generator imports only
+  `node:` builtins, so there is nothing to install. The pnpm workspace's sole
+  member is the `npm/surrealql-analyzer` launcher, which
+  `scripts/release.sh publish` ships.
 - **Quality harness — lost precision.** The unit suite proves nothing is newly
   *wrong*; it cannot see a type quietly degrading to `unknown`, a narrowing
   dying, or a completion disappearing. Three harnesses cover that, all driven by
@@ -121,25 +126,20 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     and so cannot catch a surface that is wrong only over the wire. Requests must
     be sequenced (`initialize` → its response → `initialized` → `didOpen` →
     request) or tower-lsp answers "Server not initialized".
-  - `crates/codegen/tests/golden.rs` — the **generated-TypeScript golden**.
-    `surrealql-analyzer generate` emits a module nothing used to compile, so a type
-    error in the emitter's output would ship undetected. The test runs the
-    CLI's generation path (`QueryEntry::from_analysis` + `render_registry`)
-    over the fixture workspace `crates/codegen/tests/fixtures/typecheck/`
-    (schema with option/record/array/literal-union/object fields, an edge
-    table, `fn::` functions, a host `src/queries.ts`) and compares the module
-    byte-for-byte with `packages/client/test-d/gen/surrealql-analyzer.generated.ts`.
-    That file is then compiled by `pnpm -r run typecheck` as part of
-    `@surrealdb/analyzer-client` against the real `surrealdb` types, and
-    `test-d/gen/*.test-d.ts` + `test/generated.test.ts` assert what the
-    resolved types are. Regenerate with
-    `UPDATE_SNAPSHOTS=1 cargo test -p surrealql-analyzer-codegen --test golden`, then
-    run the package typecheck — the golden records *current* output, and the
-    Rust side cannot tell whether it is valid TypeScript. Augment
-    `SurqlRegistry` only through `"@surrealdb/analyzer-client"` in that package
-    (never `../src/registry.js`): one interface augmented through two
-    specifiers gets two merged clones, and which one a file sees depends on
-    program order.
+  - `crates/codegen/tests/generation.rs` — what is left of the
+    **generated-TypeScript golden**, and why it is less than it was. The golden
+    was a byte-for-byte snapshot of the emitted module held at
+    `packages/client/test-d/gen/…`, and its *second* half was
+    `pnpm -r run typecheck` compiling that file against the real `surrealdb`
+    types. Rust cannot tell whether a string it produced is valid TypeScript,
+    so the byte comparison alone only ever proved today's output equals
+    yesterday's. With the client package gone there is no compiler, so the
+    comparison was dropped rather than relocated — a snapshot that reads like
+    coverage without being any is worse than none. What is kept are the two
+    claims Rust can still make over the fixture workspace
+    `crates/codegen/tests/fixtures/typecheck/`: it analyzes free of error
+    findings, and every embedded query it declares reaches the rendered
+    registry. There is no `UPDATE_SNAPSHOTS` path any more.
 - **Grammar:** the parser is the vendored `crates/tree-sitter-surrealql`
   (grammar.js plus its generated parser); see the conformance-ratchet entry
   above for how to edit and regenerate it.
@@ -161,8 +161,10 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
   single source of truth for the code list; the published catalog page
   (`web/public/docs/diagnostics.html`) is **generated** from it — add a code,
   then run `pnpm docs:diagnostics`. CI fails if the page is stale.
-- `crates/macros` + `crates/rs` — the `query!` / `surql!` macros and runtime
-- `crates/codegen` + `crates/embed` — TypeScript generation + host-file extraction
+- `crates/embed` — host-file extraction (SurrealQL inside `.ts`/`.svelte`/…)
+- `crates/codegen` — `Kind` → TypeScript. **Dormant**: nothing calls it, the CLI
+  has no `generate` verb, and the module it emits augments a client package
+  that has left. Kept as the seed of the redesign.
 - `crates/cli` + `crates/lsp` — the `surrealql-analyzer` and `surrealql-analyzer-lsp` binaries
-- `packages/` — `@surrealdb/analyzer-{client,query,next,svelte}`
+- `crates/wasm` + `web/` — the browser playground and the static site
 - `docs/DESIGN.md` — architecture; `docs/plans/` — design records

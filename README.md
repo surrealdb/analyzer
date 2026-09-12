@@ -5,10 +5,9 @@
 ### Static analysis and type inference for SurrealQL
 
 Catch unknown fields, kind mismatches, and bad graph traversals *before* a query
-reaches SurrealDB — and get fully typed results in **TypeScript** and **Rust**.
+reaches SurrealDB.
 
 [![crates.io](https://img.shields.io/crates/v/surrealql-analyzer?label=surrealql-analyzer&color=e07b39&logo=rust&logoColor=white)](https://crates.io/crates/surrealql-analyzer)
-[![npm](https://img.shields.io/npm/v/@surrealdb/analyzer-client?label=%40surrealdb%2Fanalyzer-client&color=cb3837&logo=npm&logoColor=white)](https://www.npmjs.com/package/@surrealdb/analyzer-client)
 [![CI](https://github.com/surrealdb/analyzer/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/surrealdb/analyzer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3b82f6)](#license)
 
@@ -22,14 +21,20 @@ reaches SurrealDB — and get fully typed results in **TypeScript** and **Rust**
 
 SurrealQL Analyzer parses your `.surql` schema and queries into a typed, span-carrying
 AST, infers the response type of every statement, and reports violations of each
-construct's contract. One engine, four front ends:
+construct's contract. One engine, three front ends:
 
 | | |
 | --- | --- |
-| **CLI** — `surrealql-analyzer` | `check` your workspace in CI, `generate` TypeScript types, `watch` both while you develop |
+| **CLI** — `surrealql-analyzer` | `check` your workspace in CI or `watch` it while you develop |
 | **Language server** — `surrealql-analyzer-lsp` | Diagnostics, hover, inlay hints, go-to-definition, and type-aware completion, in `.surql` files *and* in SurrealQL embedded in TypeScript / Svelte / Vue / Astro |
-| **TypeScript** — `@surrealdb/analyzer-{client,query,next,svelte}` | `db.query("SELECT …")` typed from the query text; live queries as framework-native reactive state |
-| **Rust** — `surrealql-analyzer-rs` | `query!("SELECT …")` checked and typed at compile time |
+| **Rust library** — `surrealql-analyzer-workspace` | The engine itself: build a workspace, analyze it, read back findings and inferred types. This is what the two binaries are built on, and what yours can be |
+
+> **The client SDKs have moved out.** `@surrealdb/analyzer-{client,query,next,svelte}`,
+> the TypeScript language-service plugin and the `query!` / `surql!` Rust macros
+> used to live here. They are client libraries, not analysis, and they are being
+> rehomed; the published packages on npm and crates.io are unaffected. This
+> repository is the analyzer: one binary, one language server, one library.
+> Typed-client generation will return once it is designed against the new client.
 
 ## Why
 
@@ -44,12 +49,11 @@ SurrealDB's own parser discards spans before producing its AST, so it cannot
 power an analyzer or editor tooling. SurrealQL Analyzer parses with tree-sitter into a
 typed, span-carrying AST and runs all analysis on that.
 
-## Quickstart (TypeScript)
+## Quickstart
 
 ```sh
-npm i @surrealdb/analyzer-client surrealdb
-npm i -D surrealql-analyzer typescript
-npx surrealql-analyzer init          # writes a commented surrealql-analyzer.toml
+npm i -D surrealql-analyzer         # or: cargo binstall surrealql-analyzer
+npx surrealql-analyzer init         # writes a commented surrealql-analyzer.toml
 ```
 
 Point `surrealql-analyzer.toml`'s `schema` glob at your `.surql` files, and write a
@@ -66,87 +70,36 @@ DEFINE FIELD age ON person TYPE int;
 DEFINE FIELD team ON person TYPE record<team>;
 ```
 
-Write queries as ordinary string literals in your own code — those calls are
-what `generate` reads. There is no separate query manifest, and nothing to wrap
-the string in:
+Queries are checked wherever they live — a `.surql` file matched by the
+`queries` glob, or an ordinary string literal in your own code:
 
 ```ts
 // src/main.ts
-import { createClient, RecordId } from "./surrealql-analyzer.generated";
-
-const db = createClient({
-  url: "ws://localhost:8000/rpc",
-  namespace: "app",
-  database: "app",
-}); // connects lazily; import `db` anywhere, provide it to nothing
-
-const [people] = await db.query("SELECT name, age FROM person WHERE team = $team", {
+const [people] = await db.query("SELECT name, ag FROM person WHERE team = $team", {
   team: new RecordId("team", "red"),
 });
-
-for (const person of people) {
-  console.log(person.name, person.age);
-}
 ```
 
 ```sh
-npx surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts
+npx surrealql-analyzer check
 ```
 
 ```
-generated src/surrealql-analyzer.generated.ts (1 query, 8ms)
+error[E1002]: `person` has no field `ag`
+  --> src/main.ts:2:44
+  |
+2 | const [people] = await db.query("SELECT name, ag FROM person WHERE team = $team", {
+  |                                            ^^
+  |
+  = help: did you mean `age`?
 ```
 
-While you are developing, run it as a loop instead — `watch` checks the whole
-workspace on every save and regenerates when the check passes, so the types
-never go stale behind you:
+While you are developing, run it as a loop instead — `watch` re-checks the whole
+workspace on every save:
 
 ```sh
-npx surrealql-analyzer watch --out src/surrealql-analyzer.generated.ts
+npx surrealql-analyzer watch        # the same as `check --watch`
 ```
-
-`generate` scanned `src/main.ts`, analyzed the query against the schema, and
-wrote a module that re-exports the client together with a registry keyed by the
-query's exact text:
-
-```ts
-declare module "@surrealdb/analyzer-client" {
-  interface SurqlRegistry {
-    "SELECT name, age FROM person WHERE team = $team": {
-      result: [Array<{ age: number; name: string }>];
-      params: { team: RecordId<"team"> };
-    };
-  }
-}
-```
-
-Importing `createClient` **from that generated file** is what loads the
-registry. `people` is now `Array<{ name: string; age: number }>`, the `team`
-param is required and must be a `RecordId<"team">`, and `person.nope` is a
-compile error. `tsc --noEmit` proves it.
-
-A query built at runtime is not in the registry and resolves to `unknown[]` — it
-still runs; there is no `any` in the API. The client composes the official
-`surrealdb` SDK rather than extending it, so the raw `Surreal` instance stays
-reachable at `db.surreal`.
-
-Three things are worth stating because each one produces `any` **with no error
-on your own code**:
-
-- `@surrealdb/analyzer-client` must actually be installed. The generated file says
-  `declare module "@surrealdb/analyzer-client"`; if that specifier does not resolve,
-  TypeScript reports `TS2664` *inside the generated file* and silently drops the
-  whole registry.
-- `--out` must match how you import it. Bare `generate` writes to the workspace
-  root, which is usually not where `./surrealql-analyzer.generated`,
-  `$lib/surrealql-analyzer.generated` or `@/surrealql-analyzer.generated` points. Pin it in
-  `package.json` once.
-- A `.svelte` `<script>` needs `lang="ts"`. Without it Svelte does not typecheck
-  the block at all.
-
-See [`@surrealdb/analyzer-client`](packages/client) for the full contract — including
-[when everything is `any`](packages/client/README.md#when-everything-is-any) —
-and [`examples/`](examples) for a vanilla-TS and a SvelteKit project you can run.
 
 ## Check in CI
 
@@ -181,63 +134,44 @@ or a CI log it is the same text with no escape sequences, and `--no-color` /
 
 The exit code reflects the post-policy error count, so it drops straight into
 CI. `--json` emits `{ summary, diagnostics[] }` with byte-offset ranges for
-tooling — one document, one exit code, never decorated. `generate` runs the same
-analysis and refuses to write a registry when an embedded query has an error, so
-a broken build can never overwrite good types.
+tooling — one document, one exit code, never decorated.
 
-## Live queries, typed
+## Use it as a library
 
-`db.query` covers reading. When you want rows that *keep* updating, name the
-query once and subscribe to it. Vanilla TypeScript needs no extra package:
-
-```ts
-import { defineLive } from "./surrealql-analyzer.generated";
-
-const livePeople = defineLive("SELECT id, name, age FROM person");
-const stop = db.watch(livePeople, (rows) => render(rows));
-//    ^? rows: Array<{ id: RecordId<"person">; name: string; age: number }>
-```
-
-The framework adapters turn the same reference into framework-native reactive
-state, on a shared core (`@surrealdb/analyzer-query`) that owns the cache,
-reference-counts subscriptions, and reconciles `LIVE SELECT` notifications by
-record id.
-
-```svelte
-<script lang="ts">
-  import { createLive } from "@surrealdb/analyzer-svelte";
-  import { livePeople } from "$lib/queries";
-
-  // runes-reactive — read it directly, no store `$` prefix
-  const people = createLive(livePeople);
-</script>
-
-{#each people.data as person (person.id)}<li>{person.name}</li>{/each}
-```
-
-`@surrealdb/analyzer-next` offers the same as a hook: `const people =
-useLive(livePeople)`. Both packages seed from the server with `preload(db,
-livePeople)`, whose payload carries its own cache key — so the component
-subscribes to exactly the query the server ran without naming it twice, the
-first paint has no loading gap, and it upgrades to live in place.
-
-## The compiler is the checker (Rust)
+The CLI and the language server are two consumers of one library, and it is
+published for a third. `surrealql-analyzer-workspace` is the engine:
 
 ```rust
-use surrealql_analyzer_rs::query;
+use surrealql_analyzer_workspace::{analyze_workspace, Workspace, WorkspaceConfig};
 
-// Checked against your schema at compile time. A wrong table, unknown field,
-// bad arity, or kind mismatch is a `cargo check` error — no external step.
-let users = query!("SELECT name, age FROM user");
-//  users: Query<Vec<{ name: String, age: i64 }>>  ← nameless, inferred
+let mut workspace = Workspace::new(WorkspaceConfig::default());
+workspace.add_virtual_source(
+    "schema.surql".into(),
+    "DEFINE TABLE person SCHEMAFULL; DEFINE FIELD age ON person TYPE int;".into(),
+);
+let query = workspace.add_virtual_source("q.surql".into(), "SELECT age FROM person;".into());
+
+let analysis = analyze_workspace(&workspace);
+for finding in &analysis.diagnostics {
+    println!("{} {}", finding.code(), finding.message());
+}
+
+// Per source: findings, one record per statement, the inferred params, the
+// `LET` bindings, and the response kind when exactly one statement responds.
+let output = &analysis.sources[&query];
+assert!(output.response_kind.is_some());
 ```
 
-`query!` runs the real analyzer during compilation and turns findings into
-spanned `compile_error!`s, then generates the result type from the inferred
-response kind — no codegen step, no language server, no runtime schema fetch.
-It resolves the schema from `SURREALQL_ANALYZER_SCHEMA`, or from a `schema/` or
-`migrations/` directory under the crate root (applied in filename order).
-`surql!` is the lighter form: check a query, expand to its text.
+Schema sources must be registered before the queries that reference them —
+`add_file_source` and `add_virtual_source` preserve registration order, and the
+schema index is built in that order. The crate root documents the whole entry
+sequence; the query-level helpers the language server calls (`hover_at`,
+`definition_at`, `complete_at`, `let_binding_hints`) hang off the same analysis.
+
+`surrealql-analyzer-diagnostics` owns the finding codes, their severities and
+the lint policy that grades them; `surrealql-analyzer-syntax` owns the parser
+and the span-carrying AST; `surrealql-analyzer-embed` finds SurrealQL inside
+TypeScript and Svelte files. Each is usable on its own.
 
 ## Editors
 
@@ -252,26 +186,6 @@ so your `[lints]` levels apply live in the editor.
 Zed users can install the
 [`DrewRidley/zed-surreal`](https://github.com/DrewRidley/zed-surreal) extension;
 any other LSP-capable editor can point at the binary directly.
-
-For TypeScript and JavaScript files there is a second, lighter option:
-[`@surrealdb/analyzer-ts-plugin`](packages/ts-plugin), a TypeScript **language service
-plugin**. One entry in `tsconfig.json` —
-
-```jsonc
-{ "compilerOptions": { "plugins": [{ "name": "@surrealdb/analyzer-ts-plugin" }] } }
-```
-
-— and the findings inside your `db.query("…")` strings come back as
-TypeScript's own diagnostics, with TypeScript's own classifications on the
-query's tokens. That matters beyond convenience: the standalone LSP is a
-*second* server answering about the same bytes as TypeScript, and the editor
-resolves that competition differently on every keystroke, so an inline query
-flickers between highlighted and plain string. A plugin has nothing to race —
-its answers *are* TypeScript's. It does not load in `tsc` (that is TypeScript's
-design), which is the right split: CI keeps running `surrealql-analyzer check`, which
-sees the whole workspace instead of one file at a time. `.svelte` and `.vue`
-still need the LSP; the tools that own those files build their TypeScript
-service directly and never read `compilerOptions.plugins`.
 
 ## What it analyzes
 
@@ -330,22 +244,26 @@ glob of their own.
 
 ## Install
 
-**TypeScript / CLI:**
+**CLI, from npm:**
 
 ```sh
-npm i @surrealdb/analyzer-client surrealdb    # + @surrealdb/analyzer-{query,next,svelte}
-npm i -D surrealql-analyzer                   # the CLI, as a project dev dependency
+npm i -D surrealql-analyzer            # as a project dev dependency
 ```
 
 The `surrealql-analyzer` npm package is a launcher that downloads the prebuilt binary
 matching its version. `npx surrealql-analyzer --help` works without installing.
 
-**Rust:**
+**CLI and language server, from crates.io:**
 
 ```sh
-cargo add surrealql-analyzer-rs        # the query! / surql! macros
-cargo binstall surrealql-analyzer      # the CLI, prebuilt; `cargo install surrealql-analyzer` builds it
+cargo binstall surrealql-analyzer      # prebuilt; `cargo install surrealql-analyzer` builds it
 cargo install surrealql-analyzer-lsp   # the language server
+```
+
+**The library:**
+
+```sh
+cargo add surrealql-analyzer-workspace surrealql-analyzer-diagnostics
 ```
 
 Prebuilt archives for both binaries, every supported target, are attached to each
@@ -360,17 +278,21 @@ surrealql-analyzer/
 │   ├── tree-sitter-surrealql/ # the vendored SurrealQL grammar
 │   ├── diagnostics/           # finding types, code catalog, severity/lint policy
 │   ├── workspace/             # schema index, analyzers, inference, analysis pipeline
-│   ├── codegen/               # Kind → TypeScript generation
 │   ├── embed/                 # embedded-SurrealQL extraction from host files
-│   ├── macros/                # the surql! / query! proc-macros
-│   ├── rs/                    # surrealql-analyzer-rs runtime (typed results)
+│   ├── codegen/               # Kind → TypeScript generation (dormant; see below)
 │   ├── cli/                   # the `surrealql-analyzer` binary
 │   ├── lsp/                   # the `surrealql-analyzer-lsp` binary
 │   └── wasm/                  # the browser-playground analyzer build
-├── packages/          # @surrealdb/analyzer-{client,query,next,svelte} (pnpm workspace)
-├── examples/          # runnable vanilla-TS and SvelteKit projects
+├── web/               # the static site, incl. the generated diagnostics catalogue
+├── npm/               # the `surrealql-analyzer` npx launcher
 └── docs/              # DESIGN.md + design plans (incl. the diagnostic catalog)
 ```
+
+`crates/codegen` is dormant. It renders a `surrealdb_types::Kind` as a
+TypeScript type, which is the half of typed-client generation that belongs to
+the analyzer; the module it currently emits augments a client package that no
+longer lives here, so nothing drives it and the CLI has no `generate` verb. It
+is kept as the seed of the redesign rather than rewritten speculatively.
 
 The grammar is vendored in-repo at `crates/tree-sitter-surrealql`, copied
 verbatim from the official
@@ -379,10 +301,11 @@ verbatim from the official
 
 ## Contributing
 
-`cargo test --workspace` runs the Rust suite; `cargo clippy --workspace
---all-targets` with `RUSTFLAGS="-D warnings"` is the CI gate. For the TypeScript
-packages: `pnpm -r run build && pnpm -r run typecheck && pnpm -r --if-present run
-test`. [`AGENTS.md`](AGENTS.md) documents the precision harnesses (snapshot,
+`cargo test --workspace` runs the suite; `cargo clippy --workspace
+--all-targets` with `RUSTFLAGS="-D warnings"` is the CI gate; `cargo fmt --all`
+formats. The one Node step is the published diagnostics catalogue, regenerated
+from `crates/diagnostics/src/catalog.rs` with `pnpm docs:diagnostics` and gated
+in CI. [`AGENTS.md`](AGENTS.md) documents the precision harnesses (snapshot,
 `any` ratchet, real-binary LSP tests) that guard against silent regressions, and
 [`docs/DESIGN.md`](docs/DESIGN.md) covers architecture and roadmap.
 

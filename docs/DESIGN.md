@@ -165,32 +165,30 @@ Future LSP features should only be added when the shared analysis output exposes
 
 ## Editor surfaces
 
-There are two, and they answer from the same analysis.
+There is one here, and anything else must answer from the same analysis.
 
-`surrealql-analyzer-lsp` is the general one: it speaks LSP over stdio and serves
-`.surql` files and every host language the extractor knows.
+`surrealql-analyzer-lsp` is the one this repository ships: it speaks LSP over
+stdio and serves `.surql` files and every host language the extractor knows.
 
-`@surrealdb/analyzer-ts-plugin` is the TypeScript-specific one: a language service
-plugin that proxies `getSemanticDiagnostics`,
-`getEncodedSemanticClassifications` and `getQuickInfoAtPosition`. It exists
-because a second language server *competes* with TypeScript for the byte ranges
-inside a query string — both classify them, and the editor resolves that
-differently on every keystroke, which reads as flicker. A plugin's answers are
-TypeScript's answers, so there is nothing to merge.
-
-Two rules keep them from drifting:
+A TypeScript language-service plugin used to be the second, and the reasoning
+behind it is worth keeping even though the plugin itself has moved out with the
+client packages: a second language server *competes* with TypeScript for the
+byte ranges inside a query string — both classify them, and the editor resolves
+that differently on every keystroke, which reads as flicker. A plugin's answers
+are TypeScript's answers, so there is nothing to merge. Whatever replaces it
+must still hold the two rules that kept it from drifting from the LSP:
 
 - **The classification is shared code.** `surrealql_analyzer_syntax::highlight` says
-  what a byte is; the LSP encodes that as semantic tokens and the plugin
-  encodes it as TypeScript classifications. Neither owns the vocabulary.
-- **The analysis is shared code.** The plugin runs the `wasm32-wasip1` build of
-  the workspace and calls one export (`sg_host`) that does extraction, analysis
-  and span mapping in Rust. Nothing about what a query *means* is reimplemented
-  in TypeScript — only the marshalling and the editor's own conventions
-  (UTF-16 offsets, diagnostic codes) live there.
+  what a byte is; a surface encodes that as semantic tokens or as TypeScript
+  classifications. Neither owns the vocabulary.
+- **The analysis is shared code.** The plugin ran the `wasm32-wasip1` build of
+  the workspace and called one export (`sg_host`) that does extraction,
+  analysis and span mapping in Rust. Nothing about what a query *means* was
+  reimplemented in TypeScript — only the marshalling and the editor's own
+  conventions (UTF-16 offsets, diagnostic codes).
 
-The plugin does not load in `tsc`, by TypeScript's design. That is the right
-split rather than a limitation: CI runs `surrealql-analyzer check`, which sees the
+Neither surface loads in `tsc`, by TypeScript's design. That is the right split
+rather than a limitation: CI runs `surrealql-analyzer check`, which sees the
 whole workspace at once.
 
 ## Embedded-source model

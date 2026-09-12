@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+### Removed — the client SDKs leave; this is the analyzer
+
+This repository is now one binary, one language server and one Rust library.
+Everything whose job was to *run* a query rather than analyze one has been
+removed and will live in a client library.
+
+- **`packages/`** — the five TypeScript packages
+  (`@surrealdb/analyzer-{client,query,next,svelte}` and the TypeScript
+  language-service plugin). The published npm packages are unaffected; their
+  source is no longer here.
+- **`crates/rs` and `crates/macros`** — the `query!` / `surql!` compile-time
+  macros and their runtime.
+- **`examples/`** — the vanilla-TS and SvelteKit demos, which existed to
+  exercise the SDKs.
+
+**`surrealql-analyzer generate` is gone with them**, and so is `watch`'s
+regenerate half (`watch` is now an alias for `check --watch`; `--out` and
+`--check-only` no longer exist). The module it wrote ends in
+`declare module "@surrealdb/analyzer-client"`, and that package is no longer
+built or type-checked here — the golden test that proved the emitted module
+compiles compiled it *as part of that package*. Rather than ship an emitter
+this repository can no longer verify, aimed at a package it no longer owns,
+the verb is withdrawn until typegen is redesigned against the new client.
+`crates/codegen` itself is kept, dormant, as the seed of that redesign.
+
+`cargo test --workspace` also stops being toolchain-sensitive. `crates/rs`
+carried a `trybuild` snapshot whose expected output differs between stable
+rustc releases, and because the test runner is fail-fast across targets, a
+compile failure there aborted the whole suite before the real tests ran.
+
+### Changed — the public surface is a decision, not an accident
+
+No behaviour changed. What changed is what a linking consumer can see.
+
+- **`surrealql-analyzer-workspace`** documents its entry points at the crate
+  root — build a `Workspace`, register schema sources before query sources,
+  `analyze_workspace`, read the per-source `AnalysisOutput` — and re-exports
+  the ones that were only reachable through a module path: `WorkspaceConfig`,
+  the incremental re-analysis API (`analyze_one_source`, `changed_symbols`,
+  `reanalyze_sources`, …), `ValueDomain`, and the `_parsed` / `_lowered`
+  variants of the query helpers the LSP calls.
+- **`analyzer::*` is internal.** It was `pub`, which made roughly five hundred
+  modules of engine internals part of the published API. Only
+  `analyzer::contract::Position` — the enumeration of every checked position —
+  stays public. `lattice`, `context_params` and `statement_env` are internal
+  too.
+- **`surrealql-analyzer-diagnostics`** keeps `catalog` public and makes
+  `code`, `finding`, `policy` and `suppression` private modules behind the
+  root re-exports every consumer already used.
+- **`surrealql-analyzer-embed`** exports `extract` and the query type; which
+  grammar ran is no longer part of the contract.
+- A handful of genuinely dead items went with the audit:
+  `AnalysisContext::emit_error`, three `StatementEnv` accessors superseded by
+  `editor_facts`/`params`, `parse_optional_suppression_directive`, and
+  codegen's orphaned `subs_tuple`.
+
+### Changed — CI's JS job says what it does
+
+The `js packages · build · typecheck · test` job ran `pnpm -r` over
+`packages/`. With those gone the recursive run has no scripts to execute, and
+`--if-present` would have made it pass while doing nothing. The job is now
+`diagnostics page · in sync with the catalog` and runs exactly that check —
+with no pnpm step, because the generator imports only `node:` builtins.
+
 ### Fixed — three places the grammar accepted syntax the engine does not
 
 Each was established against a live SurrealDB 3.2.3 and against the version
