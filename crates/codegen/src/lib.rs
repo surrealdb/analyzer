@@ -1,6 +1,15 @@
 //! TypeScript generation from analysis results.
 //!
-//! Two layers: [`ts_type`] renders one `surrealdb_types::Kind` as a
+//! Three layers. [`TypesDocument`] (`document`) is the language-neutral
+//! description of a project's types — tables, functions, globals, and one
+//! entry per analyzed query — built from the schema index and the analysis
+//! output and serializable as it stands. It is the middle on purpose: an
+//! emitter that read the analysis directly would be the only place its facts
+//! existed, and the next language — Rust's `query!` wants named structs,
+//! Python's `.into()` wants dataclasses — would re-derive the same facts from
+//! the same analysis, and the two derivations would drift.
+//!
+//! Above it, [`ts_type`] renders one `surrealdb_types::Kind` as a
 //! TypeScript type *for a named position* ([`TsContext`]), and
 //! [`render_registry`] emits the generated `.d.ts`
 //! — a literal-keyed registry mapping each embedded query to its result
@@ -37,8 +46,13 @@
 use surrealdb_types::{Kind, KindLiteral};
 use surrealql_analyzer_workspace::analysis::{ParamInference, ValueDomain};
 
+pub mod document;
 mod registry;
 
+pub use document::{
+    FieldStep, FieldTypes, FunctionTypes, ParamTypes, QueryTypes, RelationTypes, Source,
+    TableTypes, TypesDocument,
+};
 pub use registry::{render_registry, response_tuple, QueryEntry};
 
 /// Where the rendered text is going to sit in a TypeScript type.

@@ -4107,6 +4107,8 @@ name = "surrealql-analyzer-codegen"
 version = "0.5.3"
 dependencies = [
  "glob",
+ "serde",
+ "serde_json",
  "surrealdb-types",
  "surrealql-analyzer-diagnostics",
  "surrealql-analyzer-embed",
