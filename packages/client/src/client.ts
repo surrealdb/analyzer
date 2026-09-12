@@ -94,20 +94,24 @@ export interface CreateClientOptions extends ConnectOptions, DriverOptions {
 }
 
 /**
- * The typed client, parameterised by the registry `surrealkit generate`
- * emitted.
+ * The half of the client that knows nothing about any registry: the session,
+ * and everything keyed by a query **value** rather than by text.
  *
- * `Registry` defaults to the global {@link SurqlRegistry}, so a client built
- * without a type argument behaves exactly as it did before the parameter
- * existed — typed if the project augments the global, `unknown` if it does
- * not. Every registry-driven member (`query`, `defineQuery`, `defineLive`)
- * reads this one parameter; everything else on the client is value-keyed and
- * registry-free, which is why `run`, `watch` and `preload` take a query value
- * and never a text.
+ * This is the type every adapter takes. It has to be a separate interface
+ * rather than "`SurrealQLAnalyzerClient` with the default argument", because
+ * the registry-driven members differ in their RETURN types between two
+ * instantiations — `defineQuery` answers `DefinedQuery<Q, Queries>` on one and
+ * `DefinedQuery<Q, GlobalRegistry>` on the other — and return positions are
+ * covariant no matter how bivariant methods are. So
+ * `SurrealQLAnalyzerClient<Queries>` is NOT assignable to
+ * `SurrealQLAnalyzerClient<GlobalRegistry>`, and a `preload(db, q)` or
+ * `setClient(db)` typed on the latter would reject every parameterised client
+ * with an error about a type nobody in that call mentioned.
+ *
+ * Nothing here reads a registry, so nothing here has that problem: a client
+ * built with any type argument at all is a `ClientCore`.
  */
-export interface SurrealQLAnalyzerClient<
-  Registry extends SurqlRegistryShape = GlobalRegistry,
-> {
+export interface ClientCore {
   /**
    * The underlying SDK instance — the escape hatch. Anything the SDK can do and
    * this client does not, do here: `db.surreal.export()`, or
@@ -181,6 +185,31 @@ export interface SurrealQLAnalyzerClient<
    */
   onInvalidate(listener: InvalidationListener): () => void;
 
+  /**
+   * Run a text that is not known until runtime — the registry-free form, and
+   * the one an adapter that stores a query's text and replays it needs. It
+   * resolves to `unknown[]`, never `any`: nothing is known about the text, so
+   * nothing is claimed about the result.
+   *
+   * Prefer `db.query("…")` for a literal. This exists because a *stored* text
+   * cannot be looked up in a registry at all, and reaching for `db.surreal`
+   * instead would lose the readiness wait and the error context.
+   */
+  queryUnchecked(text: string, bindings?: Record<string, unknown>): Promise<unknown[]>;
+}
+
+/**
+ * The typed client: {@link ClientCore} plus everything keyed by query TEXT,
+ * parameterised by the registry `surrealkit generate` emitted.
+ *
+ * `Registry` defaults to the global {@link SurqlRegistry}, so a client built
+ * without a type argument behaves exactly as it did before the parameter
+ * existed — typed if the project augments the global, `unknown` if it does
+ * not.
+ */
+export interface SurrealQLAnalyzerClient<
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> extends ClientCore {
   /**
    * The literal form: it resolves the per-statement tuple from this client's
    * `Registry` and requires params exactly when the query reads them, and a
@@ -348,6 +377,10 @@ class GuardClient implements SurrealQLAnalyzerClient {
 
   async query(text: string, bindings?: Record<string, unknown>): Promise<never> {
     return (await this.#execute(text, bindings)) as never;
+  }
+
+  queryUnchecked(text: string, bindings?: Record<string, unknown>): Promise<unknown[]> {
+    return this.#execute(text, bindings);
   }
 
   // Arrow properties, not methods: `const { defineQuery } = db` is the

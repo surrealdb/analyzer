@@ -35,7 +35,7 @@ import {
   type Rows,
   type SurqlLive,
   type SurqlQuery,
-  type SurrealQLAnalyzerClient,
+  type ClientCore,
 } from "@surrealdb/analyzer-client";
 import { getQueryClient, type Observable, type QueryState } from "@surrealdb/analyzer-query";
 import { useClient } from "./context.js";
@@ -46,7 +46,7 @@ export type Skip = "skip";
 
 export interface UseQueryOptions {
   /** Override the context client (tests, multiple connections). */
-  client?: SurrealQLAnalyzerClient;
+  client?: ClientCore;
 }
 
 export interface QueryResult<T> {
@@ -68,7 +68,7 @@ const NOOP = () => () => {};
 
 /** Shared plumbing: memoise on the key, then `useSyncExternalStore`. */
 function useObservedState(
-  client: SurrealQLAnalyzerClient,
+  client: ClientCore,
   source: SurqlQuery<unknown, Bound> | SurqlLive<unknown, Bound> | Preloaded<unknown> | Skip,
   live: boolean,
 ): QueryState<unknown> {
@@ -136,7 +136,7 @@ export function useLive<Row>(
 }
 
 export interface UseMutationOptions<R> {
-  client?: SurrealQLAnalyzerClient;
+  client?: ClientCore;
   /**
    * Queries this write makes stale. Deliberately untyped as {@link AnyQuery}:
    * an invalidation target has no reason to agree with the mutation's own

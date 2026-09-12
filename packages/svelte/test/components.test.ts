@@ -11,7 +11,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { flushSync } from "svelte";
 import { render, screen } from "@testing-library/svelte";
-import { preload, type SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import { preload, type ClientCore } from "@surrealdb/analyzer-client";
 import { RecordId, type LiveMessage } from "surrealdb";
 import Pair from "./Pair.svelte";
 import QueryStates from "./QueryStates.svelte";
@@ -20,7 +20,7 @@ import { liveUsers } from "./queries.js";
 
 const CLIENT_KEY = Symbol.for("@surrealdb/analyzer-svelte:client");
 const isLive = (sql: string) => /^\s*live\b/i.test(sql);
-const context = (client: SurrealQLAnalyzerClient) => new Map([[CLIENT_KEY, client]]);
+const context = (client: ClientCore) => new Map([[CLIENT_KEY, client]]);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 interface Row {
@@ -66,10 +66,13 @@ function makeClient(rows: Row[] = []) {
 
   const client = {
     query,
+    // The reactive core replays a STORED text, so it calls the registry-free
+    // `queryUnchecked`; the real client has both, so the mock does too.
+    queryUnchecked: query,
     surreal: { query, liveOf },
     onInvalidate: () => () => {},
     runLiveOnce: async () => rows,
-  } as unknown as SurrealQLAnalyzerClient;
+  } as unknown as ClientCore;
 
   /** The live id opened for a given `$name`, or undefined if none was. */
   const idFor = (name: string) =>
@@ -107,14 +110,14 @@ describe("<Query>", () => {
   it("renders the `error` snippet, and its retry refetches", async () => {
     let attempt = 0;
     const client = {
-      query: vi.fn(async () => {
+      queryUnchecked: vi.fn(async () => {
         attempt += 1;
         if (attempt === 1) throw new Error("connection refused");
         return [users("ada")];
       }),
       surreal: {},
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
 
     render(QueryStates, { context: context(client) });
     await flush();
@@ -137,12 +140,12 @@ describe("<Query>", () => {
     // page that is broken and silent; throwing puts the failure where a
     // `<svelte:boundary>` (or SvelteKit's error page) can see it.
     const client = {
-      query: vi.fn(async () => {
+      queryUnchecked: vi.fn(async () => {
         throw new Error("connection refused");
       }),
       surreal: {},
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
 
     render(QueryStates, { props: { handleError: false }, context: context(client) });
     await flush();

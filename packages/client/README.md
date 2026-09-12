@@ -283,6 +283,8 @@ try {
 ```ts
 db.surreal                                   // the raw SDK instance
 db.surreal.query(surql`SELECT * FROM ${t}`)  // fully dynamic, SDK-typed
+db.queryUnchecked(text, bindings)            // a stored text: `unknown[]`, with
+                                             // readiness and error context kept
 defineQuery.unchecked("SELECT " + table)     // a query no registry could hold
                                              // (the free export: no registry)
 fromSurreal(existingSurreal)                 // wrap a connection you already own
@@ -346,6 +348,27 @@ only while its target resolves, and when the generated file carried it, an
 uninstalled `@surrealdb/analyzer-client` meant TypeScript reported the failure
 *inside a file you never open* and dropped every entry — silently. Written by
 hand, a broken import is an error you can see, on a line you wrote.
+
+### `ClientCore`: what an adapter takes
+
+`preload`, `setClient` / `useClient`, `getQueryClient`,
+`SurrealQLAnalyzerProvider` and every adapter hook take **`ClientCore`**, not
+`SurrealQLAnalyzerClient`. `ClientCore` is the session plus everything keyed by
+a query *value* — `run`, `runJson`, `runLiveOnce`, `watch`, `invalidate`,
+`onInvalidate`, `surreal`, `queryUnchecked` — and no registry appears in any of
+its signatures. Your `createClient<Queries>(…)` client is one, and so is a
+client built without a type argument, so nothing in your code has to say which.
+
+The split is load-bearing rather than tidy. `SurrealQLAnalyzerClient<Queries>`
+is **not** assignable to `SurrealQLAnalyzerClient` with its default argument:
+`defineQuery` and `defineLive` answer `DefinedQuery<Q, Queries>` on one and
+`DefinedQuery<Q, GlobalRegistry>` on the other, and a return position is
+covariant however bivariant a method is. An adapter typed on the full client
+would reject every parameterised client with an error mentioning a type the
+caller never wrote.
+
+If you write your own helper that takes a client and never looks a text up,
+take `ClientCore` for the same reason.
 
 ### Why compose the SDK instead of extending it
 

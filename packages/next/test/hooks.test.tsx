@@ -6,7 +6,7 @@ import {
   type Json,
   type Preloaded,
   type RecordId as RecordIdType,
-  type SurrealQLAnalyzerClient,
+  type ClientCore,
 } from "@surrealdb/analyzer-client";
 import { RecordId, type LiveMessage } from "surrealdb";
 import { SurrealQLAnalyzerProvider, useLive } from "../src/index.js";
@@ -44,11 +44,14 @@ function makeClient(rows: Array<Record<string, unknown>> = []) {
   }));
   const query = vi.fn(async (sql: string) => (isLive(sql) ? ["live-1"] : [rows]));
   const client = {
+    // The reactive core replays a STORED text, so it calls the registry-free
+    // `queryUnchecked`; the real client has both, so the mock does too.
     query,
+    queryUnchecked: query,
     surreal: { query, liveOf },
     onInvalidate: () => () => {},
     runLiveOnce: async () => rows,
-  } as unknown as SurrealQLAnalyzerClient;
+  } as unknown as ClientCore;
   return { client, query, emit: (m: LiveMessage) => handler?.(m) };
 }
 
@@ -85,7 +88,7 @@ function Users({ preloaded }: { preloaded?: Preloaded<Row[]> }) {
   );
 }
 
-const withClient = (client: SurrealQLAnalyzerClient, node: React.ReactNode) => (
+const withClient = (client: ClientCore, node: React.ReactNode) => (
   <SurrealQLAnalyzerProvider client={client}>{node}</SurrealQLAnalyzerProvider>
 );
 
@@ -128,12 +131,12 @@ describe("useLive", () => {
 
   it("surfaces an error with its message", async () => {
     const client = {
-      query: async () => {
+      queryUnchecked: async () => {
         throw new Error("connection refused");
       },
       surreal: {},
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
 
     render(withClient(client, <Users />));
     await flush();

@@ -25,13 +25,13 @@ import {
   type ParamsArg,
   type Rows,
   type SurqlQuery,
-  type SurrealQLAnalyzerClient,
+  type ClientCore,
 } from "@surrealdb/analyzer-client";
 import { getQueryClient } from "@surrealdb/analyzer-query";
 import { useClient } from "./context.js";
 
 export interface MutationOptions<R> {
-  client?: SurrealQLAnalyzerClient;
+  client?: ClientCore;
   /**
    * Queries this write makes stale. Deliberately untyped as {@link AnyQuery}:
    * an invalidation target has no reason to agree with the mutation's own

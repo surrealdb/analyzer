@@ -52,9 +52,29 @@ error where its author can see it.
 `createClient`, `fromSurreal`, `SurrealQLAnalyzerClient`, `ArgsOf`,
 `QueryResultOf`, `ResultOf`, `ParamsOf`, `DefinedQuery` and `DefinedLive` all
 take the registry as a type parameter defaulting to that global, so code
-written against the old shape keeps compiling. `@surrealdb/analyzer-query`,
-`-next` and `-svelte` are unchanged — they are typed on query *values*, not on
-text.
+written against the old shape keeps compiling.
+
+### Added — `ClientCore`, the half of the client no registry touches
+
+`preload`, `setClient`/`useClient`, `getQueryClient`, `SurrealQLAnalyzerProvider`
+and every adapter hook now take **`ClientCore`**: the session, plus everything
+keyed by a query *value* — `run`, `runJson`, `runLiveOnce`, `watch`,
+`invalidate`, `onInvalidate`, `surreal`, and the new registry-free
+`queryUnchecked(text, bindings)` for a text captured at runtime.
+
+It is not cosmetic, and the reasoning is worth keeping: a parameterised client
+is **not** assignable to the defaulted one. `defineQuery` and `defineLive`
+differ in their RETURN types between two instantiations
+(`DefinedQuery<Q, Queries>` vs `DefinedQuery<Q, GlobalRegistry>`), and a return
+position is covariant however bivariant a method is — so an adapter typed on
+`SurrealQLAnalyzerClient` would reject every `createClient<Queries>` with an
+error naming a type the caller never wrote. Splitting the registry-free half
+out removes the question entirely: a client built with any type argument at
+all is a `ClientCore`.
+
+Pinned in `packages/client/test-d/core/`, which is its own tsc program on
+purpose — an augmentation is program-wide, and a non-empty global registry
+makes the two instantiations relate again and hides the bug.
 
 ### Added — the analyzer describes a project's types as data
 

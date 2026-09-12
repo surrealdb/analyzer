@@ -40,7 +40,7 @@ import {
   type Rows,
   type SurqlLive,
   type SurqlQuery,
-  type SurrealQLAnalyzerClient,
+  type ClientCore,
   type SurrealQLAnalyzerError,
 } from "@surrealdb/analyzer-client";
 import { getQueryClient, type Observable, type QueryState } from "@surrealdb/analyzer-query";
@@ -68,7 +68,7 @@ export interface LiveHandle<Row> {
 
 export interface CreateOptions<T> {
   /** Override the context client (tests, a second connection). */
-  client?: SurrealQLAnalyzerClient;
+  client?: ClientCore;
   /** Seed data for a gap-free first render. `preload` supplies this for you. */
   initial?: T;
 }
@@ -132,7 +132,7 @@ interface View {
  * whose teardown fires as soon as nothing reads it.
  */
 function makeView(
-  client: SurrealQLAnalyzerClient,
+  client: ClientCore,
   query: SurqlQuery<unknown, Bound> | SurqlLive<unknown, Bound>,
   initial: unknown,
   live: boolean,

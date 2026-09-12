@@ -46,6 +46,7 @@ export {
   createClient,
   fromSurreal,
   type ArgsOf,
+  type ClientCore,
   type CreateClientOptions,
   type InvalidationListener,
   type QueryResultOf,

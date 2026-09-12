@@ -40,7 +40,7 @@
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean --external surrealdb",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test-d/core/tsconfig.json",
     "test": "vitest run"
   }
 }
