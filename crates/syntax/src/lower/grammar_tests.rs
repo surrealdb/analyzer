@@ -1088,3 +1088,41 @@ fn a_patch_payload_is_any_expression() {
     };
     assert!(matches!(payload.node, Expr::Object(_)));
 }
+
+// ---- engine parity: LIMIT / START / TIMEOUT take an expression ----
+
+#[test]
+fn a_row_count_or_timeout_clause_takes_any_expression() {
+    // Every one of these parses on 3.2.3; the first two run, and the last
+    // three fail at run time with the errors 2018 and 2019 quote.
+    parses(&[
+        "SELECT * FROM t LIMIT 1 + 1;",
+        "SELECT * FROM t TIMEOUT 1s + 1s;",
+        "SELECT * FROM t LIMIT '5';",
+        "SELECT * FROM t START '1';",
+        "SELECT * FROM t TIMEOUT 5;",
+    ]);
+    let stmt = select("SELECT * FROM t LIMIT '5' START 1 + 1 TIMEOUT 5;");
+    assert_eq!(
+        stmt.limit.expect("a LIMIT").node,
+        Expr::Literal(Literal::String("5".into()))
+    );
+    assert!(matches!(
+        stmt.start.expect("a START").node,
+        Expr::Binary { .. }
+    ));
+    assert_eq!(
+        stmt.timeout.expect("a TIMEOUT").node,
+        Expr::Literal(Literal::Int(5))
+    );
+    // The spellings that always parsed still lower the same way.
+    let stmt = select("SELECT * FROM t LIMIT 5 START 10 TIMEOUT 1s;");
+    assert_eq!(
+        stmt.limit.expect("a LIMIT").node,
+        Expr::Literal(Literal::Int(5))
+    );
+    assert_eq!(
+        stmt.timeout.expect("a TIMEOUT").node,
+        Expr::Literal(Literal::Duration("1s".into()))
+    );
+}

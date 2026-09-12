@@ -1518,13 +1518,21 @@ export default grammar({
 			seq(
 				alias($._kw_start, $.Keyword),
 				optional(alias($._kw_at, $.Keyword)),
-				choice($.Number, $.VariableName),
+				$._value,
 			),
+		// LIMIT and START take an expression, not a literal or a param:
+		// 3.2.3 runs `LIMIT 1 + 1` and `LIMIT (SELECT VALUE 1 FROM t)[0]`,
+		// and answers `LIMIT '5'` with `LIMIT/START must be an integer, got
+		// String("5")` — a *run-time* error, which is the proof that it
+		// parsed. Narrowing the rule to `Number | VariableName` made that
+		// query a syntax error here, so 2018 (which already owns the
+		// contract, and reports it when the value arrives through a `LET`)
+		// could never fire on the literal spelling.
 		LimitClause: ($) =>
 			seq(
 				alias($._kw_limit, $.Keyword),
 				optional(alias($._kw_by, $.Keyword)),
-				choice($.Number, $.VariableName),
+				$._value,
 			),
 
 		// FETCH takes a filtered idiom (`FETCH a[WHERE …]`) where SPLIT, GROUP
@@ -1573,7 +1581,11 @@ export default grammar({
 				),
 				']',
 			),
-		TimeoutClause: ($) => seq(alias($._kw_timeout, $.Keyword), $.Duration),
+		// As LIMIT/START: an expression, not a duration literal. 3.2.3 runs
+		// `TIMEOUT $d` and `TIMEOUT 1s + 1s`, and answers `TIMEOUT 5` with
+		// `Invalid timeout value` when it executes — so 2019 is the one that
+		// should be speaking, not the parser.
+		TimeoutClause: ($) => seq(alias($._kw_timeout, $.Keyword), $._value),
 		ParallelClause: ($) => alias($._kw_parallel, $.Keyword),
 		TempfilesClause: ($) => alias($._kw_tempfiles, $.Keyword),
 		ExplainClause: ($) =>

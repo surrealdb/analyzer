@@ -6436,17 +6436,8 @@
           ]
         },
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "Number"
-            },
-            {
-              "type": "SYMBOL",
-              "name": "VariableName"
-            }
-          ]
+          "type": "SYMBOL",
+          "name": "_value"
         }
       ]
     },
@@ -6480,17 +6471,8 @@
           ]
         },
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "Number"
-            },
-            {
-              "type": "SYMBOL",
-              "name": "VariableName"
-            }
-          ]
+          "type": "SYMBOL",
+          "name": "_value"
         }
       ]
     },
@@ -8405,7 +8387,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "Duration"
+          "name": "_value"
         }
       ]
     },

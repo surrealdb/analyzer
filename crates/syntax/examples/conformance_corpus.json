@@ -327,5 +327,10 @@
  "UPDATE user:1 SET tags[$] = 'z';",
  "UPDATE user:1 SET tags[WHERE $this = 'a'] = 'z';",
  "UPDATE user:1 PATCH { op: 'replace', path: '/age', value: 1 };",
- "UPDATE user:1 PATCH $ops;"
+ "UPDATE user:1 PATCH $ops;",
+ "SELECT * FROM person LIMIT '5';",
+ "SELECT * FROM person LIMIT 1 + 1;",
+ "SELECT * FROM person START $n;",
+ "SELECT * FROM person TIMEOUT 5;",
+ "SELECT * FROM person TIMEOUT 1s + 1s;"
 ]

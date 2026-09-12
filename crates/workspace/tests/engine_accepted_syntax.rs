@@ -162,3 +162,46 @@ fn a_patch_payload_is_any_expression_and_2033_judges_it() {
         "PATCH takes an array of operations, but this is a `string`"
     );
 }
+
+/// `LIMIT`, `START` and `TIMEOUT` took a literal or a param in the grammar,
+/// so the one spelling each contract exists to catch was a syntax error
+/// instead: 3.2.3 *parses* `LIMIT '5'` and `TIMEOUT 5` and fails when it runs
+/// them — "LIMIT/START must be an integer, got String(\"5\")" and "Invalid
+/// timeout value". 2018 and 2019 already owned both contracts and already
+/// reported them when the bad value arrived through a `LET`; only the literal
+/// path degraded to `S0001`.
+#[test]
+fn a_literal_limit_or_timeout_reaches_2018_and_2019() {
+    assert_eq!(
+        only("SELECT name FROM person LIMIT '5';", "E2018").message(),
+        "LIMIT needs an integer, but this is a `string`"
+    );
+    assert_eq!(
+        only("SELECT name FROM person START '1';", "E2018").message(),
+        "START needs an integer, but this is a `string`"
+    );
+    assert_eq!(
+        only("SELECT name FROM person TIMEOUT 5;", "E2019").message(),
+        "TIMEOUT needs a duration, but this is a `int`"
+    );
+    // The expression spellings the engine runs stay clean. (3.2.3 returns
+    // rows for both `LIMIT 1 + 1` and `TIMEOUT 1s + 1s`.)
+    for query in [
+        "SELECT name FROM person LIMIT 1 + 1;",
+        "SELECT name FROM person TIMEOUT 1s;",
+        "SELECT name FROM person LIMIT $n;",
+    ] {
+        let found = findings(query);
+        support::assert_no_syntax_findings(&found);
+        assert!(
+            !found
+                .iter()
+                .any(|finding| matches!(finding.code().number(), 2018 | 2019)),
+            "`{query}` should be clean; got {:?}",
+            found
+                .iter()
+                .map(|finding| finding.code().to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+}
