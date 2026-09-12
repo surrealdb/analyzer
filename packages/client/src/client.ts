@@ -3,13 +3,16 @@
  *
  * ```ts
  * // src/lib/db.ts
- * import { createClient } from "./surrealql-analyzer.generated";
+ * import { createClient } from "@surrealdb/analyzer-client";
+ * import type { Queries } from "./surrealql-analyzer";   // generated, types only
  *
- * export const db = createClient({
+ * export const db = createClient<Queries>({
  *   url: "ws://localhost:8000/rpc",
  *   namespace: "app",
  *   database: "app",
  * });   // connects lazily; run/watch/query await readiness
+ *
+ * export const { defineQuery, defineLive } = db;   // bound to Queries
  * ```
  * ```ts
  * const people = await db.run(allPeople);            // no destructure
@@ -38,8 +41,22 @@ import type {
 } from "surrealdb";
 import { SurrealQLAnalyzerError } from "./error.js";
 import { openLive, reconcile, type ReconcilableRow } from "./live.js";
-import type { AnyQuery, Rows, SurqlLive, SurqlQuery } from "./query.js";
-import type { Bound, Json, ParamsArg, SurqlRegistry } from "./registry.js";
+import { makeLive, makeQuery } from "./query.js";
+import type {
+  AnyQuery,
+  DefinedLive,
+  DefinedQuery,
+  Rows,
+  SurqlLive,
+  SurqlQuery,
+} from "./query.js";
+import type {
+  Bound,
+  GlobalRegistry,
+  Json,
+  ParamsArg,
+  SurqlRegistryShape,
+} from "./registry.js";
 
 /**
  * The parameters argument for a `db.query(...)` text: required exactly when the
@@ -48,8 +65,11 @@ import type { Bound, Json, ParamsArg, SurqlRegistry } from "./registry.js";
  * purpose — a second permissive overload would let a registered query silently
  * skip its required params, so there is none.
  */
-export type ArgsOf<Q extends string> = Q extends keyof SurqlRegistry
-  ? ParamsArg<SurqlRegistry[Q]["params"]>
+export type ArgsOf<
+  Q extends string,
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> = Q extends keyof Registry
+  ? ParamsArg<Registry[Q]["params"]>
   : [bindings?: Record<string, unknown>];
 
 /**
@@ -60,9 +80,10 @@ export type ArgsOf<Q extends string> = Q extends keyof SurqlRegistry
  * `db.run` unwraps a single-statement tuple; `db.query` never does. Both are
  * truthful, at different altitudes.
  */
-export type QueryResultOf<Q extends string> = Q extends keyof SurqlRegistry
-  ? SurqlRegistry[Q]["result"]
-  : unknown[];
+export type QueryResultOf<
+  Q extends string,
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> = Q extends keyof Registry ? Registry[Q]["result"] : unknown[];
 
 /** Something that wants to hear about `db.invalidate(...)`. */
 export type InvalidationListener = (queries: readonly AnyQuery[]) => void | Promise<void>;
@@ -72,7 +93,21 @@ export interface CreateClientOptions extends ConnectOptions, DriverOptions {
   url: string | URL;
 }
 
-export interface SurrealQLAnalyzerClient {
+/**
+ * The typed client, parameterised by the registry `surrealkit generate`
+ * emitted.
+ *
+ * `Registry` defaults to the global {@link SurqlRegistry}, so a client built
+ * without a type argument behaves exactly as it did before the parameter
+ * existed — typed if the project augments the global, `unknown` if it does
+ * not. Every registry-driven member (`query`, `defineQuery`, `defineLive`)
+ * reads this one parameter; everything else on the client is value-keyed and
+ * registry-free, which is why `run`, `watch` and `preload` take a query value
+ * and never a text.
+ */
+export interface SurrealQLAnalyzerClient<
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> {
   /**
    * The underlying SDK instance — the escape hatch. Anything the SDK can do and
    * this client does not, do here: `db.surreal.export()`, or
@@ -147,11 +182,35 @@ export interface SurrealQLAnalyzerClient {
   onInvalidate(listener: InvalidationListener): () => void;
 
   /**
-   * The literal form, unchanged: it resolves the per-statement tuple and
-   * requires params exactly when the query reads them, and a dynamic string
-   * degrades to `unknown[]` with optional bindings.
+   * The literal form: it resolves the per-statement tuple from this client's
+   * `Registry` and requires params exactly when the query reads them, and a
+   * text that is not in the registry degrades to `unknown[]` with optional
+   * bindings.
    */
-  query<Q extends string>(query: Q, ...args: ArgsOf<Q>): Promise<QueryResultOf<Q>>;
+  query<Q extends string>(
+    query: Q,
+    ...args: ArgsOf<Q, Registry>
+  ): Promise<QueryResultOf<Q, Registry>>;
+
+  /**
+   * Name a one-shot query against **this client's** registry — the same
+   * inference site as the free `defineQuery`, reading `Registry` instead of
+   * the global one, so a project that parameterises `createClient` needs no
+   * module augmentation at all.
+   *
+   * ```ts
+   * export const { defineQuery, defineLive } = db;
+   * export const allPeople = defineQuery("SELECT id, name FROM person");
+   * ```
+   *
+   * Destructuring is safe: these do not read `this`. For a genuinely dynamic
+   * query, the free `defineQuery.unchecked` is registry-independent and
+   * degrades to `unknown[]`.
+   */
+  defineQuery<Q extends string>(text: Q): DefinedQuery<Q, Registry>;
+
+  /** {@link SurrealQLAnalyzerClient.defineQuery}, for a live query. */
+  defineLive<Q extends string>(text: Q): DefinedLive<Q, Registry>;
 }
 
 class GuardClient implements SurrealQLAnalyzerClient {
@@ -290,6 +349,13 @@ class GuardClient implements SurrealQLAnalyzerClient {
   async query(text: string, bindings?: Record<string, unknown>): Promise<never> {
     return (await this.#execute(text, bindings)) as never;
   }
+
+  // Arrow properties, not methods: `const { defineQuery } = db` is the
+  // documented way to use these, and a destructured method would lose its
+  // receiver. Neither reads `this`, so the binding costs nothing but says so.
+  defineQuery = (text: string): never => makeQuery(text, undefined) as never;
+
+  defineLive = (text: string): never => makeLive(text, undefined) as never;
 }
 
 function mergeParams(
@@ -317,8 +383,15 @@ function unwrap(results: unknown[]): unknown {
  * `codecOptions.useNativeDates` defaults to `true`, which is what makes the
  * generated `Date` type true — without it the SDK decodes its own `DateTime`
  * class and `row.created.getTime()` typechecks and throws at runtime.
+ *
+ * Pass the generated `Queries` as the type argument — `createClient<Queries>(…)`
+ * — and every `db.query("…")`, `db.defineQuery("…")` and `db.defineLive("…")`
+ * on this client resolves through it. Without one, they resolve through the
+ * global {@link SurqlRegistry}, which is empty unless the project augments it.
  */
-export function createClient(options: CreateClientOptions): SurrealQLAnalyzerClient {
+export function createClient<Registry extends SurqlRegistryShape = GlobalRegistry>(
+  options: CreateClientOptions,
+): SurrealQLAnalyzerClient<Registry> {
   const { url, engines, codecs, codecOptions, websocketImpl, fetchImpl, ...connectOptions } =
     options;
   const surreal = new Surreal({
@@ -340,6 +413,8 @@ export function createClient(options: CreateClientOptions): SurrealQLAnalyzerCli
  * `Date` types will be a lie — that is the one thing `createClient` does for you
  * which cannot be recovered afterwards.
  */
-export function fromSurreal(surreal: Surreal): SurrealQLAnalyzerClient {
+export function fromSurreal<Registry extends SurqlRegistryShape = GlobalRegistry>(
+  surreal: Surreal,
+): SurrealQLAnalyzerClient<Registry> {
   return new GuardClient(surreal);
 }

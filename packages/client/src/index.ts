@@ -1,11 +1,12 @@
 /**
  * `@surrealdb/analyzer-client` — the typed SurrealQL client.
  *
- * The whole guarantee lives in one mechanism: `surrealkit generate` emits an
- * `interface SurqlRegistry` keyed by *exact query text*, and a single
- * conditional generic reads it. There is no permissive `string` overload
- * anywhere (a literal is also a `string`, so a fallback overload would rescue
- * every mis-call into `unknown`), and a miss degrades to `unknown`, never `any`.
+ * The whole guarantee lives in one mechanism: `surrealkit generate` emits a
+ * types-only `Queries` keyed by *exact query text*, the user hands it to
+ * `createClient<Queries>(…)`, and a single conditional generic reads it. There
+ * is no permissive `string` overload anywhere (a literal is also a `string`,
+ * so a fallback overload would rescue every mis-call into `unknown`), and a
+ * miss degrades to `unknown`, never `any`.
  */
 
 export {
@@ -15,6 +16,7 @@ export {
   Uuid,
   type Bound,
   type GeoJSON,
+  type GlobalRegistry,
   type Json,
   type ParamsArg,
   type ParamsOf,
@@ -23,6 +25,7 @@ export {
   type SurqlError,
   type SurqlQueryShape,
   type SurqlRegistry,
+  type SurqlRegistryShape,
 } from "./registry.js";
 
 export {

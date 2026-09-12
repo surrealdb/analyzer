@@ -17,8 +17,8 @@ cast, and nothing to wrap the string in. `person.nope` is a compile error;
 Three steps. Skip any one of them and you get `any` with no error, so none of
 them are optional — see [When everything is `any`](#when-everything-is-any).
 
-**1. Install.** `@surrealdb/analyzer-client` is a real runtime dependency *and* the
-module the generated file augments by name. `surrealdb` is its peer.
+**1. Install.** `@surrealdb/analyzer-client` is the runtime — the generated file
+has none — and `surrealdb` is its peer.
 
 ```sh
 npm install @surrealdb/analyzer-client surrealdb
@@ -47,42 +47,46 @@ DEFINE FIELD age  ON person TYPE int;
 DEFINE FIELD team ON person TYPE record<team>;
 ```
 
-**3. Generate — with `--out`.** Bare `generate` writes to the *workspace root*,
-which is almost never where your imports point. Pass the path that matches how
-you import it:
+**3. Generate — with `--out`.** The output is a **`.d.ts`**: types and nothing
+else. Bare `generate` writes to the *workspace root*, which is almost never
+where your imports point, so pass the path that matches how you import it:
 
-| Project | Command | Import as |
+| Project | Command | Import types from |
 | --- | --- | --- |
-| Vanilla TS | `surrealkit generate --out src/surrealql-analyzer.generated.ts` | `./surrealql-analyzer.generated` |
-| SvelteKit | `surrealkit generate --out src/lib/surrealql-analyzer.generated.ts` | `$lib/surrealql-analyzer.generated` |
-| Next (`src/`) | `surrealkit generate --out src/surrealql-analyzer.generated.ts` | `@/surrealql-analyzer.generated` |
-| Next (no `src/`) | `surrealkit generate --out surrealql-analyzer.generated.ts` | `@/surrealql-analyzer.generated` |
+| Vanilla TS | `surrealkit generate --out src/surrealql-analyzer.d.ts` | `./surrealql-analyzer` |
+| SvelteKit | `surrealkit generate --out src/lib/surrealql-analyzer.d.ts` | `$lib/surrealql-analyzer` |
+| Next (`src/`) | `surrealkit generate --out src/surrealql-analyzer.d.ts` | `@/surrealql-analyzer` |
+| Next (no `src/`) | `surrealkit generate --out surrealql-analyzer.d.ts` | `@/surrealql-analyzer` |
 
 Put it in `package.json` so it is one command and one path forever:
 
 ```json
-{ "scripts": { "generate": "surrealkit generate --out src/surrealql-analyzer.generated.ts" } }
+{ "scripts": { "generate": "surrealkit generate --out src/surrealql-analyzer.d.ts" } }
 ```
 
-Commit the generated module — it is what makes a fresh checkout type-check with
+Commit the generated file — it is what makes a fresh checkout type-check with
 no build step. Re-run it whenever the schema or a query changes.
 
 ## The client
 
 ```ts
 // src/db.ts
-import { createClient } from "./surrealql-analyzer.generated";
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "./surrealql-analyzer";   // generated: types only
 
-export const db = createClient({
+export const db = createClient<Queries>({
   url: "ws://localhost:8000/rpc",
   namespace: "app",
   database: "app",
 });
+
+export const { defineQuery, defineLive } = db;   // bound to Queries
 ```
 
-Import `createClient` **from the generated file**. That import is what loads the
-`declare module` augmentation; importing it from `@surrealdb/analyzer-client` directly
-compiles fine and gives you `unknown[]` forever.
+Those are the three lines. The runtime comes from the package, the types come
+from the generated file, and the type argument is the join — nothing is
+imported from the generated file at runtime, because there is nothing there at
+runtime.
 
 The connection opens **lazily**, on first use, so a module-level `db` is safe and
 no route has to remember to `await db.connect(...)`. Import it anywhere — a
@@ -131,7 +135,7 @@ is a value:
 
 ```ts
 // src/queries.ts — the one place these texts live
-import { defineQuery, defineLive } from "./surrealql-analyzer.generated";
+import { defineQuery, defineLive } from "./db";   // destructured off the client
 
 export const allPeople    = defineQuery("SELECT id, name, age, team FROM person");
 export const peopleOf     = defineQuery("SELECT id, name FROM person WHERE team = $team");
@@ -180,20 +184,22 @@ That also catches the case nobody recognises as an edit: reformatting a query
 changes its text, so it changes its key. `defineQuery.unchecked("…")` opts out
 and degrades to `unknown[]`.
 
-## When everything is `any`
+## When everything is `unknown` (or `any`)
 
 A type generator that silently produces `any` is worse than no type generator.
-There are exactly four ways to get there, and all four are silent on *your*
-code. If a result is `any`, it is one of these:
+The worst way to get there is gone — the generated file no longer augments
+anything, so it can no longer be *silently dropped* — but four quiet failures
+remain:
 
-1. **`@surrealdb/analyzer-client` is not installed.** The generated file says
-   `declare module "@surrealdb/analyzer-client"`. If that specifier does not resolve,
-   TypeScript reports `TS2664: Invalid module name in augmentation` **inside the
-   generated file** — which you would never open — and drops the entire
-   registry. Every lookup then falls back. `npm ls @surrealdb/analyzer-client`.
-2. **You imported from `@surrealdb/analyzer-client` instead of the generated file.**
-   The augmentation loads with the import. Import `createClient`, `defineQuery`
-   and `RecordId` from `./surrealql-analyzer.generated`.
+1. **You built the client without the type argument.** `createClient({…})`
+   compiles and every literal resolves to `unknown[]` forever. It wants
+   `createClient<Queries>({…})`, or the global opt-in below.
+2. **`@surrealdb/analyzer-client` is not installed.** The generated file imports
+   `RecordId`, `Uuid`, `Duration` and `Decimal` from it, and `skipLibCheck` —
+   which nearly every project sets — suppresses errors inside a `.d.ts`. So the
+   import is never reported and all four become `any`: a record link stops
+   being told apart from a string. `generate` warns about this; also
+   `npm ls @surrealdb/analyzer-client`.
 3. **The generated file is somewhere else.** Bare `generate` writes to the
    workspace root. If your import points at `src/lib/` and the file is at the
    root, you now have two of them and they will drift. One `--out`, in
@@ -203,8 +209,8 @@ code. If a result is `any`, it is one of these:
    `people[0].nope.definitely.not.a.field`. Every snippet in these docs says
    `lang="ts"` because copying the whole block is the point.
 
-None of these produce an error on the line you wrote. All four are worth ruling
-out before anything else.
+Only the first produces an error where you can see it. The rest are worth
+ruling out before anything else.
 
 ## Values are the SDK's values
 
@@ -232,11 +238,10 @@ encode("team:red")                  ->  68 …      (an untagged text string)
 ```
 
 So `WHERE team = $team` matches with the class and returns nothing without it.
-Construct params from the generated import — it re-exports the classes so this
-needs no second package:
+The classes are exported by this package, alongside `createClient`:
 
 ```ts
-import { RecordId } from "./surrealql-analyzer.generated";
+import { RecordId } from "@surrealdb/analyzer-client";
 await db.query("SELECT id, name FROM person WHERE team = $team", {
   team: new RecordId("team", "red"),
 });
@@ -260,7 +265,7 @@ reason. `db.query` and `db.run` are not.
 ## Errors
 
 ```ts
-import { SurrealQLAnalyzerError } from "./surrealql-analyzer.generated";
+import { SurrealQLAnalyzerError } from "@surrealdb/analyzer-client";
 
 try {
   await db.run(peopleOf, { team });
@@ -290,25 +295,56 @@ does for you which cannot be recovered afterwards.
 
 `surrealkit generate` scans your source for query text — `db.query("…")`,
 `defineQuery("…")`, `defineLive("…")` — analyses each against your schema, and
-writes one file:
+writes one declaration file:
 
 ```ts
-declare module "@surrealdb/analyzer-client" {
-  interface SurqlRegistry {
-    "SELECT id, name FROM person WHERE team = $team": {
-      result: [Array<{ id: RecordId<"person">; name: string }>];
-      params: { team: RecordId<"team"> };
-    };
-  }
-}
+// src/surrealql-analyzer.d.ts
+import type { RecordId } from "@surrealdb/analyzer-client";
+
+export interface Person { id: RecordId<"person">; name: string; age: number }
+export interface Tables { person: Person; team: Team }
+
+export type Queries = {
+  "SELECT id, name FROM person WHERE team = $team": {
+    result: [Array<{ id: RecordId<"person">; name: string }>];
+    params: { team: RecordId<"team"> };
+  };
+};
 ```
 
-A registry keyed by *exact query text*, read by one conditional generic. That is
-the whole mechanism. Two rules keep it honest:
+A registry keyed by *exact query text*, read by one conditional generic on the
+client's type argument. That is the whole mechanism. Two rules keep it honest:
 
 - **There is no permissive `string` overload.** A literal is also a `string`, so
   a fallback overload would rescue every mis-call into `unknown`. There is none.
 - **A miss degrades to `unknown`, never `any`.** Asserted in `test-d/`.
+
+The table interfaces are yours to use: `function greet(person: Person)` needs
+no hand-written mirror of the schema, and `Tables["person"]` keys the same
+types by SurrealQL name.
+
+### The global registry, if you want the shorter spellings
+
+Two forms have no call site to hang a type argument on: `db.query("…")` on a
+client you built without one, and Svelte's `<Query q="…">` markup attribute.
+One line in your own code gives both of them the generated types:
+
+```ts
+// src/db.ts (or anywhere in your project)
+import type { Queries } from "./surrealql-analyzer";
+
+declare module "@surrealdb/analyzer-client" {
+  interface SurqlRegistry extends Queries {}
+}
+```
+
+`SurqlRegistry` is the empty interface every registry lookup falls back to, and
+this merges your queries into it globally. It is deliberately **yours to
+write** rather than something the generated file emits: an augmentation counts
+only while its target resolves, and when the generated file carried it, an
+uninstalled `@surrealdb/analyzer-client` meant TypeScript reported the failure
+*inside a file you never open* and dropped every entry — silently. Written by
+hand, a broken import is an error you can see, on a line you wrote.
 
 ### Why compose the SDK instead of extending it
 

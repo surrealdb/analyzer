@@ -1,27 +1,37 @@
-// Proves the generated file feeds the whole client end to end, through a single
-// import. Importing from the generated module also loads its
-// `declare module "@surrealdb/analyzer-client"` augmentation, so the typed registry is
-// live without a separate side-import — and the SDK value classes come with it,
-// so a `RecordId` parameter can be constructed without a second package.
+// Proves the generated `.d.ts` feeds the whole client end to end — the three
+// lines a user writes, and nothing else:
+//
+//   import { createClient } from "@surrealdb/analyzer-client";
+//   import type { Queries } from "./surrealql-analyzer";
+//   const db = createClient<Queries>({ url });
+//
+// No module augmentation anywhere in this file. That is the point: the
+// generated file declares types and the client takes them as an argument, so
+// a broken import fails at the `createClient<Queries>` line rather than
+// silently dropping every query's types.
 //
 // Pure type checks — `main` is never called, so no connection opens.
-import {
-  createClient,
-  defineQuery,
-  RecordId,
-  type Json,
-} from "./surrealql-analyzer.generated.js";
+import { createClient, RecordId } from "@surrealdb/analyzer-client";
+import type { Person, Queries, Tables, Team } from "./surrealql-analyzer.js";
 import type { Equal, Expect } from "../assert.js";
 
-const db = createClient({ url: "ws://localhost:8000/rpc" });
+const db = createClient<Queries>({ url: "ws://localhost:8000/rpc" });
+const { defineQuery, defineLive } = db;
 const peopleOf = defineQuery("SELECT name FROM person WHERE team = $team");
 const roster = defineQuery("SELECT id, name, joined FROM person");
 
+// The schema is generated too, and a table interface is a type a user can put
+// in their own signature — which is the other half of what `generate` is for.
+declare function greet(person: Person): string;
+type _person = Expect<Equal<Person["id"], RecordId<"person">>>;
+type _optional = Expect<Equal<Person["nick"], string | undefined>>;
+type _decimal = Expect<Equal<Team["budget"], Tables["team"]["budget"]>>;
+void greet;
+
 async function main() {
   // THE HEADLINE CLAIM, asserted exactly: a plain `db.query("…")` — no
-  // `defineQuery`, no ceremony — resolves the real per-statement tuple through
-  // nothing but the generated file's augmentation. This is the first thing
-  // every README shows, so it is pinned here rather than left to prose.
+  // `defineQuery`, no ceremony — resolves the real per-statement tuple from
+  // the type argument alone.
   const direct = await db.query("SELECT id, name, joined FROM person");
   type _direct = Expect<
     Equal<typeof direct, [Array<{ id: RecordId<"person">; joined: Date; name: string }>]>
@@ -41,8 +51,9 @@ async function main() {
   // @ts-expect-error a string is not a RecordId<"team">.
   await db.query("SELECT name FROM person WHERE team = $team", { team: "team:red" });
 
-  // Resolved from the generated registry entry — params required and typed as
-  // the SDK class, which is what makes the query match on the wire.
+  // Resolved from the generated entry through `db.defineQuery` — params
+  // required and typed as the SDK class, which is what makes the query match
+  // on the wire.
   const rows = await db.run(peopleOf, { team: new RecordId("team", "red") });
   rows[0]!.name.length;
 
@@ -62,6 +73,19 @@ async function main() {
   >;
   asJson[0]!.id.startsWith("person:");
 
+  // A live query reads the same registry, and carries its row type.
+  const livePeople = defineLive("SELECT id, name, status FROM person");
+  const stop = db.watch(livePeople, (live) => {
+    type _live = Expect<
+      Equal<
+        (typeof live)[number],
+        { id: RecordId<"person">; name: string; status: "active" | "retired" }
+      >
+    >;
+    live[0]!.name.toUpperCase();
+  });
+  stop();
+
   // @ts-expect-error the generated entry requires the params object
   await db.run(peopleOf);
   // @ts-expect-error a string is not a RecordId — the encode-time bug, caught
@@ -70,5 +94,12 @@ async function main() {
   (await db.run(peopleOf, { team: new RecordId("team", "red") }))[0]!.age;
   // @ts-expect-error a RecordId is not a string: no string methods on a record link
   people[0]!.id.startsWith("person:");
+
+  // A text the generated file does not contain is a hard error carrying its
+  // own remedy, not a silent degrade.
+  const stale = defineQuery("SELECT nope FROM nowhere");
+  // @ts-expect-error the generated registry has no such query
+  await db.run(stale);
+  void stale;
 }
 void main;

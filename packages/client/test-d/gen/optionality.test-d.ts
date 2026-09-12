@@ -8,12 +8,13 @@
 //   SELECT name, nick FROM person             → Array<{ name: string; nick?: string }>
 //   SELECT VALUE nick FROM ONLY person:jane   → undefined | string
 //
-// The Rust side pins those exact rows in `crates/codegen/src/registry.rs`
+// The Rust side pins those exact rows in `crates/codegen/src/typescript.rs`
 // (`an_optional_field_and_an_optional_result_spell_differently`); this file
 // pins what `tsc` then makes of them.
 //
 // Pure type checks — `main` is never called, so no connection opens.
-import { createClient, defineQuery } from "./surrealql-analyzer.generated.js";
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "./surrealql-analyzer.js";
 import type { Equal, Expect } from "../assert.js";
 
 // The two spellings, stated on their own so the claim does not depend on the
@@ -30,9 +31,9 @@ void omitted;
 const required: AsValue = {};
 void required;
 
-const db = createClient({ url: "ws://localhost:8000/rpc" });
-const roster = defineQuery("SELECT name, nick FROM person");
-const oneNick = defineQuery("SELECT VALUE nick FROM ONLY person:jane");
+const db = createClient<Queries>({ url: "ws://localhost:8000/rpc" });
+const roster = db.defineQuery("SELECT name, nick FROM person");
+const oneNick = db.defineQuery("SELECT VALUE nick FROM ONLY person:jane");
 
 async function main() {
   // A row field: the `none` became a key that may be absent.
