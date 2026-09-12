@@ -977,3 +977,42 @@ fn a_parenthesized_value_followed_by_arguments_is_a_call() {
         Expr::Binary { .. }
     ));
 }
+
+// ---- engine parity: THROW is an expression, not only a statement ----
+
+#[test]
+fn throw_lowers_wherever_a_value_is_wanted() {
+    // 3.2.3 evaluates all of these and raises `An error occurred: …` at run
+    // time, so none of them may be a parse error here. The two that matter
+    // are SurrealKit's own fixture shapes: a `PERMISSIONS … WHERE THROW '…'`
+    // read-only table, and an `ASSERT … OR THROW '…'` field.
+    parses(&[
+        "DEFINE TABLE ro SCHEMAFULL PERMISSIONS FOR select WHERE $auth != NONE, \
+         FOR create, update, delete WHERE THROW \"Read-only customer\";",
+        "DEFINE FIELD f ON t TYPE string ASSERT $value != NONE OR THROW \"y\";",
+        "RETURN false OR THROW 'y';",
+        "LET $x = THROW 'a';",
+        "RETURN [THROW 'a', 2];",
+        "RETURN { a: THROW 'a' };",
+        "SELECT * FROM person WHERE THROW 'a';",
+        // Still a statement in the positions it always held.
+        "THROW 'boom';",
+        "IF $a THEN THROW 'x' ELSE 2 END;",
+        "DEFINE EVENT e ON t WHEN true THEN THROW 'no';",
+    ]);
+    // The operand is the whole expression that follows: 3.2.3 answers
+    // `RETURN THROW 1 + 1` with `An error occurred: 2`, not `: 1`.
+    let Statement::Throw(throw) = statement("RETURN THROW 1 + 1;", "ThrowStatement") else {
+        panic!("expected a THROW");
+    };
+    assert!(matches!(
+        throw.value.as_ref().map(|value| &value.node),
+        Some(Expr::Binary { .. })
+    ));
+    // In a value position it lowers like every other bare statement-as-value:
+    // an `Expr::Subquery`, so the thrown value is still analyzed.
+    let Expr::Subquery(inner) = expr("RETURN false OR THROW 'y';", "ThrowStatement") else {
+        panic!("expected a subquery");
+    };
+    assert!(matches!(inner.node, Statement::Throw(_)));
+}

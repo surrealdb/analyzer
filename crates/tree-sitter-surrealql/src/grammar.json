@@ -187,10 +187,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "ThrowStatement"
-        },
-        {
-          "type": "SYMBOL",
           "name": "_subqueryStatement"
         }
       ]
@@ -325,22 +321,26 @@
       ]
     },
     "ThrowStatement": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_throw"
+      "type": "PREC_RIGHT",
+      "value": "throw",
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_kw_throw"
+            },
+            "named": true,
+            "value": "Keyword"
           },
-          "named": true,
-          "value": "Keyword"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_value"
-        }
-      ]
+          {
+            "type": "SYMBOL",
+            "name": "_value"
+          }
+        ]
+      }
     },
     "ReturnStatement": {
       "type": "SEQ",
@@ -1307,10 +1307,6 @@
             },
             {
               "type": "SYMBOL",
-              "name": "ThrowStatement"
-            },
-            {
-              "type": "SYMBOL",
               "name": "ReturnStatement"
             }
           ]
@@ -1372,10 +1368,6 @@
                   },
                   {
                     "type": "SYMBOL",
-                    "name": "ThrowStatement"
-                  },
-                  {
-                    "type": "SYMBOL",
                     "name": "ReturnStatement"
                   }
                 ]
@@ -1416,10 +1408,6 @@
                     {
                       "type": "SYMBOL",
                       "name": "_value"
-                    },
-                    {
-                      "type": "SYMBOL",
-                      "name": "ThrowStatement"
                     },
                     {
                       "type": "SYMBOL",
@@ -10657,15 +10645,6 @@
               },
               "named": true,
               "value": "ReturnStatement"
-            },
-            {
-              "type": "ALIAS",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_thenThrow"
-              },
-              "named": true,
-              "value": "ThrowStatement"
             }
           ]
         }
@@ -10679,24 +10658,6 @@
           "content": {
             "type": "SYMBOL",
             "name": "_kw_return"
-          },
-          "named": true,
-          "value": "Keyword"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "_value"
-        }
-      ]
-    },
-    "_thenThrow": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "ALIAS",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_kw_throw"
           },
           "named": true,
           "value": "Keyword"
@@ -11573,6 +11534,10 @@
         {
           "type": "SYMBOL",
           "name": "IfElseStatement"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "ThrowStatement"
         }
       ]
     },
@@ -18308,6 +18273,10 @@
       {
         "type": "STRING",
         "value": "binary_nullish"
+      },
+      {
+        "type": "STRING",
+        "value": "throw"
       },
       {
         "type": "STRING",

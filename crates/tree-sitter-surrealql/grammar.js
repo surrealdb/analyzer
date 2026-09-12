@@ -327,6 +327,11 @@ export default grammar({
 			'binary_conjunction',
 			'binary_disjunction',
 			'binary_nullish',
+			// THROW's operand is the whole expression that follows it: 3.2.3
+			// evaluates `THROW 1 + 1` as `THROW (1 + 1)` (`An error occurred:
+			// 2`), so the keyword binds looser than every binary tier and
+			// stops only at a `,` or a closing bracket.
+			'throw',
 			'closure',
 			'union',
 			'filter',
@@ -388,9 +393,10 @@ export default grammar({
 		// Statements
 		// ================================================================
 
-		// IfElseStatement is deliberately absent: IF is a value (see `_value`),
-		// so listing it here as well would make every `IF …` in an expression
-		// position reachable two ways for the same tree.
+		// IfElseStatement and ThrowStatement are deliberately absent: IF and
+		// THROW are values (see `_value`), so listing either here as well would
+		// make every `IF …` / `THROW …` in an expression position reachable two
+		// ways for the same tree.
 		_subqueryStatement: ($) =>
 			choice(
 				$.LetStatement,
@@ -424,7 +430,6 @@ export default grammar({
 				$.BreakStatement,
 				$.ContinueStatement,
 				$.ForStatement,
-				$.ThrowStatement,
 				$._subqueryStatement,
 			),
 
@@ -457,7 +462,8 @@ export default grammar({
 		BreakStatement: ($) => alias($._kw_break, $.Keyword),
 		ContinueStatement: ($) => alias($._kw_continue, $.Keyword),
 		SleepStatement: ($) => seq(alias($._kw_sleep, $.Keyword), $.Duration),
-		ThrowStatement: ($) => seq(alias($._kw_throw, $.Keyword), $._value),
+		ThrowStatement: ($) =>
+			prec.right('throw', seq(alias($._kw_throw, $.Keyword), $._value)),
 		// RETURN carries its own FETCH clause. It is spelled against `_value`
 		// rather than `_expression` so that `RETURN SELECT … FETCH a` gives the
 		// FETCH to the SELECT, which already has one, instead of leaving the
@@ -655,7 +661,7 @@ export default grammar({
 			seq(
 				$._value,
 				alias($._kw_then, $.Keyword),
-				choice($._value, $.ThrowStatement, $.ReturnStatement),
+				choice($._value, $.ReturnStatement),
 				optional(';'),
 				repeat(
 					seq(
@@ -663,14 +669,14 @@ export default grammar({
 						alias($._kw_if, $.Keyword),
 						$._value,
 						alias($._kw_then, $.Keyword),
-						choice($._value, $.ThrowStatement, $.ReturnStatement),
+						choice($._value, $.ReturnStatement),
 						optional(';'),
 					),
 				),
 				optional(
 					seq(
 						alias($._kw_else, $.Keyword),
-						choice($._value, $.ThrowStatement, $.ReturnStatement),
+						choice($._value, $.ReturnStatement),
 						optional(';'),
 					),
 				),
@@ -1984,11 +1990,9 @@ export default grammar({
 				choice(
 					csep($._value),
 					alias($._thenReturn, $.ReturnStatement),
-					alias($._thenThrow, $.ThrowStatement),
 				),
 			),
 		_thenReturn: ($) => seq(alias($._kw_return, $.Keyword), $._value),
-		_thenThrow: ($) => seq(alias($._kw_throw, $.Keyword), $._value),
 		// RETRY and MAXDEPTH only exist behind ASYNC — the engine says so by
 		// name — but they may follow it in either order.
 		AsyncClause: ($) =>
@@ -2131,11 +2135,16 @@ export default grammar({
 		// Values
 		// ================================================================
 
-		// IF is an expression in SurrealQL, not only a statement: it is legal
-		// unparenthesised in a projection, a WHERE, an array element, an
-		// object value, a SET right-hand side. It sits here rather than in
-		// `_baseValue` so it does not also become a path or lookup base,
-		// which the engine does not accept.
+		// IF and THROW are expressions in SurrealQL, not only statements: both
+		// are legal unparenthesised in a projection, a WHERE, an array element,
+		// an object value, a SET right-hand side. 3.2.3 evaluates
+		// `RETURN false OR THROW 'y'`, `RETURN [THROW 'a']`,
+		// `RETURN { a: THROW 'a' }` and `LET $x = THROW 'a'` — every one of
+		// them raises `An error occurred: …` at run time rather than at parse
+		// time — which is why a `PERMISSIONS FOR create WHERE THROW '…'` and an
+		// `ASSERT … OR THROW '…'` have to parse here too. They sit in `_value`
+		// rather than in `_baseValue` so neither also becomes a path or lookup
+		// base, which the engine does not accept.
 		_value: ($) =>
 			choice(
 				$.Path,
@@ -2145,6 +2154,7 @@ export default grammar({
 				$.TypeCast,
 				$._baseValue,
 				$.IfElseStatement,
+				$.ThrowStatement,
 			),
 
 		PrefixExpression: ($) =>

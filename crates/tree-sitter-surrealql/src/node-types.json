@@ -140,6 +140,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -457,6 +461,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -672,6 +680,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -796,6 +808,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -946,6 +962,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -1100,6 +1120,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -1220,6 +1244,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -1358,6 +1386,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -1822,6 +1854,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -1987,6 +2023,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -2122,6 +2162,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -2357,6 +2401,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -2651,6 +2699,10 @@
         },
         {
           "type": "ThenClause",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -3096,6 +3148,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -3515,6 +3571,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -3989,6 +4049,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -4340,6 +4404,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -5012,6 +5080,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -5644,6 +5716,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -5982,6 +6058,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -6121,6 +6201,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -6416,6 +6500,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -6647,6 +6735,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -7262,6 +7354,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -7508,6 +7604,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -8081,6 +8181,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -8525,6 +8629,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -9066,6 +9174,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -9235,6 +9347,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -9355,6 +9471,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -10084,6 +10204,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -10395,6 +10519,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -10608,6 +10736,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
@@ -11423,6 +11555,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -11580,6 +11716,10 @@
           "named": true
         },
         {
+          "type": "ThrowStatement",
+          "named": true
+        },
+        {
           "type": "TypeCast",
           "named": true
         },
@@ -11700,6 +11840,10 @@
         },
         {
           "type": "SubQuery",
+          "named": true
+        },
+        {
+          "type": "ThrowStatement",
           "named": true
         },
         {
