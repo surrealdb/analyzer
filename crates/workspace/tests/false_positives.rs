@@ -136,6 +136,26 @@ const CASES: &[Case] = &[
         accepted: "DEFINE INDEX itotal ON stats FIELDS total;",
         rejected: "DEFINE INDEX ibad ON t FIELDS nope;",
     },
+    // ---- `$value` in an ASSERT is never NONE -------------------------------
+    Case {
+        code: 5002,
+        engine: "`CREATE u:a` writes the row against `nick ON u TYPE \
+                 option<string> ASSERT string::len($value) > 2`; the ASSERT \
+                 does not run for an absent value",
+        schema: "DEFINE TABLE u SCHEMAFULL;\n",
+        accepted: "DEFINE FIELD nick ON u TYPE option<string> ASSERT string::len($value) > 2;",
+        rejected: "DEFINE FIELD age ON u TYPE option<int> ASSERT string::len($value) > 2;",
+    },
+    Case {
+        // VALUE and DEFAULT *are* evaluated with NONE, so the same shape there
+        // is a true positive and must keep reporting.
+        code: 5002,
+        engine: "`VALUE string::uppercase($value)` on an `option<string>` \
+                 answers \"Expected `string` but found `NONE`\" on CREATE",
+        schema: "DEFINE TABLE u SCHEMAFULL;\n",
+        accepted: "DEFINE FIELD nick ON u TYPE option<string> ASSERT string::len($value) > 2;",
+        rejected: "DEFINE FIELD nick ON u TYPE option<string> VALUE string::uppercase($value);",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
