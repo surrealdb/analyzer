@@ -386,6 +386,23 @@ fn check_fetch_clauses(stmt: &ast::SelectStmt, table: &TableDef, ctx: &mut Analy
             if check_clause_field_path(ctx, table, &segments, idiom.span) {
                 continue;
             }
+            // A dotted FETCH expands its record-holding *prefix*: on 3.2.3
+            // `SELECT * FROM article FETCH author.name` answers
+            // `{ author: { id: author:a, name: 'ann' }, … }` — the link is
+            // substituted and the tail is along for the ride. Asking the whole
+            // path instead reported `FETCH author.name does nothing —
+            // 'string' holds no records` about a FETCH that plainly does
+            // something. An unresolvable prefix proves nothing and is silent
+            // for the same reason it is on the whole path.
+            let prefix_expands = (1..segments.len()).any(|len| {
+                !matches!(
+                    resolve_field_path(ctx.schema(), table, &segments[..len]),
+                    Some(kind) if kind != Kind::Any && !kind_may_hold_record(&kind)
+                )
+            });
+            if prefix_expands {
+                continue;
+            }
             // FETCH substitutes records; fetching a scalar does nothing.
             // Resolve across record links so `FETCH team.owner` reads the
             // linked field's kind rather than the opaque `Any` boundary.
@@ -5156,32 +5173,35 @@ mod tests {
     }
 
     #[test]
-    fn fetch_resolves_across_a_record_link_to_judge_the_target_field() {
-        // `team` on `user` is a record link; the FETCH check must cross it to
-        // type the trailing segment. `team.label` is a scalar (FETCH does
-        // nothing → 1023); `team.owner` is itself a link (FETCH is meaningful
-        // → no finding). Before link-crossing both stayed `Any` and neither
-        // fired.
+    fn fetch_judges_the_record_holding_prefix_of_a_path() {
+        // A dotted FETCH expands its prefix and carries the tail along: 3.2.3
+        // answers `{ id: user:u, team: { id: team:t, label: 'x' } }` for
+        // `FETCH team.label`, so neither dotted form does nothing. A *bare*
+        // scalar is the shape 1023 is for.
         let schema = schema_from(
             "DEFINE TABLE team SCHEMAFULL;\n\
              DEFINE FIELD label ON team TYPE string;\n\
              DEFINE FIELD owner ON team TYPE record<user>;\n\
              DEFINE TABLE user SCHEMAFULL;\n\
+             DEFINE FIELD nickname ON user TYPE string;\n\
              DEFINE FIELD team ON user TYPE record<team>;",
         );
 
-        let (_, scalar) = analyze_diagnostics(&schema, "SELECT * FROM user FETCH team.label;");
+        for fetched in ["team.label", "team.owner"] {
+            let (_, expands) =
+                analyze_diagnostics(&schema, &format!("SELECT * FROM user FETCH {fetched};"));
+            assert!(
+                !codes(&expands).contains(&1023),
+                "FETCH {fetched} expands `team`, got {:?}",
+                codes(&expands)
+            );
+        }
+
+        let (_, scalar) = analyze_diagnostics(&schema, "SELECT * FROM user FETCH nickname;");
         assert!(
             codes(&scalar).contains(&1023),
-            "FETCH over a linked scalar should fire 1023, got {:?}",
+            "FETCH over a bare scalar should fire 1023, got {:?}",
             codes(&scalar)
-        );
-
-        let (_, linked) = analyze_diagnostics(&schema, "SELECT * FROM user FETCH team.owner;");
-        assert!(
-            !codes(&linked).contains(&1023),
-            "FETCH over a linked record must not fire 1023, got {:?}",
-            codes(&linked)
         );
     }
 

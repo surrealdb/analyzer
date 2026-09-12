@@ -156,6 +156,20 @@ const CASES: &[Case] = &[
         accepted: "DEFINE FIELD nick ON u TYPE option<string> ASSERT string::len($value) > 2;",
         rejected: "DEFINE FIELD nick ON u TYPE option<string> VALUE string::uppercase($value);",
     },
+    // ---- FETCH expands the record-holding prefix ---------------------------
+    Case {
+        code: 1023,
+        engine: "`SELECT * FROM article FETCH author.name` answers \
+                 `{ author: { id: author:a, name: 'ann' }, … }` — the link is \
+                 expanded; `FETCH title` leaves the row untouched",
+        schema: "DEFINE TABLE author SCHEMAFULL;\n\
+                 DEFINE FIELD name ON author TYPE string;\n\
+                 DEFINE TABLE article SCHEMAFULL;\n\
+                 DEFINE FIELD title ON article TYPE string;\n\
+                 DEFINE FIELD author ON article TYPE record<author>;\n",
+        accepted: "SELECT * FROM article FETCH author.name;",
+        rejected: "SELECT * FROM article FETCH title;",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
