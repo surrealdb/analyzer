@@ -71,6 +71,22 @@ message quotes the engine text it predicts.
   A known-constant operand also reaches the kind half now: it used to return
   as soon as the value check passed, which made a literal the one shape
   `<array> 'abc'` could not be caught in.
+- **5002 stops treating four `rand::`/`type::`/`record::` signatures as more
+  lenient than they are.**
+  - `rand::int`/`rand::float`/`rand::time` take 0 **or** 2 arguments, not a
+    `0..=2` range — 3.2.3 answers `rand::int(1)` with "Incorrect arguments
+    for function rand::int(). Expected 0 or 2 arguments", so the one-argument
+    gap in the middle is now reported per function (`rand::string(5)` keeps
+    its legitimate single argument). `rand::duration` needs both bounds, not
+    an optional range, and gets the plain arity fix.
+  - `record::id`/`record::tb`/`record::table` require a `record` argument —
+    `record::id('ann')` fails with "Incorrect arguments for function
+    record::id(). Argument 1 was the wrong type. Expected \`record\` but
+    found \`'ann'\`" — where `Any` let any kind through unchecked.
+  - `type::table` accepts a `string` or a `record` (`type::table(person:1)`
+    legitimately answers `person`), so `type::table(30)` and
+    `type::table(true)` are now 5002; a plain-string signature would have
+    made the record form a false positive.
 
 ### Fixed — a watch could re-trigger itself forever
 

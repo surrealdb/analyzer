@@ -200,7 +200,7 @@ one. No release carried the GROUP contract under 4027.
 | Code | Contract | Covers (message variants) | Sev | Status |
 |---|---|---|---|---|
 | 5001 | a call resolves to a function that exists | unknown builtins, undefined `fn::`, methods not available on the receiver's kind | E | ✅ emitting (fn:: renumbering from 1015; methods pending) |
-| 5002 | a call matches the function's signature | argument count, per-argument kinds (anchored per argument), `fn::` declared params, a closure declaring more parameters than its consumer binds | E | ✅ emitting (as 5002/5003/5004/5006; renumbering to 5002) |
+| 5002 | a call matches the function's signature | argument count, per-argument kinds (anchored per argument), `fn::` declared params, a closure declaring more parameters than its consumer binds; `rand::int`/`rand::float`/`rand::time` take 0 or 2 arguments (not a `0..=2` range), `rand::duration` requires both bounds; `record::id`/`record::tb`/`record::table` require a `record` argument; `type::table` requires a `string` or `record` argument | E | ✅ emitting (as 5002/5003/5004/5006; renumbering to 5002) |
 | 5005 | a const argument satisfies the function's value contract | `type::field('aeg')` naming no field, non-string paths (`type::field(42)`), `type::thing('ghost', ..)` naming no table, out-of-range constants (`math::fixed(x, -1)`) | E | ✅ emitting (path cases); table/range variants 🔶 |
 | 5009 | `fn::` definitions terminate (no direct/mutual recursion cycles) | `fn::f` calls `fn::f` | W | ✅ three-color DFS over hoisted signatures |
 | 5010 | events do not trigger themselves (directly or in a cycle) | event on `person` THEN mutates `person`; A→B→A | W | 🔨 event-effect graph |
