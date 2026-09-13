@@ -156,8 +156,20 @@ fn value_type(kind: &Kind) -> String {
                 .join(" | "),
         },
         Kind::Either(variants) => {
-            let mut rendered: Vec<String> = variants.iter().map(value_type).collect();
-            rendered.dedup();
+            // `Vec::dedup` only collapses *adjacent* duplicates, and a
+            // duplicate variant's neighbours are not guaranteed to be its
+            // other occurrence — `Either([String, Int, String])` renders
+            // `string | number | string` under a plain `dedup`, not
+            // `string | number`. A seen-set keeps first-seen order the same
+            // way `domain_kind` (`crates/codegen/src/document.rs`) already
+            // does when it folds a `ValueDomain` into a literal union.
+            let mut rendered: Vec<String> = Vec::new();
+            for variant in variants {
+                let text = value_type(variant);
+                if !rendered.contains(&text) {
+                    rendered.push(text);
+                }
+            }
             rendered.join(" | ")
         }
         Kind::Literal(literal) => literal_type(literal),
@@ -374,6 +386,17 @@ mod tests {
                 text: "string".into(),
                 optional: true,
             }
+        );
+    }
+
+    /// `Vec::dedup` only removes *adjacent* duplicates. `Either([String, Int,
+    /// String])` — a non-string variant sitting between two equal ones — used
+    /// to render `string | number | string`; the fix must not.
+    #[test]
+    fn a_non_adjacent_duplicate_variant_still_collapses() {
+        assert_eq!(
+            value(&Kind::Either(vec![Kind::String, Kind::Int, Kind::String])),
+            "string | number"
         );
     }
 
