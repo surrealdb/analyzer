@@ -1071,24 +1071,35 @@ fn object_fact(
     span: SourceSpan,
     ctx: &mut AnalysisContext<'_>,
 ) -> ExpressionFact {
-    let mut kinds = std::collections::BTreeMap::new();
-    let mut partial = Vec::new();
+    // Each property is inferred ONCE and its fact kept. Inferring a second
+    // time to read `.value` — which is what this did — costs two traversals
+    // per level, so `{a:{a:…{a:1}…}}` cost 2^depth: a 110-byte file nested
+    // twenty-five deep took 46 seconds, and thirty deep never finished.
+    // `array_fact` below is the shape this now mirrors.
+    let facts: Vec<ExpressionFact> = fields
+        .iter()
+        .map(|(_, value)| infer_expression_fact(value, ctx))
+        .collect();
 
-    for (key, value) in fields {
-        let value_fact = infer_expression_fact(value, ctx);
-        partial.extend(value_fact.partial.iter().cloned());
-        let kind = object_property_kind(&value_fact);
-        kinds.insert(key.node.clone(), kind);
-    }
+    let kinds: std::collections::BTreeMap<String, Kind> = fields
+        .iter()
+        .zip(&facts)
+        .map(|((key, _), value_fact)| (key.node.clone(), object_property_kind(value_fact)))
+        .collect();
 
     let mut fact = ExpressionFact::new(span, ExpressionValueClass::Object)
         .with_kind(Kind::Literal(KindLiteral::Object(kinds)));
-    fact.partial = partial;
+    fact.partial = facts
+        .iter()
+        .flat_map(|value_fact| value_fact.partial.iter().cloned())
+        .collect();
     let values: Option<std::collections::BTreeMap<String, surrealdb_types::Value>> = fields
         .iter()
-        .map(|(key, value)| {
-            infer_expression_fact(value, ctx)
+        .zip(&facts)
+        .map(|((key, _), value_fact)| {
+            value_fact
                 .value
+                .clone()
                 .map(|value| (key.node.clone(), value))
         })
         .collect();
