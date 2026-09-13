@@ -13,10 +13,11 @@
  * ```ts
  * // lib/db.server.ts
  * import { cache } from "react";
- * import { createClient } from "@/surrealql-analyzer.generated";
+ * import { createClient } from "@surrealdb/analyzer-client";
+ * import type { Queries } from "@/surrealql-analyzer";
  *
  * export const getDb = cache(() =>
- *   createClient({
+ *   createClient<Queries>({
  *     url: process.env.SURREAL_URL!,
  *     namespace: "app",
  *     database: "app",
