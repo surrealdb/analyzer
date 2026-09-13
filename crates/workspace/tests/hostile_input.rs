@@ -172,14 +172,17 @@ fn a_five_hundred_term_or_chain_is_analyzed_promptly() {
 }
 
 /// A statement the parser could not read has no structure a semantic check
-/// can hold it to. `LIVE SELECT count() FROM person GROUP ALL` used to raise
-/// `S0001` for the clause the parser choked on *and* `W4023` telling the
-/// reader to add the `GROUP ALL` the statement already has.
+/// can hold it to — it used to raise `S0001` for the text the parser choked
+/// on *and* a semantic finding about the fragment that survived recovery.
+///
+/// The example is a bare `GROUP`: `LIVE SELECT … GROUP ALL` was this test's
+/// input until the grammar learned every clause a live query takes, which is
+/// what 4009 needs in order to report them.
 #[test]
 fn a_statement_that_failed_to_parse_gets_no_semantic_findings() {
     let text = "DEFINE TABLE person SCHEMAFULL;\n\
                 DEFINE FIELD name ON person TYPE string;\n\
-                LIVE SELECT count() FROM person GROUP ALL;"
+                SELECT count() FROM person GROUP;"
         .to_string();
     let found = findings(text);
     let codes: Vec<String> = found.iter().map(|f| f.code().to_string()).collect();
@@ -192,7 +195,7 @@ fn a_statement_that_failed_to_parse_gets_no_semantic_findings() {
 fn a_broken_statement_does_not_silence_its_neighbours() {
     let text = "DEFINE TABLE person SCHEMAFULL;\n\
                 DEFINE FIELD name ON person TYPE string;\n\
-                LIVE SELECT count() FROM person GROUP ALL;\n\
+                SELECT count() FROM person GROUP;\n\
                 SELECT nosuchfield FROM person;"
         .to_string();
     let found = findings(text);

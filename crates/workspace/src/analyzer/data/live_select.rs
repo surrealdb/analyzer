@@ -54,17 +54,25 @@ pub(crate) fn analyze_live_select(
             value: stmt.value,
             projections,
             from: stmt.from.clone(),
-            omit: Vec::new(),
+            omit: stmt.omit.clone(),
             fetch: stmt.fetch.clone(),
-            split: Vec::new(),
+            split: stmt.split.clone(),
             where_clause: stmt.where_clause.clone(),
-            group: None,
-            order: None,
-            limit: None,
-            start: None,
+            // The clauses the grammar now takes on a live query are carried
+            // across, not dropped. Dropping them made the shape checks judge
+            // a statement the author did not write: a `LIVE SELECT count()
+            // FROM t GROUP ALL` arrived here as an ungrouped `count()` and
+            // drew 4023 — "add GROUP ALL" — against a statement that says
+            // `GROUP ALL`. Whether a live query *honours* a clause is the
+            // live contract's to answer (4009/4027); what the clause means
+            // is this one's.
+            group: stmt.group.clone(),
+            order: stmt.order.clone(),
+            limit: stmt.limit.clone(),
+            start: stmt.start.clone(),
             explain: None,
-            timeout: None,
-            parallel: None,
+            timeout: stmt.timeout.clone(),
+            parallel: stmt.parallel,
         };
         // The read-shape lints do not apply to a subscription: a live query
         // has no LIMIT to add (7014), and `*` is how it asks for the whole
