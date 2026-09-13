@@ -3516,7 +3516,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-diagnostics"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "serde",
  "surrealql-analyzer-syntax",
@@ -3524,7 +3524,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-syntax"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "serde",
  "surrealql-analyzer-tree-sitter-surrealql",
@@ -3533,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-tree-sitter-surrealql"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -3556,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-workspace"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "serde",
  "surrealdb-types",
