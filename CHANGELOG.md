@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-09-12
+
+Nothing in this release goes to a registry. The analyzer is consumed as a
+library and its one consumer,
+[SurrealKit](https://github.com/surrealdb/surrealkit), depends on this
+repository directly, so the version names a commit rather than a published
+artifact. It moves to 0.6.0 because what the commit contains is breaking twice
+over. The rename to the SurrealQL Analyzer means the `surrealguard-*` crates and
+the `@surrealguard/*` npm scope stop at 0.5.3 and carry nothing forward — there
+is no fallback and no shim, and anything still on those names has to move. And
+the standalone command line is gone: `surrealql-analyzer` is a library, and
+`check`, `generate` and `watch` are SurrealKit's verbs to spell.
+
 ### Fixed — robustness
 
 Six ways a small input could kill, hang, or mislead the analyzer. Every size

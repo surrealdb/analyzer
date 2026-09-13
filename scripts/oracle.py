@@ -20,6 +20,10 @@ looks identical to no change).
 
   scripts/oracle.py check    compare the corpus against the baseline
   scripts/oracle.py update   rewrite the baseline, preserving existing verdicts
+
+The corpus lives outside this repo; SG_ORACLE_CORPUS points at it. With
+SG_ORACLE_SKIP_MISSING=1 an absent corpus prints one line and exits 0 instead of
+failing — for a machine that has no copy, never as a default.
 """
 
 import json
@@ -32,7 +36,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BASELINE = REPO / "tests" / "oracle_baseline.txt"
-CORPUS = Path("/Users/drewridley/Documents/Projects/workshop/database")
+# The corpus is a hand-edited real-world workspace kept outside this repo, so
+# the default below is one machine's path. Point SG_ORACLE_CORPUS at your own
+# copy rather than editing this line.
+CORPUS = Path(
+    os.environ.get("SG_ORACLE_CORPUS")
+    or "/Users/drewridley/Documents/Projects/workshop/database"
+)
 # The analyzer ships no binary, so the check runs through the crate's
 # `check_json` example — the same public API a host calls. Override with
 # SG_ORACLE_CMD (a command prefix; the corpus directory is appended) to point a
@@ -61,7 +71,14 @@ HEADER = """\
 def findings():
     """Every finding the corpus produces, as (code, file, message)."""
     if not CORPUS.is_dir():
-        sys.exit(f"corpus not found at {CORPUS}")
+        # Missing by itself is still a failure: a mistyped SG_ORACLE_CORPUS is
+        # indistinguishable from "this machine has no corpus", and a gate that
+        # passes having checked nothing is worse than one that fails. Skipping
+        # therefore has to be asked for.
+        if os.environ.get("SG_ORACLE_SKIP_MISSING") == "1":
+            print(f"oracle: no corpus at {CORPUS} — skipped (SG_ORACLE_SKIP_MISSING=1)")
+            sys.exit(0)
+        sys.exit(f"corpus not found at {CORPUS} (set SG_ORACLE_CORPUS to its path)")
     # `check` exits non-zero whenever any finding is error-severity, which this
     # corpus has by design — the exit code is not a failure signal here.
     out = subprocess.run(

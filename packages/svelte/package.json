@@ -1,6 +1,6 @@
 {
   "name": "@surrealdb/analyzer-svelte",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Svelte 5 / SvelteKit bindings for SurrealQL Analyzer: typed live queries as runes, SSR hydration.",
   "type": "module",
   "license": "MIT OR Apache-2.0",
@@ -51,8 +51,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@surrealdb/analyzer-client": "0.5.3",
-    "@surrealdb/analyzer-query": "0.5.3",
+    "@surrealdb/analyzer-client": "0.6.0",
+    "@surrealdb/analyzer-query": "0.6.0",
     "magic-string": "^0.30.0"
   },
   "peerDependencies": {
