@@ -132,6 +132,8 @@ table ticket_log  [schemafull]
   field ticket                       : record<ticket>
   field to_priority                  : option<int>
 table ticket_stats
+  field status                       : 'open' | 'closed'
+  field total                        : int
 table webhook_event  [schemafull]
   field external                     : record<external_record>
   field headers                      : object
@@ -1338,8 +1340,8 @@ table webhook_event  [schemafull]
        modifier group      row_preserving=false
   stmt     70:1 select           : array<{ author: record<account>, tag_count: int, top: int }>
        modifier group      row_preserving=false
-  stmt     72:1 select           : any
-  stmt     74:1 select           : any
+  stmt     72:1 select           : array<{ id: record<ticket_stats>, status: 'open' | 'closed', total: int }>
+  stmt     74:1 select           : array<{ status: 'open' | 'closed', total: int }>
        modifier where      row_preserving=true
   stmt     77:1 select           : array<{ article_title: option<string> }>
   stmt     79:1 select           : array<{ article: { title: option<string> }, reporter: { username: string } }>
@@ -1359,9 +1361,7 @@ table webhook_event  [schemafull]
   diag    68:38 I7014     Hint
   diag    70:90 I7014     Hint
   diag     72:8 I7015     Hint
-  diag    72:15 I7008     Hint
   diag    72:15 I7014     Hint
-  diag    74:27 I7008     Hint
   diag    77:44 I7014     Hint
   diag    79:46 I7014     Hint
 

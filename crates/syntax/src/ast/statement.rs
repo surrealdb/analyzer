@@ -332,6 +332,25 @@ pub struct DefineTable {
     /// per-action (`PERMISSIONS FOR select ... WHERE`) form — is retained so
     /// the analyzer can walk it; `NONE`/`FULL` carry no predicate.
     pub permissions: Vec<Spanned<Expr>>,
+    /// `AS SELECT ...` — present when this table is a view: its rows are
+    /// materialized from a query rather than written directly.
+    pub view: Option<ViewClause>,
+}
+
+/// A `DEFINE TABLE ... AS SELECT ...` view's body: the projection whose
+/// aliases (or bare field names) become the view's field set, and the `FROM`
+/// sources that body reads.
+///
+/// Only what the grammar's `TableViewClause` actually carries — no
+/// `WhereClause`/`GroupClause`; those are recognized by the parser but not
+/// modeled here, the same posture `DEFINE TABLE`'s `PERMISSIONS`/`COMMENT`
+/// already take toward syntax nothing yet reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewClause {
+    /// The `AS SELECT` projection list.
+    pub projections: Vec<Projection>,
+    /// `FROM` sources.
+    pub from: Vec<Spanned<Expr>>,
 }
 
 /// The `IN`/`OUT` endpoint tables of a relation table.

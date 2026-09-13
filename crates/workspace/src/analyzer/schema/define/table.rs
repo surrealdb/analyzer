@@ -41,5 +41,24 @@ pub(crate) fn analyze_define_table(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         &stmt.permissions,
     );
 
+    if let Some(view) = &stmt.view {
+        check_view_sources(ctx, view);
+    }
+
     Kind::None
+}
+
+/// A view's `FROM` targets are read like any other SELECT's: a name that
+/// names no table is 1001, exactly as `DEFINE TABLE stats AS SELECT * FROM
+/// nosuchtable;` fails on the engine ("The table 'nosuchtable' does not
+/// exist") while today's analyzer says nothing at all — the view body was not
+/// analyzed. Only the plain `FROM name` shape resolves here (a bare `Ident`
+/// lowers straight to `Expr::Table`); anything else stays silent rather than
+/// guess.
+fn check_view_sources(ctx: &mut AnalysisContext<'_>, view: &ast::ViewClause) {
+    for from in &view.from {
+        if let ast::Expr::Table(name) = &from.node {
+            crate::analyzer::data::check_table_reference(ctx, &name.node, name.span);
+        }
+    }
 }
