@@ -256,6 +256,21 @@ pub(crate) enum Guard {
 /// indirect discriminant (`LET $t = type::table($x); IF $t = 'user'`); the row
 /// side of a `WHERE` has no environment and passes `None`.
 pub(crate) fn guard_of(expr: &ast::Expr, polarity: bool, env: Option<&StatementEnv>) -> Guard {
+    // `AND`/`OR` are folded by [`compose`], from the guards of their operands,
+    // rather than by the constant folder below. `eval` walks the *entire*
+    // operand tree, so const-folding first re-read the whole accumulated left
+    // conjunction at every level of a chain: `WHERE a AND b AND … AND z` cost
+    // O(n²) here and, through the inference and checking walks that each call
+    // this per operator, far more above. `compose` collapses the same
+    // constants — `All` with a `False` part is `False`, all-`True` is `True`,
+    // and dually for `Any` — so the answer is unchanged.
+    if let ast::Expr::Binary { lhs, op, rhs } = expr {
+        match &op.node {
+            ast::BinaryOp::And => return compose(polarity, &lhs.node, &rhs.node, env, true),
+            ast::BinaryOp::Or => return compose(polarity, &lhs.node, &rhs.node, env, false),
+            _ => {}
+        }
+    }
     // A guard the constant folder settles is `True`/`False` in the same IR,
     // rather than a separate "const path first" branch in every consumer.
     if let Term::Const(ConstValue::Bool(value)) = eval(expr, Bindings::NONE) {
@@ -307,8 +322,21 @@ fn compose(
 ) -> Guard {
     let parts = vec![guard_of(lhs, polarity, env), guard_of(rhs, polarity, env)];
     if conjunction == polarity {
+        // `false AND x` is false whatever `x` is; `true AND true` is true.
+        if parts.contains(&Guard::False) {
+            return Guard::False;
+        }
+        if parts.iter().all(|part| *part == Guard::True) {
+            return Guard::True;
+        }
         Guard::All(parts)
     } else {
+        if parts.contains(&Guard::True) {
+            return Guard::True;
+        }
+        if parts.iter().all(|part| *part == Guard::False) {
+            return Guard::False;
+        }
         Guard::Any(parts)
     }
 }
