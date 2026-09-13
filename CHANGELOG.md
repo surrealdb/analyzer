@@ -288,6 +288,98 @@ message quotes the engine text it predicts.
   requires these functions' receiver to actually be a collection —
   `array::map(age, ...)` over a scalar `int` errors on the engine and now
   reports it instead of silently returning `Any`.
+### Changed — `generate` emits a types-only module; the client is parameterised by it
+
+A generated file that types everything and a generated file that types nothing
+used to be indistinguishable from inside a project. The module ended in
+`declare module "@surrealdb/analyzer-client" { interface SurqlRegistry { … } }`,
+and a module augmentation counts only while its target resolves: with the
+package missing, TypeScript reported TS2664 *inside the generated file* — which
+nobody opens — dropped every entry, and left `db.query("…")` compiling silently
+as `any` in the user's own code. Nothing in that chain pointed at the cause. The
+file also had to be a `.ts`, because it re-exported `createClient` and the SDK's
+value classes for the convenience of a single import.
+
+`surrealkit generate --out src/surrealql-analyzer.d.ts` now writes types and
+nothing else: an `export interface` per table (with `id`, a relation's
+`in`/`out`, and subfields folded into nested objects and arrays), a `Tables`
+map, and a `Queries` type keyed by each query's exact text. No values, no
+re-exports, no augmentation — and the verb refuses an output path that is not a
+`.d.ts`. The client takes the types as an argument, so a broken import fails on
+the line the user wrote:
+
+```ts
+import { createClient, RecordId } from "@surrealdb/analyzer-client";
+import type { Queries } from "./surrealql-analyzer";
+
+export const db = createClient<Queries>({ url });
+export const { defineQuery, defineLive } = db;   // bound to Queries
+```
+
+This is a **clean break**: the bundled `surrealql-analyzer.generated.ts` is
+gone rather than kept behind a flag, and a project moving over changes three
+lines — the `--out` extension, the import of `createClient`, and the type
+argument. Table types are new, and yours to put in your own signatures.
+
+Two forms have no call site to carry a type argument: `db.query("…")` on a
+client built without one, and Svelte's `<Query q="…">` markup attribute. Both
+still work through the global `SurqlRegistry`, which is now **opt-in, in your
+own code**:
+
+```ts
+declare module "@surrealdb/analyzer-client" {
+  interface SurqlRegistry extends Queries {}
+}
+```
+
+That line is never generated. Written by hand, an unresolvable import is an
+error where its author can see it.
+
+`createClient`, `fromSurreal`, `SurrealQLAnalyzerClient`, `ArgsOf`,
+`QueryResultOf`, `ResultOf`, `ParamsOf`, `DefinedQuery` and `DefinedLive` all
+take the registry as a type parameter defaulting to that global, so code
+written against the old shape keeps compiling.
+
+### Added — `ClientCore`, the half of the client no registry touches
+
+`preload`, `setClient`/`useClient`, `getQueryClient`, `SurrealQLAnalyzerProvider`
+and every adapter hook now take **`ClientCore`**: the session, plus everything
+keyed by a query *value* — `run`, `runJson`, `runLiveOnce`, `watch`,
+`invalidate`, `onInvalidate`, `surreal`, and the new registry-free
+`queryUnchecked(text, bindings)` for a text captured at runtime.
+
+It is not cosmetic, and the reasoning is worth keeping: a parameterised client
+is **not** assignable to the defaulted one. `defineQuery` and `defineLive`
+differ in their RETURN types between two instantiations
+(`DefinedQuery<Q, Queries>` vs `DefinedQuery<Q, GlobalRegistry>`), and a return
+position is covariant however bivariant a method is — so an adapter typed on
+`SurrealQLAnalyzerClient` would reject every `createClient<Queries>` with an
+error naming a type the caller never wrote. Splitting the registry-free half
+out removes the question entirely: a client built with any type argument at
+all is a `ClientCore`.
+
+Pinned in `packages/client/test-d/core/`, which is its own tsc program on
+purpose — an augmentation is program-wide, and a non-empty global registry
+makes the two instantiations relate again and hides the bug.
+
+### Added — the analyzer describes a project's types as data
+
+`surrealql_analyzer::describe(&project)` returns a `TypesDocument`: every table
+— whether it is `SCHEMAFULL` and whether it is `DROP`, its relation spec, and
+each field's kind, whether it may be absent, whether it is `COMPUTED`,
+`READONLY`, has a `DEFAULT`, is a `REFERENCE`, and why its kind is incomplete
+when it is — every `fn::` signature, every `DEFINE PARAM`, and one entry per
+analyzed query carrying its per-statement response kinds and its parameters —
+all on upstream `surrealdb_types::Kind`, `serde`-serializable as it stands.
+
+The TypeScript emitter now renders *that*, rather than building strings
+straight out of an analysis. The reason is the next language: Rust's `query!`
+generates anonymous per-query structs where a user wants a named `Person`, and
+Python's `.into()` wants dataclasses. Both need the same facts, and deriving
+them twice from the same analysis is how two derivations drift. One fact moved
+with the document: a parameter's enumerable value domain is folded into its
+kind as a literal union once, so no emitter has to know what a `ValueDomain`
+is.
 
 ### Fixed — a watch could re-trigger itself forever
 

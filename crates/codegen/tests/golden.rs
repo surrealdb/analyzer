@@ -1,21 +1,24 @@
 //! Golden test for the generated TypeScript — the harness that catches a
 //! generated file that does not compile.
 //!
-//! `surrealkit generate` writes a module (`SurrealQLAnalyzerClient`, the query
-//! registry, the response types) and until this test nothing ever handed that
-//! module to `tsc`: a type error in the emitter's output would ship, and the
-//! user would be the first to see it. The check has two halves that meet at
-//! one committed file:
+//! `surrealkit generate` writes a declaration file (a table interface each, a
+//! `Tables` map, a `Queries` type keyed by exact query text) and until this
+//! test nothing ever handed that file to `tsc`: a type error in the emitter's
+//! output would ship, and the user would be the first to see it. The check has
+//! two halves that meet at one committed file:
 //!
-//! 1. **This test** runs the CLI's generation path — the same
-//!    `QueryEntry::from_analysis` + `render_registry` `run_generate` calls —
-//!    over the fixture workspace at `tests/fixtures/typecheck/` and compares
-//!    the result byte for byte with the committed golden,
-//!    `packages/client/test-d/gen/surrealql-analyzer.generated.ts`.
+//! 1. **This test** runs the library's generation path — the same
+//!    `QueryTypes::from_analysis` + `TypesDocument::new` + `render_types_module`
+//!    calls `generate` makes — over the fixture workspace at
+//!    `tests/fixtures/typecheck/` and compares the result byte for byte with
+//!    the committed golden,
+//!    `packages/client/test-d/gen/surrealql-analyzer.d.ts`.
 //! 2. **`pnpm -r run typecheck`** compiles that golden as part of
 //!    `@surrealdb/analyzer-client`, against the package's own source and the real
 //!    `surrealdb` types, and `test-d/gen/*.test-d.ts` plus
-//!    `test/generated.test.ts` assert what the resolved types are.
+//!    `test/generated.test.ts` assert what the resolved types are — including
+//!    a consumer that calls `createClient<Queries>()`, which is what proves
+//!    the emitted `Queries` can actually parameterise the client.
 //!
 //! So a generator change that alters the output fails here until the golden
 //! is regenerated, and a regenerated golden that no longer typechecks fails
@@ -30,7 +33,8 @@
 
 use std::path::{Path, PathBuf};
 
-use surrealql_analyzer_codegen::{render_registry, QueryEntry};
+use surrealdb_types::Kind;
+use surrealql_analyzer_codegen::{render_types_module, QueryTypes, Source, TypesDocument};
 use surrealql_analyzer_diagnostics::Severity;
 use surrealql_analyzer_workspace::config::WorkspaceConfig;
 use surrealql_analyzer_workspace::{analyze_workspace, Workspace};
@@ -45,7 +49,7 @@ fn fixture_root() -> PathBuf {
 /// test, because the package's `tsconfig` is what compiles it.
 fn golden_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/client/test-d/gen/surrealql-analyzer.generated.ts")
+        .join("../../packages/client/test-d/gen/surrealql-analyzer.d.ts")
 }
 
 fn updating() -> bool {
@@ -74,8 +78,7 @@ fn generated_module_matches_the_committed_golden() {
     if expected != actual {
         // Leave the full actual output where a `diff` can reach it: the
         // first-difference excerpt below is for orientation, not review.
-        let actual_path =
-            Path::new(env!("CARGO_TARGET_TMPDIR")).join("surrealql-analyzer.generated.ts");
+        let actual_path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("surrealql-analyzer.d.ts");
         std::fs::write(&actual_path, &actual).expect("write actual output");
         panic!(
             "\n\
@@ -92,10 +95,10 @@ fn generated_module_matches_the_committed_golden() {
     }
 }
 
-/// The fixture must be valid input. `generate` refuses to write a registry
-/// when an embedded query has an error finding, and a golden produced under a
-/// schema error would record types inferred against a broken schema — so the
-/// bar here is stricter than the CLI's: no error finding anywhere.
+/// The fixture must be valid input. `generate` refuses to write when an
+/// embedded query has an error finding, and a golden produced under a schema
+/// error would record types inferred against a broken schema — so the bar
+/// here is stricter than the CLI's: no error finding anywhere.
 #[test]
 fn fixture_is_free_of_error_findings() {
     let root = fixture_root();
@@ -126,8 +129,8 @@ fn fixture_is_free_of_error_findings() {
 }
 
 /// Every embedded query the fixture declares lands in the golden. A query the
-/// extractor silently dropped would shrink the registry without failing the
-/// byte comparison on first generation, so the count is pinned separately.
+/// extractor silently dropped would shrink `Queries` without failing the byte
+/// comparison on first generation, so the count is pinned separately.
 #[test]
 fn every_embedded_query_reaches_the_registry() {
     let root = fixture_root();
@@ -136,6 +139,9 @@ fn every_embedded_query_reaches_the_registry() {
     for (_, query, _) in &queries {
         // A hole is keyed by the name the analyzer bound it to (`$__host0`,
         // `$__host1`, …), which is what the client reconstructs at call time.
+        // Line endings are cooked to LF for the same reason the document does
+        // it: extraction reads the file's bytes, and the runtime is handed a
+        // template literal's cooked value.
         let mut key = String::new();
         for (index, part) in query.parts().iter().enumerate() {
             if index > 0 {
@@ -147,16 +153,124 @@ fn every_embedded_query_reaches_the_registry() {
             }
             key.push_str(part);
         }
+        let key = key.replace("\r\n", "\n").replace('\r', "\n");
         assert!(
-            module.contains(&format!("    \"{}\": {{", key.replace('"', "\\\""))),
+            module.contains(&format!(
+                "  \"{}\": {{",
+                key.replace('"', "\\\"").replace('\n', "\\n")
+            )),
             "embedded query is missing from the generated registry: {key}"
         );
     }
     assert!(
-        queries.len() >= 15,
+        queries.len() >= 16,
         "the fixture host file should carry the whole spread of query forms, found {}",
         queries.len()
     );
+}
+
+/// The document the fixture describes. The golden above pins the
+/// *TypeScript*; this pins the *facts*, so a change to how the analyzer
+/// spells a type and a change to what it knows fail separately — and so the
+/// emitters that do not exist yet (Rust structs, Python dataclasses) have
+/// their input pinned before they are written.
+#[test]
+fn the_fixture_document_carries_the_schema_and_every_query() {
+    let document = describe(&fixture_root());
+
+    assert_eq!(document.version, TypesDocument::VERSION);
+    assert_eq!(document.source, Source::Static);
+
+    let tables: Vec<&str> = document
+        .tables
+        .iter()
+        .map(|table| table.name.as_str())
+        .collect();
+    assert_eq!(tables, ["knows", "person", "team"]);
+
+    // An edge table keeps the tables its links may point at, which is what
+    // types `in` and `out` on the row.
+    let knows = &document.tables[0];
+    let relation = knows.relation.as_ref().expect("knows is a relation");
+    assert_eq!(relation.in_tables, ["person"]);
+    assert_eq!(relation.out_tables, ["person"]);
+
+    // `option<string>` is optional and keeps its declared kind: the document
+    // states the fact, and each emitter decides how to spell the absence.
+    let person = &document.tables[1];
+    let nick = person
+        .fields
+        .iter()
+        .find(|field| field.path == ["nick"])
+        .expect("person.nick is declared");
+    assert!(nick.optional, "an option<T> field may be absent");
+    assert_eq!(
+        nick.kind,
+        Kind::Either(vec![Kind::None, Kind::String]),
+        "the kind is the one the engine inferred, `none` and all"
+    );
+
+    // A declared return type, and one inferred from the body.
+    let functions: Vec<&str> = document
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(functions, ["fn::greet", "fn::headcount"]);
+    assert_eq!(document.functions[0].returns, Some(Kind::String));
+
+    // Every embedded query is described, including the ones whose shape the
+    // TypeScript spells unusually.
+    assert_eq!(document.queries.len(), 16);
+
+    // The CRLF fixture's key is the COOKED text — LF — because that is the
+    // string the runtime hands the client. `src/crlf.ts` really is stored with
+    // CRLF endings (`.gitattributes` beside it keeps them), so this fails the
+    // moment normalisation is dropped.
+    assert!(
+        document
+            .queries
+            .iter()
+            .any(|query| query.text == "SELECT name, age\nFROM person\nWHERE age > 21"),
+        "the CRLF host file must key by its cooked text: {:?}",
+        document
+            .queries
+            .iter()
+            .map(|query| query.text.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        document
+            .queries
+            .iter()
+            .all(|query| !query.text.contains('\r')),
+        "no key may carry a CR: it matches nothing at run time and ends the \
+         generated string literal early"
+    );
+    let multi = document
+        .queries
+        .iter()
+        .find(|query| query.text.starts_with("LET $cutoff"))
+        .expect("the two-statement query");
+    assert_eq!(
+        multi.statements.len(),
+        2,
+        "one slot per statement, responder or not"
+    );
+    assert!(
+        multi.statements[0].is_none(),
+        "a LET does not respond, and the protocol still returns its slot"
+    );
+
+    // A template hole is a parameter of the query, named the way the analyzer
+    // bound it — that name is in the key, so it has to be in the document.
+    let templated = document
+        .queries
+        .iter()
+        .find(|query| query.parts.len() > 1)
+        .expect("the fixture carries a template substitution");
+    assert!(templated.params.iter().any(|param| param.name == "__host0"));
+    assert!(templated.text.ends_with("$__host0"));
 }
 
 /// One embedded query: the virtual source it was registered under, the
@@ -167,19 +281,25 @@ type Embedded = (
     String,
 );
 
-/// Runs `generate` over `root` and returns the rendered module — the CLI's
-/// `run_generate` minus the file write and the terminal rendering.
+/// Runs `generate` over `root` and returns the rendered module — the
+/// library's `generate` minus the file write and the terminal rendering.
 fn generate(root: &Path) -> String {
+    render_types_module(&describe(root)).text
+}
+
+/// The types document for `root`: what the analyzer knows, before any
+/// language gets near it.
+fn describe(root: &Path) -> TypesDocument {
     let (workspace, queries, _) = load(root);
     let analysis = analyze_workspace(&workspace);
-    let entries: Vec<QueryEntry> = queries
+    let described: Vec<QueryTypes> = queries
         .iter()
         .filter_map(|(source_id, query, _)| {
             let output = analysis.sources.get(source_id)?;
-            Some(QueryEntry::from_analysis(query.parts(), output))
+            Some(QueryTypes::from_analysis(query.parts(), output))
         })
         .collect();
-    render_registry(&entries)
+    TypesDocument::new(Source::Static, &analysis.schema, described)
 }
 
 /// Loads the fixture the way the CLI loads a workspace: config from

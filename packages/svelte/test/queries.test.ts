@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { flushSync } from "svelte";
 import { render, screen } from "@testing-library/svelte";
-import { preload, type SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import { preload, type ClientCore } from "@surrealdb/analyzer-client";
 import { RecordId, type LiveMessage } from "surrealdb";
 import Users from "./Users.svelte";
 import { liveUsers } from "./queries.js";
@@ -37,10 +37,13 @@ function makeClient(rows: Array<Record<string, unknown>> = []) {
   });
   const client = {
     query,
+    // The reactive core replays a STORED text, so it calls the registry-free
+    // `queryUnchecked`; the real client has both, so the mock does too.
+    queryUnchecked: query,
     surreal: { query, liveOf },
     onInvalidate: () => () => {},
     runLiveOnce: async () => rows,
-  } as unknown as SurrealQLAnalyzerClient;
+  } as unknown as ClientCore;
   return { client, killed, subscribed, query, emit: (m: LiveMessage) => handler?.(m) };
 }
 
@@ -119,12 +122,12 @@ describe("createLive", () => {
 
   it("surfaces an error with its message", async () => {
     const client = {
-      query: async () => {
+      queryUnchecked: async () => {
         throw new Error("connection refused");
       },
       surreal: {},
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
 
     render(Users, { context: new Map([[CLIENT_KEY, client]]) });
     await flush();

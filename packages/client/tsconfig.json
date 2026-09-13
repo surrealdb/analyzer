@@ -1,12 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
-  // `test-d/gen/surrealql-analyzer.generated.ts` is the codegen golden — real
+  // `test-d/gen/surrealql-analyzer.d.ts` is the codegen golden — real
   // `surrealkit generate` output over `crates/codegen/tests/fixtures/typecheck`,
   // checked byte-for-byte by `cargo test -p surrealql-analyzer-codegen --test golden`.
-  // Compiling it here is what proves the generator emits valid TypeScript. It
-  // imports the package by name, as a real generated file does; map that to
-  // source so `pnpm typecheck` needs no prior build. (`vitest.config.ts` states
-  // the same alias for the runtime tests.)
+  // Compiling it here is what proves the generator emits valid TypeScript, and
+  // `test-d/gen/consumer.test-d.ts` beside it proves the emitted `Queries` can
+  // actually parameterise `createClient`. The golden imports the package by
+  // name for its value types, as a real generated file does; map that to source
+  // so `pnpm typecheck` needs no prior build. (`vitest.config.ts` states the
+  // same alias for the runtime tests.)
   "compilerOptions": {
     "rootDir": ".",
     "paths": { "@surrealdb/analyzer-client": ["./src/index.ts"] }

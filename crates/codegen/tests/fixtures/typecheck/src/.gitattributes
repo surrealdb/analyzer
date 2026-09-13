@@ -1,0 +1,5 @@
+# `crlf.ts` is a fixture for exactly one thing: a host file whose line endings
+# are CRLF. Git normalising them on checkout would silently turn it into a copy
+# of every other fixture, and the test it backs would pass on an input it was
+# never given. `-text` means: these bytes, unchanged, on every platform.
+crlf.ts -text

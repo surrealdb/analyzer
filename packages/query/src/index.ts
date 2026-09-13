@@ -37,7 +37,7 @@ import {
   type Rows,
   type SurqlLive,
   type SurqlQuery,
-  type SurrealQLAnalyzerClient,
+  type ClientCore,
 } from "@surrealdb/analyzer-client";
 
 export type QueryStatus = "pending" | "success" | "error";
@@ -104,12 +104,12 @@ const DEFAULT_GC_TIME = 5 * 60_000;
 const DEFAULT_MAX_ENTRIES = 500;
 
 export class QueryClient {
-  readonly #client: SurrealQLAnalyzerClient;
+  readonly #client: ClientCore;
   readonly #cache = new Map<string, Entry>();
   readonly #gcTime: number;
   readonly #maxEntries: number;
 
-  constructor(client: SurrealQLAnalyzerClient, options: QueryClientOptions = {}) {
+  constructor(client: ClientCore, options: QueryClientOptions = {}) {
     this.#client = client;
     this.#gcTime = options.gcTime ?? DEFAULT_GC_TIME;
     this.#maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
@@ -354,7 +354,9 @@ export class QueryClient {
   /** Fetch (or seed) an entry's data once. */
   async #load(entry: Entry): Promise<void> {
     try {
-      const result = await this.#client.query(entry.text, entry.params);
+      // `queryUnchecked`, not `query`: an entry carries a text captured at
+      // runtime, which no registry lookup can say anything about.
+      const result = await this.#client.queryUnchecked(entry.text, entry.params);
       const data = jsonify(unwrap(result as unknown[]));
       this.#set(entry, {
         status: "success",
@@ -515,7 +517,7 @@ function splitMutateArgs(
  */
 const queryClients = new WeakMap<object, QueryClient>();
 
-export function getQueryClient(client: SurrealQLAnalyzerClient): QueryClient {
+export function getQueryClient(client: ClientCore): QueryClient {
   let queryClient = queryClients.get(client);
   if (!queryClient) {
     queryClient = new QueryClient(client);

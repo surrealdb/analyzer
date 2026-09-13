@@ -42,18 +42,19 @@ workspace root; check `paths` in `tsconfig.json` and match it. A
 `create-next-app` project with a `src` directory maps `@/*` to `./src/*`:
 
 ```sh
-surrealkit generate --out src/surrealql-analyzer.generated.ts   # with src/
-surrealkit generate --out surrealql-analyzer.generated.ts       # without src/
+surrealkit generate --out src/surrealql-analyzer.d.ts   # with src/
+surrealkit generate --out surrealql-analyzer.d.ts       # without src/
 ```
 
 Put it in `package.json` so the path is written once:
 
 ```json
-{ "scripts": { "generate": "surrealkit generate --out src/surrealql-analyzer.generated.ts" } }
+{ "scripts": { "generate": "surrealkit generate --out src/surrealql-analyzer.d.ts" } }
 ```
 
-Commit the generated module — it is what makes a fresh checkout type-check
-without a build step.
+Commit the generated file — it is what makes a fresh checkout type-check
+without a build step. Nothing in it exists at runtime: the runtime is
+`@surrealdb/analyzer-client`, and `Queries` is what types it.
 
 **3. Create the clients.** Next needs two, and this is the one piece of genuine
 ceremony in the setup.
@@ -61,10 +62,11 @@ ceremony in the setup.
 ```ts
 // lib/db.server.ts
 import { cache } from "react";
-import { createClient } from "@/surrealql-analyzer.generated";
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "@/surrealql-analyzer";
 
 export const getDb = cache(() =>
-  createClient({
+  createClient<Queries>({
     url: process.env.SURREAL_URL!,
     namespace: "app",
     database: "app",
@@ -81,9 +83,10 @@ mutate global state for everyone. React's `cache()` scopes it to a request.
 // app/providers.tsx — only if you use the hooks below
 "use client";
 import { SurrealQLAnalyzerProvider } from "@surrealdb/analyzer-next";
-import { createClient } from "@/surrealql-analyzer.generated";
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "@/surrealql-analyzer";
 
-const db = createClient({ url: process.env.NEXT_PUBLIC_SURREAL_URL! });
+const db = createClient<Queries>({ url: process.env.NEXT_PUBLIC_SURREAL_URL! });
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return <SurrealQLAnalyzerProvider client={db}>{children}</SurrealQLAnalyzerProvider>;
@@ -130,7 +133,7 @@ component that subscribes to it, so the two cannot drift apart.
 
 ```ts
 // lib/queries.ts
-import { defineQuery, defineLive } from "@/surrealql-analyzer.generated";
+import { defineQuery, defineLive } from "@/lib/db";   // destructured off the client
 
 export const allPeople  = defineQuery("SELECT id, name, joined FROM person");
 export const addPerson  = defineQuery("CREATE person SET name = $name, joined = $joined");
@@ -160,7 +163,7 @@ export default async function Page() {
 "use client";
 import { useLive, useMutation, type Preloaded, type Json } from "@surrealdb/analyzer-next";
 import { addPerson, allPeople, livePeople } from "@/lib/queries";
-import type { RecordId } from "@/surrealql-analyzer.generated";
+import type { RecordId } from "@surrealdb/analyzer-client";
 
 type Person = Json<{ id: RecordId<"person">; name: string; joined: Date }>;
 

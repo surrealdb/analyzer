@@ -3,7 +3,7 @@
 // text; a template's `${...}` becomes a `__hostN` substitution.
 //
 // This file is fixture input for the Rust golden test, never compiled itself.
-import { createClient, defineLive, defineQuery, type RecordId } from "./surrealql-analyzer.generated";
+import { createClient, defineLive, defineQuery, type RecordId } from "./surrealql-analyzer";
 
 const db = createClient({ url: "ws://localhost:8000/rpc" });
 
@@ -44,7 +44,13 @@ export const recent = () =>
 // An aggregate.
 export const headcount = () => db.query("SELECT count() AS n FROM person GROUP ALL");
 
-// A template substitution: the key carries `${}` and the params tuple types it.
+// A template substitution: the key carries `$__host0`, not the literal `${}`,
+// and its `params` is `Record<string, never>` — the hole is filled by the
+// template, not by a caller. This row is preprocessor-only: `db.query` is a
+// plain function, so JavaScript cooks the template literal (interpolating
+// `min`) before `query` ever runs, and the cooked text never equals this key.
+// Only the Svelte preprocessor's synthetic `assemble()` call, which binds
+// each hole to `$__hostN` itself, ever reaches this row.
 export const olderThan = (min: number) => db.query(`SELECT name FROM person WHERE age > ${min}`);
 
 // The query-value forms are extracted too.

@@ -23,8 +23,17 @@ use walkdir::{DirEntry, WalkDir};
 /// The file name [`Project::discover`] looks for.
 pub const CONFIG_FILE_NAME: &str = "surrealql-analyzer.toml";
 
-/// The registry file name `generate` writes when the caller names no path.
-pub const DEFAULT_REGISTRY_NAME: &str = "surrealql-analyzer.generated.ts";
+/// The file name `generate` writes when the caller names no path.
+pub const DEFAULT_REGISTRY_NAME: &str = "surrealql-analyzer.d.ts";
+
+/// The extension every `generate` output must have.
+///
+/// The generated module is types only — no `createClient`, no value classes,
+/// no module augmentation — and `.d.ts` is how that is said to TypeScript,
+/// to bundlers, and to the reader. A `.ts` would be compiled as a source
+/// file and would invite `import { createClient } from "./…"`, which is
+/// exactly the import that no longer exists there.
+pub const TYPES_EXTENSION: &str = ".d.ts";
 
 /// A workspace root paired with the configuration that governs it.
 ///
@@ -119,7 +128,8 @@ impl Project {
         self.root.join(CONFIG_FILE_NAME)
     }
 
-    /// Where `generate` writes the registry, given the caller's output path.
+    /// Where `generate` writes its declaration file, given the caller's
+    /// output path.
     pub fn registry_path(&self, out: Option<&Path>) -> PathBuf {
         out.map_or_else(|| self.root.join(DEFAULT_REGISTRY_NAME), Path::to_path_buf)
     }

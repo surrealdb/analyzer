@@ -43,8 +43,11 @@ if !report.passed() {
     std::process::exit(1); // the host decides what a failure means
 }
 
-let out = generate(&project, Some(Path::new("src/db.generated.ts")))?;
+let out = generate(&project, Some(Path::new("src/surrealql-analyzer.d.ts")))?;
 println!("wrote {} ({} queries)", out.path.display(), out.queries);
+
+// Or stop one step earlier and render the facts yourself.
+let document = describe(&project)?;   // tables, functions, params, queries
 ```
 
 `Project::discover(&dir)` walks up for a `surrealql-analyzer.toml` for the

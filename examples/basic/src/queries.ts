@@ -10,11 +10,15 @@
 //   - `db.run` unwraps a single-statement result, so there is no destructure;
 //   - `db.watch` and `db.invalidate` need a reference to hold on to.
 //
+// These are `db.defineQuery` / `db.defineLive`, destructured in `db.ts`: they
+// read the `Queries` handed to `createClient`, so nothing here depends on a
+// module augmentation.
+//
 // A query text the registry does not contain is a compile error carrying its
 // own remedy, so a stale generated file stops the build instead of quietly
 // degrading the result to `unknown[]`.
 
-import { defineLive, defineQuery } from "./surrealql-analyzer.generated";
+import { defineLive, defineQuery } from "./db";
 
 export const allPeople = defineQuery("SELECT id, name, age, team FROM person");
 export const peopleOf = defineQuery("SELECT id, name FROM person WHERE team = $team");

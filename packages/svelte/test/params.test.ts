@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/svelte";
-import type { SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import type { ClientCore } from "@surrealdb/analyzer-client";
 import Params from "./Params.svelte";
 
 const CLIENT_KEY = Symbol.for("@surrealdb/analyzer-svelte:client");
@@ -23,9 +23,10 @@ describe("<Query> and changing params", () => {
     });
     const client = {
       query,
+      queryUnchecked: query,
       surreal: { query },
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
 
     const { rerender } = render(Params, {
       props: { team: "red" },

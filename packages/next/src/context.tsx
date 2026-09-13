@@ -21,12 +21,12 @@
  */
 
 import { createContext, useContext, type ReactNode } from "react";
-import type { SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import type { ClientCore } from "@surrealdb/analyzer-client";
 
-const ClientContext = createContext<SurrealQLAnalyzerClient | null>(null);
+const ClientContext = createContext<ClientCore | null>(null);
 
 export interface SurrealQLAnalyzerProviderProps {
-  client: SurrealQLAnalyzerClient;
+  client: ClientCore;
   children: ReactNode;
 }
 
@@ -40,7 +40,7 @@ export function SurrealQLAnalyzerProvider({ client, children }: SurrealQLAnalyze
  * connections). Throws with a clear message if neither is present — failing
  * fast beats a confusing "cannot read property of undefined".
  */
-export function useClient(override?: SurrealQLAnalyzerClient): SurrealQLAnalyzerClient {
+export function useClient(override?: ClientCore): ClientCore {
   const ctx = useContext(ClientContext);
   const client = override ?? ctx;
   if (!client) {

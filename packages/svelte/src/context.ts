@@ -18,12 +18,12 @@
  */
 
 import { getContext, setContext } from "svelte";
-import type { SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import type { ClientCore } from "@surrealdb/analyzer-client";
 
 const CLIENT_KEY = Symbol.for("@surrealdb/analyzer-svelte:client");
 
 /** Provide the client to descendant components. Call in the root `+layout.svelte`. */
-export function setClient(client: SurrealQLAnalyzerClient): SurrealQLAnalyzerClient {
+export function setClient(client: ClientCore): ClientCore {
   setContext(CLIENT_KEY, client);
   return client;
 }
@@ -37,8 +37,8 @@ export function setClient(client: SurrealQLAnalyzerClient): SurrealQLAnalyzerCli
  * is TanStack Svelte v6's split; matching it exactly is free consistency for
  * anyone arriving from there.
  */
-export function useClient(override?: SurrealQLAnalyzerClient): SurrealQLAnalyzerClient {
-  const client = override ?? getContext<SurrealQLAnalyzerClient | undefined>(CLIENT_KEY);
+export function useClient(override?: ClientCore): ClientCore {
+  const client = override ?? getContext<ClientCore | undefined>(CLIENT_KEY);
   if (!client) {
     throw new Error(
       "[@surrealdb/analyzer-svelte] No client in context. Call setClient(db) in your root " +

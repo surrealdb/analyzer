@@ -2,25 +2,51 @@
  * The query registry — the contract between `surrealkit generate` and this
  * client.
  *
- * `surrealkit generate` emits a module augmentation that adds one entry per
- * analyzed query, keyed by the exact query text:
+ * `surrealkit generate` emits a `.d.ts` containing one entry per analyzed
+ * query, keyed by the exact query text:
+ *
+ * ```ts
+ * // src/surrealql-analyzer.d.ts — generated; types only, nothing at runtime
+ * export type Queries = {
+ *   "SELECT * FROM user": {
+ *     result: [Array<{ id: RecordId<"user">; name: string }>];
+ *     params: Record<string, never>;
+ *   };
+ * };
+ * ```
+ *
+ * The user hands that to the client as a type argument, which is the whole
+ * wiring:
+ *
+ * ```ts
+ * import { createClient } from "@surrealdb/analyzer-client";
+ * import type { Queries } from "./surrealql-analyzer";
+ *
+ * export const db = createClient<Queries>({ url });
+ * ```
+ *
+ * Every lookup is one conditional generic on a literal type parameter — there
+ * is no permissive `string` overload anywhere on the path, because a literal
+ * is also a `string` and a fallback overload would rescue every mis-call.
+ *
+ * # The global registry, and why it is opt-in
+ *
+ * {@link SurqlRegistry} is an empty interface a user may augment:
  *
  * ```ts
  * declare module "@surrealdb/analyzer-client" {
- *   interface SurqlRegistry {
- *     "SELECT * FROM user": {
- *       result: [Array<{ id: RecordId<"user">; name: string }>];
- *       params: Record<string, never>;
- *     };
- *   }
+ *   interface SurqlRegistry extends Queries {}
  * }
  * ```
  *
- * A base (empty) interface lives here so `defineQuery` and `db.query` can key
- * on `keyof SurqlRegistry`; the generated file only ever adds entries. Every
- * lookup is one conditional generic on a literal type parameter — there is no
- * permissive `string` overload anywhere on the path, because a literal is also
- * a `string` and a fallback overload would rescue every mis-call.
+ * That is what types `db.query("…")` on a client built without the type
+ * argument, and the Svelte `<Query q="…">` markup form, which has no call
+ * site to put one on. It is the user's line, in the user's module, on
+ * purpose: the generated file used to carry it, and a `declare module` is an
+ * augmentation only while its target resolves — when it did not, TypeScript
+ * reported the failure inside the generated file, dropped every entry, and
+ * left the user's queries silently `any`. Written by hand, a broken import is
+ * an error where its author can see it.
  */
 
 import type { Jsonify } from "surrealdb";
@@ -54,31 +80,65 @@ export type GeoJSON = { type: string; coordinates: unknown };
  */
 export type Json<T> = Jsonify<T>;
 
-/** One registered query's result and parameter types. */
+/**
+ * One registered query's result and parameter types. `result` is the
+ * per-statement response tuple — one element per statement in source order —
+ * so it is always an array, even for a one-statement query.
+ */
 export interface SurqlQueryShape {
-  result: unknown;
+  result: unknown[];
   params: Record<string, unknown>;
 }
 
 /**
- * Every analyzed query, keyed by its exact text. Empty here; the generated
- * declaration file augments it. See the module doc above.
+ * What a registry is: query text to {@link SurqlQueryShape}. This is the
+ * constraint on every `Registry` type parameter in the package, and the
+ * generated `Queries` satisfies it.
+ *
+ * Note the generated file declares `Queries` as a type ALIAS rather than an
+ * interface, and it has to: TypeScript grants an implicit index signature to
+ * object type literals and not to interfaces (an interface can be reopened),
+ * so `interface Queries { … }` would not satisfy `Record<string, …>` and
+ * `createClient<Queries>()` would not compile.
+ */
+export type SurqlRegistryShape = Record<string, SurqlQueryShape>;
+
+/**
+ * Every analyzed query, keyed by its exact text. Empty here, and empty unless
+ * the user augments it themselves — see the module doc above.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface SurqlRegistry {}
 
+/**
+ * {@link SurqlRegistry} in a form a type parameter can hold, and the default
+ * for every `Registry` parameter in the package — so code written before
+ * `createClient<Queries>` existed keeps resolving through the global.
+ *
+ * The mapped type is not decoration. `SurqlRegistry` is an interface and an
+ * interface never satisfies `Record<string, …>`; mapping over it produces an
+ * object type, which does.
+ */
+export type GlobalRegistry = { [Text in keyof SurqlRegistry]: SurqlRegistry[Text] };
+
 /** A query whose parameters are all supplied. Adapters accept only these. */
 export type Bound = Record<string, never>;
 
-/** The per-statement response tuple a registered query resolves to. */
-export type ResultOf<Q extends string> = Q extends keyof SurqlRegistry
-  ? SurqlRegistry[Q]["result"]
-  : unknown[];
+/**
+ * The per-statement response tuple a registered query resolves to, looked up
+ * in `Registry` — the client's type argument, or the global registry when it
+ * has none.
+ */
+export type ResultOf<
+  Q extends string,
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> = Q extends keyof Registry ? Registry[Q]["result"] : unknown[];
 
 /** The named parameters a registered query reads. */
-export type ParamsOf<Q extends string> = Q extends keyof SurqlRegistry
-  ? SurqlRegistry[Q]["params"]
-  : Record<string, unknown>;
+export type ParamsOf<
+  Q extends string,
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> = Q extends keyof Registry ? Registry[Q]["params"] : Record<string, unknown>;
 
 /**
  * The parameters argument for a query: required exactly when the query reads

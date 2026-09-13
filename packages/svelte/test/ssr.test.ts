@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { render } from "svelte/server";
-import { preload, type SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import { preload, type ClientCore } from "@surrealdb/analyzer-client";
 import { RecordId } from "surrealdb";
 import QueryStates from "./QueryStates.svelte";
 import { liveUsers } from "./queries.js";
@@ -23,14 +23,14 @@ const CLIENT_KEY = Symbol.for("@surrealdb/analyzer-svelte:client");
 function makeClient(rows: Array<{ id: RecordId<"user">; name: string }>) {
   let calls = 0;
   const client = {
-    query: async () => {
+    queryUnchecked: async () => {
       calls += 1;
       return [rows];
     },
     surreal: {},
     onInvalidate: () => () => {},
     runLiveOnce: async () => rows,
-  } as unknown as SurrealQLAnalyzerClient;
+  } as unknown as ClientCore;
   return { client, calls: () => calls };
 }
 

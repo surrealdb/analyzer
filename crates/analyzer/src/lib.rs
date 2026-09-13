@@ -8,9 +8,11 @@
 //!
 //! * [`check`] — analyze every source and return each finding that survives
 //!   the project's policy, as data.
-//! * [`generate`] — emit the typed TypeScript client and literal-keyed query
-//!   registry for the embedded queries, refusing to overwrite a good registry
-//!   with a broken one.
+//! * [`describe`] — the project's types as a language-neutral
+//!   [`TypesDocument`](surrealql_analyzer_codegen::TypesDocument): tables,
+//!   functions, globals, and each embedded query's per-statement result kinds.
+//! * [`generate`] — render that document as a TypeScript declaration file,
+//!   refusing to overwrite a good one with a broken one.
 //! * [`watch_loop`] — re-run a caller's closure on every change to an input
 //!   the analysis consumes, debounced so one save is one run.
 //!
@@ -39,6 +41,7 @@
 
 mod analyze;
 pub mod check;
+mod describe;
 pub mod diagnostic;
 pub mod generate;
 mod host;
@@ -50,9 +53,12 @@ mod watch;
 
 pub use analyze::SourceError;
 pub use check::{check, CheckReport, CheckSummary};
+pub use describe::describe;
 pub use diagnostic::{Diagnostic, Range, Related};
 pub use generate::{generate, GenerateBlocked, GenerateError, GenerateReport, CLIENT_PACKAGE};
-pub use project::{ConfigError, Project, Sources, CONFIG_FILE_NAME, DEFAULT_REGISTRY_NAME};
+pub use project::{
+    ConfigError, Project, Sources, CONFIG_FILE_NAME, DEFAULT_REGISTRY_NAME, TYPES_EXTENSION,
+};
 pub use render::render_finding;
 pub use style::Styles;
 #[cfg(feature = "watch")]

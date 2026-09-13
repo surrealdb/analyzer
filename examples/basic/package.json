@@ -3,9 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Vanilla-TS SurrealQL Analyzer example: surrealkit generate -> typed defineQuery + db.run.",
+  "description": "Vanilla-TS SurrealQL Analyzer example: surrealkit generate -> createClient<Queries> + typed db.query.",
   "scripts": {
-    "generate": "surrealkit generate --out src/surrealql-analyzer.generated.ts",
+    "generate": "surrealkit generate --out src/surrealql-analyzer.d.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { defineLive, defineQuery, type SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import { defineLive, defineQuery, type ClientCore } from "@surrealdb/analyzer-client";
 import { RecordId, type LiveMessage } from "surrealdb";
 import { QueryClient } from "../src/index.js";
 
 /**
  * A fake client: canned rows, a capturable live handler, kill tracking. The
- * shape mirrors what the real client exposes to the core — `query`, `surreal`
+ * shape mirrors what the real client exposes to the core — `queryUnchecked`,
+ * `surreal`
  * (for `liveOf`), `run`, and `onInvalidate`.
  */
 function makeClient(
@@ -32,10 +33,14 @@ function makeClient(
     return /^\s*live\b/i.test(sql) ? ["live-1"] : [rows];
   });
   const client = {
+    // The core executes a STORED text, so it calls `queryUnchecked` — the
+    // registry-free member. `query` is kept beside it because the real client
+    // has both, and a mock that drops one hides which is being used.
     query,
+    queryUnchecked: query,
     surreal: { query, liveOf },
     onInvalidate: () => () => {},
-  } as unknown as SurrealQLAnalyzerClient;
+  } as unknown as ClientCore;
   return { client, killed, liveOf, queried, query, emit: (m: LiveMessage) => handler?.(m) };
 }
 
@@ -84,10 +89,10 @@ describe("QueryClient", () => {
     // A one-statement query whose result is a number: 0.4 could not observe
     // this at all, because `data` was hard-coded to `Row[]`.
     const client = {
-      query: async () => [42],
+      queryUnchecked: async () => [42],
       surreal: {},
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
     const scalar = defineQuery.unchecked("RETURN 42");
     const observable = new QueryClient(client).observe(scalar);
     const unsubscribe = observable.subscribe(() => {});
@@ -138,12 +143,12 @@ describe("QueryClient", () => {
 
   it("reports errors as SurrealQLAnalyzerError carrying the query", async () => {
     const client = {
-      query: async () => {
+      queryUnchecked: async () => {
         throw new Error("boom");
       },
       surreal: {},
       onInvalidate: () => () => {},
-    } as unknown as SurrealQLAnalyzerClient;
+    } as unknown as ClientCore;
     const observable = new QueryClient(client).observe(users);
     const unsubscribe = observable.subscribe(() => {});
     await flush();
@@ -229,7 +234,7 @@ describe("QueryClient", () => {
   it("mutate runs the write and invalidates what it affects", async () => {
     const { client } = makeClient();
     const run = vi.fn(async () => [{ id: new RecordId("user", 3) }]);
-    const queryClient = new QueryClient({ ...client, run } as unknown as SurrealQLAnalyzerClient);
+    const queryClient = new QueryClient({ ...client, run } as unknown as ClientCore);
     await queryClient.fetch(users);
     expect(queryClient.getData(users.key)).toBeDefined();
 

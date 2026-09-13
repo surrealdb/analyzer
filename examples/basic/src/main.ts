@@ -1,12 +1,11 @@
 // A vanilla-TypeScript SurrealQL Analyzer demo.
 //
-// `surrealkit generate` scanned this project, found every query text in it,
-// analyzed each one against `schema/schema.surql`, and wrote
-// `src/surrealql-analyzer.generated.ts` — a module augmentation that types every
-// query by its exact text. We import the entry points from that generated file,
-// so the augmentation loads with them and everything below is fully typed.
+// `surrealkit generate` wrote `src/surrealql-analyzer.d.ts` — types only — and
+// `db.ts` handed its `Queries` to `createClient`. Everything below is fully
+// typed by that one type argument; nothing here imports the generated file.
 
-import { createClient, RecordId, SurrealQLAnalyzerError } from "./surrealql-analyzer.generated";
+import { RecordId, SurrealQLAnalyzerError } from "@surrealdb/analyzer-client";
+import { db } from "./db";
 import {
   addPerson,
   allPeople,
@@ -16,19 +15,11 @@ import {
   peopleOf,
 } from "./queries";
 
-// The connection opens lazily on first use, so a module-level client is safe
-// and nothing has to remember to `await db.connect(...)`.
-const db = createClient({
-  url: "ws://localhost:8000/rpc",
-  namespace: "demo",
-  database: "demo",
-});
-
 async function main() {
   // ---- Start here: db.query ----------------------------------------------
   // Write the SurrealQL you already know. Nothing wraps it, nothing names it,
-  // no helper is imported — and it is fully typed, because `generate` keyed the
-  // registry by this exact text.
+  // no helper is imported — and it is fully typed, because `generate` keyed
+  // `Queries` by this exact text and `db` was built with it.
   //
   // SurrealDB returns one result per statement, so `query` hands back the
   // per-statement tuple. One statement, one element: destructure it.
@@ -57,8 +48,8 @@ async function main() {
   // `"team:red"` above is a compile error rather than zero rows at runtime.
 
   // ---- Naming a query, when a name earns its keep -------------------------
-  // `defineQuery` reads the same registry through the same conditional generic,
-  // so it buys no extra type safety. What it buys is a VALUE: the text is
+  // `db.defineQuery` reads the same registry through the same conditional
+  // generic, so it buys no extra type safety. What it buys is a VALUE: the text is
   // written once in `queries.ts` and imported everywhere, so two places cannot
   // drift apart. It is also what `db.run`, `db.watch` and `db.invalidate` take.
   //

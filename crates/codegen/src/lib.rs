@@ -1,12 +1,19 @@
 //! TypeScript generation from analysis results.
 //!
-//! Two layers: [`ts_type`] renders one `surrealdb_types::Kind` as a
-//! TypeScript type *for a named position* ([`TsContext`]), and
-//! [`render_registry`] emits the generated `.d.ts`
-//! — a literal-keyed registry mapping each embedded query to its result
-//! type, substitution tuple, and named-parameter object, plus the
-//! `defineQuery`/`defineLive` re-exports and the `SurqlQuery` carrier the
-//! host code consumes.
+//! Three layers. [`TypesDocument`] (`document`) is the language-neutral
+//! description of a project's types — tables, functions, globals, and one
+//! entry per analyzed query — built from the schema index and the analysis
+//! output and serializable as it stands. [`ts_type`] renders one
+//! `surrealdb_types::Kind` as a TypeScript type *for a named position*
+//! ([`TsContext`]). [`render_types_module`] (`typescript`) puts the two
+//! together and emits the generated `.d.ts`: an interface per table, a
+//! `Tables` map, and a `Queries` type keyed by exact query text.
+//!
+//! The document is the middle on purpose. An emitter that read the analysis
+//! directly would be the only place its facts existed, and the next language
+//! — Rust's `query!` wants named structs, Python's `.into()` wants
+//! dataclasses — would re-derive the same facts from the same analysis, and
+//! the two derivations would drift.
 //!
 //! Value conventions (documented in the generated header) name the values
 //! the SurrealDB SDK **actually decodes**, which are its own value classes:
@@ -35,11 +42,15 @@
 //! spellings are a decision rather than an artifact.
 
 use surrealdb_types::{Kind, KindLiteral};
-use surrealql_analyzer_workspace::analysis::{ParamInference, ValueDomain};
 
-mod registry;
+pub mod document;
+mod typescript;
 
-pub use registry::{render_registry, response_tuple, QueryEntry};
+pub use document::{
+    FieldStep, FieldTypes, FunctionTypes, ParamTypes, QueryTypes, RelationTypes, Source,
+    TableTypes, TypesDocument,
+};
+pub use typescript::{render_types_module, GeneratedModule, CLIENT_PACKAGE};
 
 /// Where the rendered text is going to sit in a TypeScript type.
 ///
@@ -145,8 +156,20 @@ fn value_type(kind: &Kind) -> String {
                 .join(" | "),
         },
         Kind::Either(variants) => {
-            let mut rendered: Vec<String> = variants.iter().map(value_type).collect();
-            rendered.dedup();
+            // `Vec::dedup` only collapses *adjacent* duplicates, and a
+            // duplicate variant's neighbours are not guaranteed to be its
+            // other occurrence — `Either([String, Int, String])` renders
+            // `string | number | string` under a plain `dedup`, not
+            // `string | number`. A seen-set keeps first-seen order the same
+            // way `domain_kind` (`crates/codegen/src/document.rs`) already
+            // does when it folds a `ValueDomain` into a literal union.
+            let mut rendered: Vec<String> = Vec::new();
+            for variant in variants {
+                let text = value_type(variant);
+                if !rendered.contains(&text) {
+                    rendered.push(text);
+                }
+            }
             rendered.join(" | ")
         }
         Kind::Literal(literal) => literal_type(literal),
@@ -159,7 +182,7 @@ fn value_type(kind: &Kind) -> String {
 
 fn literal_type(literal: &KindLiteral) -> String {
     match literal {
-        KindLiteral::String(value) => format!("\"{}\"", value.replace('"', "\\\"")),
+        KindLiteral::String(value) => ts_string(value),
         KindLiteral::Integer(value) => value.to_string(),
         KindLiteral::Float(value) => value.to_string(),
         KindLiteral::Decimal(value) => value.to_string(),
@@ -186,7 +209,7 @@ fn object_type<'a>(fields: impl Iterator<Item = (&'a String, &'a Kind)>) -> Stri
         let key = if is_identifier(name) {
             name.clone()
         } else {
-            format!("\"{}\"", name.replace('"', "\\\""))
+            ts_string(name)
         };
         let marker = if rendered.optional { "?" } else { "" };
         parts.push(format!("{key}{marker}: {}", rendered.text));
@@ -221,89 +244,55 @@ fn strip_none(kind: &Kind) -> (Kind, bool) {
     (kind, true)
 }
 
+/// One string, as a TypeScript double-quoted literal — the **only** place
+/// this crate quotes one.
+///
+/// There are three emission sites: a query key, a `KindLiteral::String` (a
+/// literal union member, straight from a `DEFINE FIELD ... TYPE 'a' | 'b'`),
+/// and an object key that is not an identifier (a field or table named with a
+/// space or a dash). All three carry user text, all three used to escape a
+/// different subset, and the two that escaped only `"` emitted a file that
+/// does not parse for exactly the inputs below.
+///
+/// Every character a string literal cannot hold raw is escaped, not just the
+/// three that are common. A query key is arbitrary user text, and the three
+/// classes below each produced a file that does not parse — reported as
+/// TS1002 *inside the generated file*, after `generate` said it succeeded:
+///
+/// * `\r`, from a host file with CRLF line endings. (The key itself no longer
+///   carries one — see `QueryTypes::from_analysis` — but a `\r` can still
+///   reach here inside a literal string in the query.)
+/// * U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are line
+///   terminators in JavaScript and so end a string literal exactly as a
+///   newline does.
+/// * the rest of the C0 controls and DEL, which the grammar does allow raw but
+///   which no reader or diff tool survives; they go out as `\u00XX`.
+pub(crate) fn ts_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            control if control.is_control() && (control as u32) < 0x80 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
-}
-
-/// Renders the named-parameter object for a query from its inferred
-/// parameters, applying `OneOf` domains as literal unions. `__hostN`
-/// substitution parameters are excluded — they type the subs tuple.
-///
-/// This is an object type, but **not** a [`TsContext::Property`] position:
-/// the `?` here answers "does the query need this argument at all" —
-/// `required` is cleared only by a `DEFINE PARAM` default — while a
-/// `Property`'s `?` answers "can the value be absent". They are different
-/// questions with the same syntax, so the param's kind is rendered as a
-/// [`TsContext::Value`] and the caller keeps its own marker. Folding a
-/// param's `option<T>` into the key as well would change the type (it would
-/// let callers omit a key the query requires), not just its spelling.
-pub fn params_type(params: &[ParamInference]) -> String {
-    let mut parts = Vec::new();
-    for param in params {
-        if param.name.starts_with("__host") {
-            continue;
-        }
-        let marker = if param.required { "" } else { "?" };
-        parts.push(format!(
-            "{}{marker}: {}",
-            param.name,
-            param_value_type(param)
-        ));
-    }
-    if parts.is_empty() {
-        "Record<string, never>".into()
-    } else {
-        format!("{{ {} }}", parts.join("; "))
-    }
-}
-
-/// The substitution tuple: the constrained type of each `${...}` in
-/// template order. Every element is a [`TsContext::Value`] — a tuple slot has
-/// no key, and an omitted element would shorten the tuple.
-pub fn subs_tuple(params: &[ParamInference]) -> String {
-    let mut hosts: Vec<&ParamInference> = params
-        .iter()
-        .filter(|param| param.name.starts_with("__host"))
-        .collect();
-    hosts.sort_by_key(|param| {
-        param.name["__host".len()..]
-            .parse::<usize>()
-            .unwrap_or(usize::MAX)
-    });
-    let items: Vec<String> = hosts.iter().map(|param| param_value_type(param)).collect();
-    format!("[{}]", items.join(", "))
-}
-
-fn param_value_type(param: &ParamInference) -> String {
-    if let Some(ValueDomain::OneOf(values)) = &param.domain {
-        let mut literals: Vec<String> = values
-            .iter()
-            .map(|value| match value {
-                surrealdb_types::Value::String(text) => {
-                    format!("\"{}\"", text.replace('"', "\\\""))
-                }
-                other => ts_value_fallback(other),
-            })
-            .collect();
-        literals.dedup();
-        if !literals.is_empty() {
-            return literals.join(" | ");
-        }
-    }
-    param.kind.as_ref().map_or_else(
-        || "unknown".into(),
-        |kind| ts_type(kind, TsContext::Value).text,
-    )
-}
-
-fn ts_value_fallback(value: &surrealdb_types::Value) -> String {
-    match value {
-        surrealdb_types::Value::Number(number) => number.to_string(),
-        surrealdb_types::Value::Bool(flag) => flag.to_string(),
-        _ => "unknown".into(),
-    }
 }
 
 #[cfg(test)]
@@ -400,6 +389,44 @@ mod tests {
         );
     }
 
+    /// `Vec::dedup` only removes *adjacent* duplicates. `Either([String, Int,
+    /// String])` — a non-string variant sitting between two equal ones — used
+    /// to render `string | number | string`; the fix must not.
+    #[test]
+    fn a_non_adjacent_duplicate_variant_still_collapses() {
+        assert_eq!(
+            value(&Kind::Either(vec![Kind::String, Kind::Int, Kind::String])),
+            "string | number"
+        );
+    }
+
+    /// Every place this crate writes a quoted string writes it the same way.
+    /// A literal union member and a non-identifier key are user text too: a
+    /// backslash in either used to go out raw and swallow the quote after it.
+    #[test]
+    fn a_literal_and_an_awkward_key_are_escaped_like_a_query_key() {
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::String("say \"hi\"".into()))),
+            "\"say \\\"hi\\\"\""
+        );
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::String("back\\slash".into()))),
+            "\"back\\\\slash\""
+        );
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::String("one\r\ntwo".into()))),
+            "\"one\\r\\ntwo\""
+        );
+
+        let mut fields = BTreeMap::new();
+        fields.insert("full name".to_string(), Kind::String);
+        fields.insert("a\"b".to_string(), Kind::Int);
+        assert_eq!(
+            value(&Kind::Literal(KindLiteral::Object(fields))),
+            "{ \"a\\\"b\": number; \"full name\": string }"
+        );
+    }
+
     /// A property whose kind cannot be absent still reports `optional: false`,
     /// so `Property` is not "always optional" — it is "fold the `none` if
     /// there is one".
@@ -441,59 +468,5 @@ mod tests {
             )),
             "Array<{ nick?: string }>"
         );
-    }
-
-    #[test]
-    fn params_render_named_object_and_subs_tuple() {
-        let params = vec![
-            ParamInference {
-                name: "age".into(),
-                kind: Some(Kind::Int),
-                domain: None,
-                required: true,
-                spans: Vec::new(),
-            },
-            ParamInference {
-                name: "__host0".into(),
-                kind: Some(Kind::String),
-                domain: None,
-                required: true,
-                spans: Vec::new(),
-            },
-            ParamInference {
-                name: "status".into(),
-                kind: Some(Kind::String),
-                domain: Some(ValueDomain::OneOf(vec![
-                    surrealdb_types::Value::String("open".into()),
-                    surrealdb_types::Value::String("closed".into()),
-                ])),
-                required: false,
-                spans: Vec::new(),
-            },
-        ];
-
-        assert_eq!(
-            params_type(&params),
-            "{ age: number; status?: \"open\" | \"closed\" }"
-        );
-        assert_eq!(subs_tuple(&params), "[string]");
-    }
-
-    /// The params object looks like a `Property` position and is not one. Its
-    /// `?` says the query has a default for the argument; the kind's `none`
-    /// says the query accepts a NONE *value*. Folding the second into the
-    /// first would let a caller omit a key the query requires — a change of
-    /// type, not of spelling — so the kind renders as a value.
-    #[test]
-    fn a_required_param_that_accepts_none_keeps_its_key() {
-        let params = vec![ParamInference {
-            name: "nick".into(),
-            kind: Some(Kind::Either(vec![Kind::None, Kind::String])),
-            domain: None,
-            required: true,
-            spans: Vec::new(),
-        }];
-
-        assert_eq!(params_type(&params), "{ nick: undefined | string }");
     }
 }
