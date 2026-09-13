@@ -15,7 +15,12 @@ pub(crate) fn analyze_delete(ctx: &mut AnalysisContext<'_>, stmt: &ast::DeleteSt
 }
 
 pub(crate) fn delete_response_kind(stmt: &ast::DeleteStmt, ctx: &mut AnalysisContext<'_>) -> Kind {
-    mutation::check_only_on_table(ctx, stmt.only, stmt.targets.first());
+    // No `check_only_on_table` here. 4003 is the single-result check, and a
+    // DELETE never trips it: it produces no rows to be "more than one" of.
+    // 3.2.3 answers `NONE` for `DELETE ONLY u` with two matching rows, where
+    // `UPDATE ONLY u` answers "Expected a single result output when using the
+    // ONLY keyword". `check_whole_table_write` below is the lint that does
+    // apply to this statement.
     mutation::check_whole_table_write(ctx, stmt.targets.first(), stmt.where_clause.as_ref());
     let table_name = mutation::target_table_name(ctx, stmt.targets.first());
     let table_hint = table_name.clone();

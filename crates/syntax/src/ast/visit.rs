@@ -705,6 +705,12 @@ pub fn walk_define_table<V: Visitor>(visitor: &mut V, table: &DefineTable) {
         drop: _,
         changefeed: _,
         permissions,
+        // A view's own analysis (the FROM target exists, its projection
+        // becomes the field set) reads `stmt.view` directly in
+        // `analyzer::schema::define::table` — the projection's row scope is
+        // the FROM source, not this table's own, so a generic walk here
+        // would attribute it wrong.
+        view: _,
     } = table;
     if let Some(relation) = relation {
         visitor.visit_relation_def(relation);

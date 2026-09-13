@@ -87,6 +87,12 @@ pub struct GlobalCatalog {
     /// like the rest of the catalog: every source is checked against the same
     /// engine, and the single-source re-analysis paths read it from here.
     pub(crate) target_version: Option<TargetVersion>,
+    /// Each source's position in the canonical registration order: every
+    /// schema-glob source, in discovery order, before every query-glob
+    /// source (see `crate::analyzer::context::AnalysisContext::source_precedes`
+    /// for why a duplicate-definition check needs this and cannot reuse
+    /// `global_defined`, which is symmetric on purpose).
+    pub(crate) source_rank: BTreeMap<SourceId, usize>,
 }
 
 impl GlobalCatalog {
@@ -177,6 +183,17 @@ fn build_global_defined(sources: &[LoweredSource<'_>]) -> SchemaIndex {
 }
 
 fn build_global_catalog_from_lowered(sources: &[LoweredSource<'_>]) -> GlobalCatalog {
+    // Canonical registration order, for the one thing the additive union
+    // below cannot answer: which of two sources defining the same name is the
+    // genuine predecessor. `sources` already lists every schema-glob source
+    // before every query-glob source (`Project::sources`), so a name's rank
+    // is simply its position here.
+    let source_rank: BTreeMap<SourceId, usize> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, (parsed, _))| (parsed.source_id().clone(), index))
+        .collect();
+
     let mut global_defined = build_global_defined(sources);
 
     // PRE-PASS 1b — global function return types. `apply_additive_define`
@@ -274,6 +291,13 @@ fn build_global_catalog_from_lowered(sources: &[LoweredSource<'_>]) -> GlobalCat
         }
     }
 
+    // PRE-PASS 1c(view) — a view field's kind, resolved against the full
+    // catalog exactly as PRE-PASS 1c resolves an untyped `DEFINE FIELD`'s,
+    // into the same `global_field_kinds` map (`apply_global_inferences`
+    // applies both the same way, and neither pass needs to know the other
+    // exists).
+    infer_view_field_kinds(sources, &mut global_defined, &mut global_field_kinds);
+
     // PRE-PASS 1d — `DEFINE PARAM` defaults (see `global_param_defaults`).
     let global_param_defaults = global_param_defaults(sources, &global_defined);
 
@@ -332,6 +356,76 @@ fn build_global_catalog_from_lowered(sources: &[LoweredSource<'_>]) -> GlobalCat
         global_param_defaults,
         implicit_tables,
         fn_guarded,
+        source_rank,
+    }
+}
+
+/// PRE-PASS 1c(view) — a view field's kind, for the two shapes worth typing
+/// without resolving the whole projection against its `FROM` table: a bare
+/// passthrough field (`SELECT status FROM ticket` gives `ticket_stats.status`
+/// exactly `ticket.status`'s kind) and `count()` (always `int`).
+/// `table_def_from_ast` (PRE-PASS 1, via [`crate::schema::table_def_from_ast`])
+/// built these fields untyped — a view is schema-visible workspace-wide like
+/// any other table, so its field kinds are resolved here, once, against the
+/// full catalog, patched into `global_defined` in place and recorded into
+/// `global_field_kinds` so `apply_global_inferences` carries them to every
+/// source's own `working` too, the same way it already does for PRE-PASS 1c's
+/// untyped `DEFINE FIELD`s.
+fn infer_view_field_kinds(
+    sources: &[LoweredSource<'_>],
+    global_defined: &mut SchemaIndex,
+    global_field_kinds: &mut BTreeMap<(String, String), Kind>,
+) {
+    for (parsed, statements) in sources {
+        for stmt in statements {
+            let ast::Statement::Define(ast::DefineStmt::Table(def)) = &stmt.node else {
+                continue;
+            };
+            let Some(view) = &def.view else { continue };
+            let from_table_name = match view.from.as_slice() {
+                [ast::Spanned {
+                    node: ast::Expr::Table(name),
+                    ..
+                }] => Some(name.node.clone()),
+                _ => None,
+            };
+            for projection in &view.projections {
+                let ast::Projection::Expr { expr, alias } = projection else {
+                    continue;
+                };
+                let name = match alias {
+                    Some(alias) => alias.node.clone(),
+                    None => {
+                        crate::analyzer::data::select::unaliased_computed_key(expr, parsed.text())
+                    }
+                };
+                let inferred = match &expr.node {
+                    ast::Expr::Call(call) if call.path.node == "count" => Some(Kind::Int),
+                    ast::Expr::Idiom(idiom) => {
+                        crate::analyzer::expression::infer::plain_field_segments(idiom)
+                            .filter(|segments| segments.len() == 1)
+                            .and_then(|segments| {
+                                from_table_name
+                                    .as_ref()
+                                    .and_then(|table| global_defined.tables.get(table))
+                                    .and_then(|table| table.fields.get(&segments[0]))
+                                    .and_then(|field| field.kind.clone())
+                            })
+                    }
+                    _ => None,
+                };
+                let Some(kind) = inferred else { continue };
+                if let Some(field) = global_defined
+                    .tables
+                    .get_mut(&def.name.node)
+                    .and_then(|t| t.fields.get_mut(&name))
+                {
+                    field.kind = Some(kind.clone());
+                    field.partial.clear();
+                }
+                global_field_kinds.insert((def.name.node.clone(), name), kind);
+            }
+        }
     }
 }
 
@@ -422,7 +516,13 @@ fn analyze_source_against(
     for table in &global.implicit_tables {
         working.insert_table(table.clone(), false);
     }
-    hoist_functions(parsed, statements, &mut working, diagnostics);
+    hoist_functions(
+        parsed,
+        statements,
+        &mut working,
+        diagnostics,
+        &global.source_rank,
+    );
 
     // Reuse the globally-computed function returns and untyped-field value
     // kinds (PRE-PASS 1b/1c).
@@ -460,6 +560,7 @@ fn analyze_source_against(
             // whole-workspace catalog, not `working`, which by construction
             // holds only what precedes this statement.
             .with_workspace_catalog(&global.global_defined)
+            .with_source_rank(&global.source_rank)
             .with_target_version(global.target_version);
             let kind = crate::analyzer::statement::analyze_lowered_statement(&mut ctx, lowered);
             // Syntax the configured target lacks (8003) or removed (8002), and
@@ -813,6 +914,19 @@ pub(crate) fn analyze_sources_with(
             .insert(parsed.source_id().clone(), source_analysis);
     }
 
+    // `output.schema` accumulated through the raw per-statement effects
+    // (`schema_sink` above), which never sees the globally-computed function
+    // returns / field kinds each source's own `working` gets via
+    // `apply_global_inferences` — so an untyped field or function inferred
+    // only against the full catalog (an untyped `DEFINE FIELD` reading
+    // another table, a view field reusing its source column's kind) reads
+    // back `any`/unresolved from the run-wide schema a caller is handed,
+    // even though the per-source walk it was analyzed against saw it typed.
+    // One more pass, now that every source has accumulated, backfills it —
+    // idempotent with the per-source one, since both only ever fill a still-
+    // `None` kind.
+    apply_global_inferences(&global, &mut output.schema);
+
     // fn:: definitions must terminate: an unconditional direct or mutual
     // recursion cycle never does (5009). Three-color DFS; each cycle reports
     // once, and only when no function in it can branch to a base case.
@@ -972,7 +1086,7 @@ fn apply_additive_define(
     match def {
         ast::DefineStmt::Table(def) => {
             schema.insert_table(
-                crate::schema::table_def_from_ast(def, source),
+                crate::schema::table_def_from_ast(def, source, text),
                 def.overwrite,
             );
         }
@@ -1313,6 +1427,7 @@ fn hoist_functions(
     statements: &[ast::Spanned<ast::Statement>],
     working: &mut SchemaIndex,
     diagnostics: &mut Vec<Finding>,
+    source_rank: &BTreeMap<SourceId, usize>,
 ) {
     // Within-source fn:: hoist: a body may call functions defined later
     // in the same file.
@@ -1323,9 +1438,12 @@ fn hoist_functions(
     // 1022 check (`schema::define::function`) finds only this source's entry
     // and concludes there is nothing to report. A `DEFINE TABLE` has no hoist,
     // so its foreign twin survives and 1022 fires — from BOTH sources, since
-    // each one's `working` holds the other's. Displacement is recorded here so
-    // a duplicated `fn::` reports the same way, and the hoist keeps displacing:
-    // what a body's call resolves against is unchanged.
+    // each one's `working` holds the other's, UNLESS `source_rank` says the
+    // foreign twin does not actually precede this source, in which case that
+    // OTHER source's own walk is the one that reports it. Displacement is
+    // recorded here so a duplicated `fn::` reports exactly once, the same way,
+    // and the hoist keeps displacing: what a body's call resolves against is
+    // unchanged.
     let mut displaced_functions = Vec::new();
     for stmt in statements {
         let Some(function) =
@@ -1337,10 +1455,13 @@ fn hoist_functions(
             // `OVERWRITE`/`IF NOT EXISTS` are deliberate redefinitions, exactly
             // as they are for the within-source case.
             if !def.overwrite && !def.if_not_exists {
-                if let Some(existing) = working
-                    .function(&def.name.node)
-                    .filter(|existing| existing.source != *parsed.source_id())
-                {
+                if let Some(existing) = working.function(&def.name.node).filter(|existing| {
+                    existing.source != *parsed.source_id()
+                        && source_rank
+                            .get(&existing.source)
+                            .zip(source_rank.get(parsed.source_id()))
+                            .is_some_and(|(existing_rank, here_rank)| existing_rank < here_rank)
+                }) {
                     displaced_functions.push((
                         def.name.node.clone(),
                         def.name.span,

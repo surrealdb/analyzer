@@ -441,6 +441,29 @@ fn check_step(
     };
     let edge = target.node.as_str();
 
+    // `<~T` is a record-reference back-link, not a graph hop: `T` need not
+    // be a relation at all — `comment` in `<~comment` off `post` is a plain
+    // SCHEMAFULL table carrying `DEFINE FIELD post ON comment TYPE
+    // record<post> REFERENCE`, and this used to be misrouted into the
+    // relation checks below and reported 3001 "not a relation table". Proven
+    // this way, `<~T` lands on `T` outright — the read-side twin of
+    // `DEFINE FIELD … COMPUTED <~T`, which has always resolved through
+    // exactly this proof. When nothing on `T` references back this way, `<~`
+    // still falls through to the ordinary relation checks below: it also
+    // spells an edge-table hop when `T` is `TYPE RELATION` with `source` on
+    // its far side (`<~employee_of` off `organization`), which the grammar
+    // gives no other spelling to check.
+    if step.reference
+        && crate::analyzer::data::select::reference_back_step_kind(source, edge, ctx.schema())
+            .is_some()
+    {
+        return StepOutcome {
+            edge_table: None,
+            landed_on: Some(edge.to_string()),
+            violated: false,
+        };
+    }
+
     // The step names either an edge (`->likes`) or, on the second half of
     // a hop pair, a node table (`->post`). Distinguish by what the schema
     // says: a relation table is an edge; a plain table is a landing.

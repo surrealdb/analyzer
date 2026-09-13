@@ -89,7 +89,24 @@ pub(crate) fn analyze_define_field(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     }
 
     if let Some(assert) = &stmt.assert {
-        let kind = with_value_bound(ctx, declared.clone(), &stmt.table.node, |ctx| {
+        // `$value` inside an ASSERT is never NONE: the engine does not run the
+        // clause for an absent value at all. 3.2.3, with `nick ON u TYPE
+        // option<string> ASSERT string::len($value) > 2`: `CREATE u:a` writes
+        // the row, `CREATE u:b SET nick = 'x'` raises "Found 'x' for field
+        // `nick` … but field must conform to". So the optional's NONE arm is
+        // dropped here, and `ASSERT string::len($value) > 2` on an
+        // `option<string>` stops being a 5002.
+        //
+        // Only ASSERT. `VALUE` and `DEFAULT` *are* evaluated with NONE — the
+        // same schema spelled `VALUE string::uppercase($value)` answers
+        // "Argument 1 was the wrong type. Expected `string` but found `NONE`"
+        // on `CREATE`, and `DEFAULT string::uppercase($value)` does too — so
+        // `$value` keeps the declared kind whole in those clauses, and the
+        // finding they raise is a true positive.
+        let asserted = declared
+            .clone()
+            .map(|kind| crate::lattice::subtract(&kind, &Kind::None).unwrap_or(kind));
+        let kind = with_value_bound(ctx, asserted, &stmt.table.node, |ctx| {
             let fact = crate::analyzer::expression::infer::infer_expression_fact(assert, ctx);
             crate::analyzer::expression::check::check_value_expression(ctx, assert);
             fact.kind
@@ -382,7 +399,17 @@ fn check_field_definition(
         Some(table)
             if !stmt.overwrite
                 && !stmt.if_not_exists
-                && field_is_duplicate(table, &stmt.path.node, &field_key) =>
+                && field_is_duplicate(table, &stmt.path.node, &field_key)
+                // The additive pre-pass makes every OTHER source's field look
+                // already defined regardless of registration order — only a
+                // genuine predecessor (this same source, earlier, or a source
+                // that truly precedes it) is one this statement redefines;
+                // the other side of a cross-file pair reports it, once, from
+                // there. See `table.rs`'s identical guard.
+                && table
+                    .fields
+                    .get(&field_key)
+                    .is_some_and(|existing| ctx.source_precedes(existing.name_span.source())) =>
         {
             let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
                 surrealql_analyzer_syntax::span::SourceSpan::new(

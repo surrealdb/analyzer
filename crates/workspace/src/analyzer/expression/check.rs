@@ -676,7 +676,8 @@ fn check_binary(
             || literal_union_excludes(ctx, &right, lhs)
             || sentinel_mismatch(lhs, rhs, &right)
             || sentinel_mismatch(rhs, lhs, &left)
-            || disjoint_records(&left, &right))
+            || disjoint_records(&left, &right)
+            || disjoint_collections(&left, &right))
     {
         emit(
             ctx,
@@ -1033,6 +1034,35 @@ fn disjoint_records(left: &Kind, right: &Kind) -> bool {
     }
 }
 
+/// C3, the collection twin: `=`/`!=` between two collections that are each
+/// known to hold at least one element, of provably disjoint kinds, is
+/// constant — no `[1, 2]` can equal any `['a']`.
+///
+/// Both bounds are load-bearing and both are deliberately narrow. A length of
+/// `Some(0)` is the empty literal `[]`, which equals another empty collection,
+/// so it proves nothing; an unbounded length is a declared field or a query
+/// result, which may hold nothing and compare equal to anything empty. And an
+/// `Any` element — what `[]` itself carries — is never disjoint from
+/// anything. What is left is two written, non-empty literals whose elements
+/// cannot overlap, which is the same claim [`disjoint_records`] makes about
+/// table sets.
+fn disjoint_collections(left: &Kind, right: &Kind) -> bool {
+    fn bounded(kind: &Kind) -> Option<&Kind> {
+        match kind {
+            Kind::Array(element, Some(length)) | Kind::Set(element, Some(length))
+                if *length > 0 =>
+            {
+                Some(element.as_ref())
+            }
+            _ => None,
+        }
+    }
+    match (bounded(left), bounded(right)) {
+        (Some(left), Some(right)) => crate::lattice::kinds_are_disjoint(left, right),
+        _ => false,
+    }
+}
+
 /// C2/D2: whether a value of kind `a` could ever equal a value of kind `b` —
 /// the membership-element predicate. Same kind, numeric-compatible, records
 /// whose table sets overlap, or any variant of a union. `Any`/`NONE`/`NULL`
@@ -1213,6 +1243,16 @@ fn comparable(left: &Kind, right: &Kind) -> bool {
     // their base kind; unions compare if any variant does.
     match (left, right) {
         (Kind::Record(_), Kind::Record(_)) => true,
+        // Collection comparison is structural and total. The engine answers a
+        // bool for every pair — `[1,2] != []` is `true`, `[1] = ['a']` is
+        // `false`, `[1,2] < [3]` is `true` — so a differing element kind or
+        // length is a *result*, never a kind error. Demanding an identical
+        // element kind and an identical fixed length made
+        // `(SELECT VALUE id FROM t LIMIT 1) != []`, the idiomatic existence
+        // test, a 2004: `[]` infers `array<any, 0>`, so every comparison of a
+        // non-empty array against it failed. The provable-constant half of
+        // that is not lost — it moves to 7005 via `disjoint_collections`.
+        (Kind::Array(..) | Kind::Set(..), Kind::Array(..) | Kind::Set(..)) => true,
         (Kind::Either(variants), other) | (other, Kind::Either(variants)) => {
             variants.iter().any(|variant| comparable(variant, other))
         }

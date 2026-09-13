@@ -386,6 +386,23 @@ fn check_fetch_clauses(stmt: &ast::SelectStmt, table: &TableDef, ctx: &mut Analy
             if check_clause_field_path(ctx, table, &segments, idiom.span) {
                 continue;
             }
+            // A dotted FETCH expands its record-holding *prefix*: on 3.2.3
+            // `SELECT * FROM article FETCH author.name` answers
+            // `{ author: { id: author:a, name: 'ann' }, … }` — the link is
+            // substituted and the tail is along for the ride. Asking the whole
+            // path instead reported `FETCH author.name does nothing —
+            // 'string' holds no records` about a FETCH that plainly does
+            // something. An unresolvable prefix proves nothing and is silent
+            // for the same reason it is on the whole path.
+            let prefix_expands = (1..segments.len()).any(|len| {
+                !matches!(
+                    resolve_field_path(ctx.schema(), table, &segments[..len]),
+                    Some(kind) if kind != Kind::Any && !kind_may_hold_record(&kind)
+                )
+            });
+            if prefix_expands {
+                continue;
+            }
             // FETCH substitutes records; fetching a scalar does nothing.
             // Resolve across record links so `FETCH team.owner` reads the
             // linked field's kind rather than the opaque `Any` boundary.
@@ -1440,6 +1457,31 @@ fn resolve_graph_chain(
         match &part.node {
             // A `[WHERE …]` filter narrows rows without changing the type.
             ast::IdiomPart::Where(_) => continue,
+            // `<~T` is usually a reference back-link, not a hop: it lands on
+            // `T` itself whenever something on `T` references back, and there
+            // is no relation to walk. Falling into the hop arm below is what
+            // left `SELECT <~comment AS cs FROM post` typed `any`.
+            //
+            // But `<~` also spells an ordinary relation hop when `T` is a
+            // `TYPE RELATION` table with `current` on its far side — the
+            // grammar aliases `<~` and `<-` to the same `LookupLeft` node, and
+            // nothing about a relation *edge* requires a `REFERENCE` field to
+            // prove the hop (`organization.employees COMPUTED <~employee_of`
+            // over `TYPE RELATION FROM account TO organization` has no such
+            // field; the corpus's own schema depends on this resolving). Try
+            // the reference-field proof first and only fall back to the
+            // ordinary hop when nothing on `T` actually references back.
+            ast::IdiomPart::Graph { step, dir } if step.reference => {
+                let [target] = step.targets.as_slice() else {
+                    return None;
+                };
+                current = if reference_back_step_kind(&current, &target.node, schema).is_some() {
+                    target.node.clone()
+                } else {
+                    graph_hop_target(&current, dir.node, &target.node, schema)?
+                };
+                stepped = true;
+            }
             ast::IdiomPart::Graph { .. } => {
                 let (dir, target) = single_graph_target(&part.node)?;
                 current = graph_hop_target(&current, dir, target, schema)?;
@@ -1495,18 +1537,24 @@ fn graph_hop_target(
 /// peeled first — stepping from `array<record<user>>` gives
 /// `array<record<follows>>`, not an array of arrays.
 ///
+/// A `<~T` reference step is resolved here too, by the same proof
+/// `DEFINE FIELD … COMPUTED <~T` has always used — the records of `T` whose
+/// own `REFERENCE` field links back. When nothing on `T` carries one, `<~T`
+/// falls back to [`graph_hop_target`] exactly as `<-T` would: a `TYPE
+/// RELATION` table's implicit `in`/`out` links back just as well, with no
+/// `REFERENCE` field to show for it.
+///
 /// `None` — prove-or-stay-silent — when the step names no single table (`?`,
-/// `->(a, b)`, unmodeled syntax, a `<~` reference step), when the receiver is
-/// not a record of exactly one table, or when the schema proves no such
-/// connection. The step's own findings come from [`super::graph`]; this
-/// resolves only the type.
+/// `->(a, b)`, unmodeled syntax), when the receiver is not a record of exactly
+/// one table, or when the schema proves no such connection. The step's own
+/// findings come from [`super::graph`]; this resolves only the type.
 pub(crate) fn graph_step_kind(
     current: &Kind,
     dir: ast::GraphDir,
     step: &ast::GraphStep,
     schema: &SchemaIndex,
 ) -> Option<Kind> {
-    if step.reference || step.wildcard || !step.unmodeled.is_empty() {
+    if step.wildcard || !step.unmodeled.is_empty() {
         return None;
     }
     let [target] = step.targets.as_slice() else {
@@ -1516,11 +1564,43 @@ pub(crate) fn graph_step_kind(
     let [source] = sources.as_slice() else {
         return None;
     };
+    // A `<~T` step is proven either as a record-reference back-link (`T`
+    // carries a `REFERENCE` field pointing here) or, when nothing does, as an
+    // ordinary relation hop (`T` is a `TYPE RELATION` table with `source` on
+    // its far side — see `resolve_graph_chain`'s identical fallback).
+    if step.reference {
+        if let Some(kind) =
+            reference_back_step_kind(&source.to_string(), target.node.as_str(), schema)
+        {
+            return Some(kind);
+        }
+    }
     let landed = graph_hop_target(&source.to_string(), dir, target.node.as_str(), schema)?;
     Some(Kind::Array(
         Box::new(Kind::Record(vec![landed.as_str().into()])),
         None,
     ))
+}
+
+/// The records of `target` whose own `REFERENCE` field links back to
+/// `self_table`: `array<record<target>>`, or `None` when `target` is not a
+/// defined table or nothing on it points back.
+///
+/// The shared core of the two places a `<~` is resolved — the `COMPUTED <~T`
+/// clause and a `<~T` written in a query expression. They were separate
+/// before, which is how the query-expression spelling came to be routed into
+/// the *graph* validator and reported as "not a relation table".
+pub(crate) fn reference_back_step_kind(
+    self_table: &str,
+    target: &str,
+    schema: &SchemaIndex,
+) -> Option<Kind> {
+    let target_table = schema.tables.get(target)?;
+    let points_back = target_table
+        .fields
+        .values()
+        .any(|field| field.reference && kind_targets_table(field.kind.as_ref(), self_table));
+    points_back.then(|| Kind::Array(Box::new(Kind::Record(vec![target.into()])), None))
 }
 
 /// A graph part's direction and single target table. Multi-target steps
@@ -1583,21 +1663,15 @@ pub(crate) fn reference_back_traversal_kind(
     schema: &SchemaIndex,
 ) -> Option<Kind> {
     let (target, indexed) = reference_back_target(idiom)?;
-    let target_name = target.node.as_str();
-    let target_table = schema.tables.get(target_name)?;
-    let points_back = target_table
-        .fields
-        .values()
-        .any(|field| field.reference && kind_targets_table(field.kind.as_ref(), self_table));
-    if !points_back {
-        return None;
+    let array = reference_back_step_kind(self_table, target.node.as_str(), schema)?;
+    if !indexed {
+        return Some(array);
     }
-    let element = Kind::Record(vec![target_name.into()]);
-    Some(if indexed {
-        element
-    } else {
-        Kind::Array(Box::new(element), None)
-    })
+    // `<~T[0]` selects ONE element out of the array.
+    match array {
+        Kind::Array(element, _) => Some(*element),
+        other => Some(other),
+    }
 }
 
 /// The *syntactic* half of [`reference_back_traversal_kind`]: the table a
@@ -3601,7 +3675,7 @@ pub(crate) fn field_path_is_absent(
     }
     // The same two escapes `check_field_path` makes before it emits: a
     // schemaless row is open by design, and a path that resolves is present.
-    !table.fields.is_empty() && kind_for_path(table, segments).is_none()
+    table.schemafull && kind_for_path(table, segments).is_none()
 }
 
 /// Validates a (possibly link-crossing) field path against the schema, emitting
@@ -5156,32 +5230,35 @@ mod tests {
     }
 
     #[test]
-    fn fetch_resolves_across_a_record_link_to_judge_the_target_field() {
-        // `team` on `user` is a record link; the FETCH check must cross it to
-        // type the trailing segment. `team.label` is a scalar (FETCH does
-        // nothing → 1023); `team.owner` is itself a link (FETCH is meaningful
-        // → no finding). Before link-crossing both stayed `Any` and neither
-        // fired.
+    fn fetch_judges_the_record_holding_prefix_of_a_path() {
+        // A dotted FETCH expands its prefix and carries the tail along: 3.2.3
+        // answers `{ id: user:u, team: { id: team:t, label: 'x' } }` for
+        // `FETCH team.label`, so neither dotted form does nothing. A *bare*
+        // scalar is the shape 1023 is for.
         let schema = schema_from(
             "DEFINE TABLE team SCHEMAFULL;\n\
              DEFINE FIELD label ON team TYPE string;\n\
              DEFINE FIELD owner ON team TYPE record<user>;\n\
              DEFINE TABLE user SCHEMAFULL;\n\
+             DEFINE FIELD nickname ON user TYPE string;\n\
              DEFINE FIELD team ON user TYPE record<team>;",
         );
 
-        let (_, scalar) = analyze_diagnostics(&schema, "SELECT * FROM user FETCH team.label;");
+        for fetched in ["team.label", "team.owner"] {
+            let (_, expands) =
+                analyze_diagnostics(&schema, &format!("SELECT * FROM user FETCH {fetched};"));
+            assert!(
+                !codes(&expands).contains(&1023),
+                "FETCH {fetched} expands `team`, got {:?}",
+                codes(&expands)
+            );
+        }
+
+        let (_, scalar) = analyze_diagnostics(&schema, "SELECT * FROM user FETCH nickname;");
         assert!(
             codes(&scalar).contains(&1023),
-            "FETCH over a linked scalar should fire 1023, got {:?}",
+            "FETCH over a bare scalar should fire 1023, got {:?}",
             codes(&scalar)
-        );
-
-        let (_, linked) = analyze_diagnostics(&schema, "SELECT * FROM user FETCH team.owner;");
-        assert!(
-            !codes(&linked).contains(&1023),
-            "FETCH over a linked record must not fire 1023, got {:?}",
-            codes(&linked)
         );
     }
 
@@ -6202,12 +6279,14 @@ mod tests {
 
     #[test]
     fn destructure_against_schemaless_target_emits_no_1002() {
-        // `user` here has no declared fields (schemaless): field-level checks
-        // are skipped by design, so a destructure emits no false positive.
+        // `user` here is schemaless: field-level checks are skipped by design,
+        // so a destructure emits no false positive. (The fixture used to spell
+        // it `SCHEMAFULL` and rely on its *field map* being empty, which is
+        // the confusion the 1002 gate itself had.)
         let schema = schema_from(
             "DEFINE TABLE person SCHEMAFULL;\n\
              DEFINE FIELD name ON person TYPE string;\n\
-             DEFINE TABLE user SCHEMAFULL;\n\
+             DEFINE TABLE user SCHEMALESS;\n\
              DEFINE TABLE friend TYPE RELATION IN person OUT user;",
         );
 

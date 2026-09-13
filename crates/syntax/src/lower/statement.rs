@@ -26,7 +26,7 @@ use crate::ast::{
     IfElseStmt, IndexKind, InfoStmt, InsertData, InsertStmt, KillStmt, LetStmt, LiveSelectStmt,
     OptionStmt, OrderClause, OrderKey, Projection, RebuildStmt, RelateStmt, RelationDef,
     RemoveStmt, RemoveTarget, ReturnMode, ReturnStmt, SelectStmt, ShowStmt, SleepStmt, Spanned,
-    Statement, ThrowStmt, UpdateStmt, UpsertStmt, UseStmt,
+    Statement, ThrowStmt, UpdateStmt, UpsertStmt, UseStmt, ViewClause,
 };
 use crate::ast::{Expr, Literal};
 use crate::span::ByteRange;
@@ -1275,6 +1275,7 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
         drop: false,
         changefeed: false,
         permissions: Vec::new(),
+        view: None,
     };
     let mut named = false;
 
@@ -1300,7 +1301,8 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
             "PermissionsBasicClause" | "PermissionsForClause" => {
                 lower_permission_predicates(child, text, &mut def.permissions);
             }
-            "CommentClause" | "TableViewClause" => {
+            "TableViewClause" => def.view = Some(lower_view_clause(child, text)),
+            "CommentClause" => {
                 // Recognized but not modeled for type inference.
             }
             _ if is_broken(child) => {}
@@ -1309,6 +1311,40 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
     }
 
     def
+}
+
+/// `AS SELECT <predicates> FROM <sources>` — a view's projection and body,
+/// with no wrapping `Fields` node: the predicate and source children sit
+/// directly under `TableViewClause`, exactly as [`lower_live_select`] finds
+/// them for `LIVE SELECT`. `WHERE`/`GROUP` are recognized by the grammar
+/// (`TableViewClause` admits them) but not modeled here — see
+/// [`ast::ViewClause`]'s doc.
+fn lower_view_clause(node: Node<'_>, text: &str) -> ViewClause {
+    let mut clause = ViewClause {
+        projections: Vec::new(),
+        from: Vec::new(),
+    };
+    let mut saw_from = false;
+
+    for child in named_children(node) {
+        match child.kind() {
+            "Keyword" => {
+                if text[child.byte_range()].eq_ignore_ascii_case("from") {
+                    saw_from = true;
+                }
+            }
+            "Any" if !saw_from => clause
+                .projections
+                .push(Projection::Wildcard(node_range(child))),
+            "Predicate" if !saw_from => clause.projections.push(lower_projection(child, text)),
+            _ if saw_from && is_source_node(child) => {
+                clause.from.push(lower_source(child, text));
+            }
+            _ => {}
+        }
+    }
+
+    clause
 }
 
 /// `TYPE RELATION IN a OUT b` — idents are assigned to the side whose

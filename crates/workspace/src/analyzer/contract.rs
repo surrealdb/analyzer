@@ -34,7 +34,7 @@
 use surrealdb_types::Kind;
 
 use crate::expression::ExpressionFact;
-use crate::kinds::kind_is_assignable_to;
+use crate::kinds::kind_coerces_to;
 use crate::lattice::kinds_are_disjoint;
 
 use super::facts::{ConstValue, Term};
@@ -322,7 +322,7 @@ impl Contract {
 /// * [`kinds_are_disjoint`] — a [`crate::lattice::meet`] of `⊥`: no value is at
 ///   once a `string` and an `int`, and no value is at once `'green'` and one of
 ///   `'red' | 'blue'`. This is the half that closes the literal hole.
-/// * `!`[`kind_is_assignable_to`] — the subtype test. It is *stricter* than
+/// * `!`[`kind_coerces_to`] — the acceptance test. It is *stricter* than
 ///   disjointness on the numeric tower, on purpose and with tests behind it:
 ///   `meet(float, int)` is `int` rather than `⊥`, because the lattice's order
 ///   reads `int` into `float` as a coercion, so a `TYPE int VALUE 1.5` is not
@@ -332,6 +332,14 @@ impl Contract {
 /// The third case — a real overlap that is not containment — is neither proof,
 /// and [`Strictness`] is which way the position folds it.
 ///
+/// Acceptance is asked *before* disjointness, and it is
+/// [`kind_coerces_to`] rather than [`kind_is_assignable_to`]: a value the
+/// engine coerces and validates at run time satisfies the contract however the
+/// lattice's containment order reads it. The two differ on `record` into
+/// `record<t>` and on `[]` into `set<t>`, and the lattice must keep answering
+/// "not contained" for both — `meet` and `kinds_are_disjoint` are built on that
+/// order — while a write of either is accepted SurrealQL and must not report.
+///
 /// `Any` on the value side proves nothing in either direction and is the single
 /// most common source of a false positive, so it short-circuits to `Unknown`
 /// here rather than being spelled `kind != Kind::Any` at each of twenty sites.
@@ -339,11 +347,11 @@ pub(crate) fn decide(actual: &Kind, expects: &Kind, strictness: Strictness) -> V
     if matches!(actual, Kind::Any) {
         return Verdict::Unknown;
     }
+    if kind_coerces_to(actual, expects) {
+        return Verdict::Satisfied;
+    }
     if kinds_are_disjoint(actual, expects) {
         return Verdict::Violated;
-    }
-    if kind_is_assignable_to(actual, expects) {
-        return Verdict::Satisfied;
     }
     match strictness {
         Strictness::Inhabits => Verdict::Violated,

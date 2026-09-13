@@ -114,14 +114,33 @@ fn every_spelling_of_the_or_guard_narrows_the_right_operand() {
 }
 
 #[test]
-fn an_unguarded_optional_argument_still_fails_the_arg_check() {
+fn an_unguarded_optional_argument_needs_no_guard_inside_an_assert() {
     let mut workspace = Workspace::default();
-    // Without the `= NONE OR` guard the optional reaches `string::len`
-    // as `option<string>`, which is a genuine 5002.
+    // The engine does not run an ASSERT for an absent value, so `$value` is
+    // the declared kind with its NONE dropped and the guard the spellings
+    // above exercise is not *needed* here — it only has to keep working.
     workspace.add_virtual_source(
         "schema".into(),
         "DEFINE TABLE t SCHEMAFULL;\n\
          DEFINE FIELD code ON t TYPE option<string>\n\
+             ASSERT string::len($value) = 10;"
+            .into(),
+    );
+
+    let output = analyze_workspace(&workspace);
+
+    assert_eq!(codes(&output, 5002), 0, "{:?}", output.diagnostics);
+}
+
+#[test]
+fn an_assert_argument_of_the_wrong_kind_still_fails_the_arg_check() {
+    let mut workspace = Workspace::default();
+    // Dropping the NONE is not dropping the check: `$value` here is an `int`,
+    // and `string::len` wants a string whether or not the field is optional.
+    workspace.add_virtual_source(
+        "schema".into(),
+        "DEFINE TABLE t SCHEMAFULL;\n\
+         DEFINE FIELD code ON t TYPE option<int>\n\
              ASSERT string::len($value) = 10;"
             .into(),
     );

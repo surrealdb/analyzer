@@ -12,11 +12,15 @@ use crate::schema::{FieldStep, SchemaIndex};
 /// kind (no extras — a closed object admits none), and every target property
 /// the source omits must be optional (`option<...>`), since an omitted
 /// property is `NONE`.
-fn object_is_assignable_to(src: &BTreeMap<String, Kind>, dst: &BTreeMap<String, Kind>) -> bool {
+fn object_is_assignable_to(
+    src: &BTreeMap<String, Kind>,
+    dst: &BTreeMap<String, Kind>,
+    mode: Relation,
+) -> bool {
     for (key, src_kind) in src {
         match dst.get(key) {
             Some(dst_kind) => {
-                if !kind_is_assignable_to(src_kind, dst_kind) {
+                if !assignable(src_kind, dst_kind, mode) {
                     return false;
                 }
             }
@@ -47,8 +51,73 @@ pub(crate) fn kind_admits_none(kind: &Kind) -> bool {
 /// precision was lost". Asking that question with a second relation would let
 /// the two drift exactly as the refinement transforms did.
 pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
+    assignable(actual, expected, Relation::Subtype)
+}
+
+/// Whether the *engine* accepts a value of `actual` where `expected` is
+/// required — [`kind_is_assignable_to`] plus the coercions SurrealDB performs
+/// and checks at run time.
+///
+/// Two relations, not one widened relation, because they answer two different
+/// questions. [`kind_is_assignable_to`] is the analyzer's subtyping order and
+/// [`crate::lattice`] is built on it: a meet, a join and a disjointness proof
+/// all read it as containment, and its property tests hold it to that (a
+/// common lower bound of two kinds must not be claimed `Empty`; meet must stay
+/// associative). A *coercion* is not containment — a `record` is not a
+/// `record<user>`, it merely becomes one when the engine checks the table at
+/// run time — so folding coercions into the order breaks exactly those
+/// properties. Contract checking wants the engine's question, and asks it here.
+///
+/// The coercions, each one verified against SurrealDB 3.2.3:
+///
+/// * **unrefined `record` into `record<t>`.** `$auth` is only ever typed
+///   `record` (its table depends on the access method), and `UPDATE note SET
+///   owner = $auth` against `DEFINE FIELD owner ON note TYPE record<u>` writes
+///   the row — the engine coerces and validates the table itself. Two
+///   *constrained* sets that do not overlap (`record<company>` into
+///   `record<person>`) are still a provable mismatch and still report.
+/// * **the empty array literal into `set<t>`.** `[]` is the only spelling of
+///   an empty collection and infers `array<any, 0>`; `DEFINE FIELD tags ON t
+///   TYPE set<string> DEFAULT []` is accepted, exactly as `array<string>
+///   DEFAULT []` and `object DEFAULT {}` already were.
+/// * **`none | record` into a record destination.** That union is not a value
+///   shape the user wrote; it is how [`crate::context_params`] models `$auth`,
+///   whose NONE arm stands for "a root/NS/DB session has no subject" and whose
+///   record arm is unrefined because the access method is not modeled. Which
+///   of the two a given deployment is cannot be decided until `DEFINE ACCESS
+///   … TYPE RECORD` is lowered, and until then the analyzer must not bill the
+///   user for its own uncertainty: `UPDATE note SET owner = $auth` is the
+///   ownership idiom and the engine writes the row. Note how narrow this is —
+///   `option<record<u>>` into `record<u>` keeps reporting, because *that*
+///   NONE is a declared optional field the user really can leave unset.
+pub fn kind_coerces_to(actual: &Kind, expected: &Kind) -> bool {
+    assignable(actual, expected, Relation::EngineCoercion)
+}
+
+/// Which of the two relations [`assignable`] is computing: the analyzer's
+/// subtyping order, or that order plus the engine's run-time coercions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    /// Containment. The order [`crate::lattice`] is built on.
+    Subtype,
+    /// Containment plus what the engine coerces and checks at run time.
+    EngineCoercion,
+}
+
+/// The shared body of [`kind_is_assignable_to`] and [`kind_coerces_to`]. Every
+/// recursive step threads `mode` through, so a coercion is admitted at any
+/// depth a kind is compared — inside a union arm, an object property or a
+/// collection element — and not only at the top.
+fn assignable(actual: &Kind, expected: &Kind, mode: Relation) -> bool {
     if matches!(expected, Kind::Any) || actual == expected {
         return true;
+    }
+    // The `$auth` shape, normalized before the union rules rather than handled
+    // inside them: dropping the modeling NONE leaves plain `record`, and every
+    // rule below — including a union *target* like `option<record<u>>` —
+    // then applies unchanged. See [`kind_coerces_to`].
+    if mode == Relation::EngineCoercion && is_unrefined_optional_record(actual) {
+        return assignable(&Kind::Record(Vec::new()), expected, mode);
     }
     // The two union rules. A union SOURCE fits where every one of its variants
     // fits; a union TARGET accepts whatever any one of its variants accepts
@@ -65,12 +134,12 @@ pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
     if let Kind::Either(variants) = actual {
         return variants
             .iter()
-            .all(|variant| kind_is_assignable_to(variant, expected));
+            .all(|variant| assignable(variant, expected, mode));
     }
     if let Kind::Either(variants) = expected {
         return variants
             .iter()
-            .any(|variant| kind_is_assignable_to(actual, variant));
+            .any(|variant| assignable(actual, variant, mode));
     }
     // Geometry. A geometry fits a geometry target that names no shape or
     // names every one of the source's (`geometry<point>` into `geometry`, or
@@ -97,7 +166,7 @@ pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
     if let (Kind::Literal(KindLiteral::Object(src)), Kind::Literal(KindLiteral::Object(dst))) =
         (actual, expected)
     {
-        return object_is_assignable_to(src, dst);
+        return object_is_assignable_to(src, dst, mode);
     }
     // Prove-or-silent against a scalar *literal* target (`'active'`, `2`):
     // a source that is merely the literal's base kind (`string`, `int`)
@@ -124,12 +193,12 @@ pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
         if literal_base_kind(actual).is_some() {
             return false;
         }
-        return kind_is_assignable_to(actual, &expected_base);
+        return assignable(actual, &expected_base, mode);
     }
     // A literal kind is assignable wherever its base kind is: `'active'` is
     // a string, `{ a: int }` is an object.
     if let Some(base) = literal_base_kind(actual) {
-        return kind_is_assignable_to(&base, expected);
+        return assignable(&base, expected, mode);
     }
     // Collections are covariant in their element and bounded by the target's
     // length. Array and Set stay distinct — SurrealDB never coerces one into
@@ -143,7 +212,19 @@ pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
         if dst_tables.is_empty() {
             return true;
         }
-        return !src_tables.is_empty() && src_tables.iter().all(|table| dst_tables.contains(table));
+        if src_tables.is_empty() {
+            // Unrefined `record` is not *contained* in `record<t>`, but the
+            // engine coerces it into one and checks the table at run time.
+            return mode == Relation::EngineCoercion;
+        }
+        return src_tables.iter().all(|table| dst_tables.contains(table));
+    }
+    // `[]` — the only spelling of an empty collection — infers `array<any, 0>`,
+    // and the engine takes it as the empty set of any `set<t>`.
+    if mode == Relation::EngineCoercion
+        && matches!((actual, expected), (Kind::Array(_, Some(0)), Kind::Set(..)))
+    {
+        return true;
     }
     match (actual, expected) {
         (Kind::Array(src_elem, src_len), Kind::Array(dst_elem, dst_len))
@@ -152,7 +233,7 @@ pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
             // makes element covariance vacuous.
             let elements_ok = matches!(**src_elem, Kind::Any)
                 || matches!(**dst_elem, Kind::Any)
-                || kind_is_assignable_to(src_elem, dst_elem);
+                || assignable(src_elem, dst_elem, mode);
             return elements_ok && length_fits(*src_len, *dst_len);
         }
         _ => {}
@@ -164,6 +245,25 @@ pub fn kind_is_assignable_to(actual: &Kind, expected: &Kind) -> bool {
             Kind::Number
         ) | (Kind::Int, Kind::Float | Kind::Decimal)
     )
+}
+
+/// Whether a kind is the analyzer's model of an unrefined optional record —
+/// a union of `none`/`null` arms and at least one `record<>` with no table
+/// named. `option<record<u>>` is not it: the table is known, so the NONE is a
+/// real optionality claim rather than "which access method is connected".
+fn is_unrefined_optional_record(kind: &Kind) -> bool {
+    let Kind::Either(variants) = kind else {
+        return false;
+    };
+    let mut saw_open_record = false;
+    for variant in variants {
+        match variant {
+            Kind::None | Kind::Null => {}
+            Kind::Record(tables) if tables.is_empty() => saw_open_record = true,
+            _ => return false,
+        }
+    }
+    saw_open_record
 }
 
 /// The geometry shape a GeoJSON object literal spells: a `type` that names one

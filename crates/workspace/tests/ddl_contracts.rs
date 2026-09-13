@@ -161,22 +161,46 @@ fn a_single_definition_is_never_its_own_duplicate() {
 
 #[test]
 fn a_duplicate_across_sources_reports_too() {
-    // Tables, indexes, events, params and analyzers: the other file's
-    // definition is in the catalog when this file's is walked.
+    // Tables, params, analyzers, and functions: the other file's definition
+    // is in the catalog when this file's is walked, for both files — so
+    // without a source-registration order, each of the two thinks it is the
+    // one redefining the other, and reports it. Only the SECOND-registered
+    // file (`b`) actually redefines anything; `a`'s own definitions are the
+    // first anyone wrote them, and reporting from there too was the "twice"
+    // bug (each database-level kind fired from both sources, one file's worth
+    // of noise for a definition that exists exactly once too many).
     let output = analyze_two(
-        "DEFINE TABLE t;\nDEFINE PARAM $p VALUE 1;\nDEFINE ANALYZER a TOKENIZERS blank;",
-        "DEFINE TABLE t;\nDEFINE PARAM $p VALUE 2;\nDEFINE ANALYZER a TOKENIZERS blank;",
+        "DEFINE TABLE t;\nDEFINE PARAM $p VALUE 1;\nDEFINE ANALYZER a TOKENIZERS blank;\nDEFINE FUNCTION fn::f() { RETURN 1; };",
+        "DEFINE TABLE t;\nDEFINE PARAM $p VALUE 2;\nDEFINE ANALYZER a TOKENIZERS blank;\nDEFINE FUNCTION fn::f() { RETURN 2; };",
     );
     assert_eq!(
         with_code(&output, 1022).len(),
-        6,
-        "each file sees the other's definition: {:?}",
+        4,
+        "only the later-registered file redefines: {:?}",
         output.diagnostics
     );
-    // Functions are the known gap: the within-source hoist replaces the other
-    // file's `fn::f` with this file's own before the walk, so neither side sees
-    // a foreign definition. Not asserted either way here — see
-    // `check_duplicate_function`'s doc.
+    for finding in with_code(&output, 1022) {
+        let source = finding.span().source().to_string();
+        assert!(
+            source.contains("virtual://b#"),
+            "the redefinition is reported from the later file, not the earlier one: {source} {finding:?}"
+        );
+    }
+}
+
+#[test]
+fn a_later_overwrite_in_another_file_silences_the_earlier_plain_define() {
+    // The exact shape SurrealKit's own fixture layout hits: a schema file's
+    // plain `DEFINE TABLE person` and a seed/fixture script's
+    // `DEFINE TABLE OVERWRITE person` naming the deliberate redeploy. Neither
+    // side used to know about the other's flag — the plain define fired
+    // because IT carried no `OVERWRITE`, never checking that the file
+    // registered after it did.
+    let output = analyze_two(
+        "DEFINE TABLE person SCHEMAFULL;",
+        "DEFINE TABLE OVERWRITE person SCHEMAFULL PERMISSIONS FULL;",
+    );
+    assert_none(&output, 1022, &format!("{:?}", output.diagnostics));
 }
 
 // ---- 1021: REMOVE removes something that exists ----

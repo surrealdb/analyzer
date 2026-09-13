@@ -651,7 +651,7 @@ fn analyze_workspace_reports_define_index_unknown_table_and_fields() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "schema".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nDEFINE INDEX by_email ON TABLE person FIELDS email;\nDEFINE INDEX missing_table_idx ON TABLE ghost FIELDS name;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nDEFINE INDEX by_email ON TABLE person FIELDS email;\nDEFINE INDEX missing_table_idx ON TABLE ghost FIELDS name;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -1156,6 +1156,73 @@ fn analyze_workspace_checks_define_field_clauses() {
             "missing {code}: {message}\nhave: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn a_view_tables_projection_becomes_its_field_set() {
+    // Engine-verified on 3.2.3: `DEFINE TABLE stats AS SELECT name, count()
+    // AS total FROM user GROUP BY name;` accepts `DEFINE INDEX itotal ON
+    // stats FIELDS total;` and builds the index — a view's field set is its
+    // projection's aliases (and bare field names), not a `DEFINE FIELD` it
+    // never has. This used to be E1002 on both `name` and `total`.
+    let mut workspace = Workspace::default();
+    workspace.add_virtual_source(
+        "schema".into(),
+        "DEFINE TABLE user SCHEMAFULL;\n\
+         DEFINE FIELD name ON user TYPE string;\n\
+         DEFINE TABLE stats AS SELECT name, count() AS total FROM user GROUP BY name;\n\
+         DEFINE INDEX itotal ON stats FIELDS total;\n\
+         DEFINE INDEX iname ON stats FIELDS name;"
+            .into(),
+    );
+
+    let output = analyze_workspace(&workspace);
+    assert_no_syntax_findings(&output.diagnostics);
+    assert_eq!(codes(&output, 1002), 0, "{:?}", output.diagnostics);
+}
+
+#[test]
+fn a_view_reading_an_unknown_field_still_stays_silent() {
+    // Modeling the view's field set from its projection is deliberately
+    // narrow: only a bare field or an aliased expression names one. A `*`
+    // wildcard, or a nested/computed projection this does not resolve,
+    // contributes nothing — the view is at least as permissive as this
+    // models, never more (prove-or-stay-silent), so an index over a field
+    // the model could not name stays unchecked rather than guessing wrong.
+    let mut workspace = Workspace::default();
+    workspace.add_virtual_source(
+        "schema".into(),
+        "DEFINE TABLE user SCHEMAFULL;\n\
+         DEFINE FIELD name ON user TYPE string;\n\
+         DEFINE TABLE everything AS SELECT * FROM user;\n\
+         DEFINE INDEX i ON everything FIELDS name;"
+            .into(),
+    );
+
+    let output = analyze_workspace(&workspace);
+    assert_no_syntax_findings(&output.diagnostics);
+    assert_eq!(codes(&output, 1002), 0, "{:?}", output.diagnostics);
+}
+
+#[test]
+fn a_views_from_target_is_checked_like_any_other_select() {
+    // Engine: `DEFINE TABLE stats AS SELECT * FROM nosuchtable;` answers
+    // "The table 'nosuchtable' does not exist". The view body used to be
+    // analyzed not at all, so this was silent.
+    let findings = unknown_table_findings("DEFINE TABLE stats AS SELECT * FROM nosuchtable;");
+    assert_eq!(
+        findings,
+        vec!["`nosuchtable` is not a defined table".to_string()]
+    );
+}
+
+#[test]
+fn a_views_known_from_target_reports_nothing() {
+    let findings = unknown_table_findings(
+        "DEFINE TABLE user SCHEMAFULL;\n\
+         DEFINE TABLE stats AS SELECT * FROM user;",
+    );
+    assert!(findings.is_empty(), "unexpected findings: {findings:?}");
 }
 
 #[test]

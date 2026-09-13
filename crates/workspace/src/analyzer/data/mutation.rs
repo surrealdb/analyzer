@@ -89,7 +89,13 @@ pub(crate) fn analyze_expression_positions_for(
                     if let Some(table) = row_table {
                         check_assignment_target(ctx, table, &assignment.target);
                         check_assignment_value(ctx, table, assignment);
-                        check_field_write_flags(ctx, table, &assignment.target, creating);
+                        check_field_write_flags(
+                            ctx,
+                            table,
+                            &assignment.target,
+                            &assignment.value,
+                            creating,
+                        );
                     }
                 }
             }
@@ -550,6 +556,7 @@ fn check_field_write_flags(
     ctx: &mut AnalysisContext<'_>,
     table: &TableDef,
     target: &ast::Spanned<ast::Idiom>,
+    value: &ast::Spanned<ast::Expr>,
     creating: bool,
 ) {
     let Some(segments) = plain_field_segments(&target.node) else {
@@ -560,7 +567,15 @@ fn check_field_write_flags(
     };
     let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target.span);
     let path = segments.join(".");
-    if field.readonly && !creating {
+    // The engine only rejects a READONLY write when the value actually
+    // changes: `UPDATE user:1 SET created = created;` round-trips on 3.2.3
+    // (the write is a no-op, not an error), while `SET created =
+    // time::now();` gives "Found changed value for field `created` … but
+    // field is readonly". An identity assignment — the field read back into
+    // itself, verbatim — is the one shape provably unchanged without
+    // evaluating anything.
+    let is_identity_assignment = matches!(&value.node, ast::Expr::Idiom(idiom) if plain_field_segments(idiom).as_ref() == Some(&segments));
+    if field.readonly && !creating && !is_identity_assignment {
         ctx.emit(
             surrealql_analyzer_diagnostics::catalog::finding(
                 span,
@@ -618,8 +633,10 @@ fn check_duplicate_targets(ctx: &mut AnalysisContext<'_>, assignments: &[ast::As
 }
 
 /// ONLY on a whole-table target is a deterministic runtime error for
-/// row-iterating mutations (4003); record ids and CREATE (always one row)
-/// are fine.
+/// row-*returning* mutations (4003); record ids and CREATE (always one row)
+/// are fine, and so is DELETE, which returns nothing and therefore never
+/// trips the single-result check — hence UPDATE and UPSERT are the only
+/// callers.
 pub fn check_only_on_table(
     ctx: &mut AnalysisContext<'_>,
     only: bool,
