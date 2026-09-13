@@ -165,6 +165,17 @@ message quotes the engine text it predicts.
   engine does refuse outright — the opposite case, an existing row being
   updated).
 
+- **4034 (new): an aggregate handed a column whose kind it cannot
+  meaningfully aggregate.** None of this errors on 3.2.3 — `SELECT
+  math::sum(name) FROM t GROUP ALL` over a `string` column answers `0`;
+  `math::mean` answers `NaN`; `math::max` answers `-Infinity`;
+  `time::min`/`time::max` answer `NONE`. A warning, since the call always
+  succeeds; scoped to a plain column reference (the same restriction 4028
+  places on itself), silent on `Any`/unresolved kinds and on a union
+  carrying a member of the required family. `math::mode` is excluded: it is
+  broken the same way over a numeric column too, so a kind check has
+  nothing useful to say about it.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

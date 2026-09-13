@@ -81,3 +81,8 @@ SELECT math::sum(views) AS total FROM article WHERE views > 0;
 -- collapses to a bare row, not a one-element array, whenever it matches
 -- exactly one, and FOR cannot iterate that.
 FOR $a IN (SELECT * FROM article) { RETURN $a; };
+
+-- 4034: an aggregate over a column whose kind it cannot meaningfully
+-- aggregate — `title` is a string, and SurrealDB does not error: it silently
+-- answers `0`.
+SELECT math::sum(title) FROM article GROUP ALL;

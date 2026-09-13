@@ -2301,6 +2301,9 @@ fn column_aggregate_kind(
         }
         column
     } else {
+        if !already_checked {
+            check_aggregate_column_kind(call, arg, &column, ctx);
+        }
         Kind::Array(Box::new(column), None)
     };
     Some(crate::analyzer::function::analyze_builtin_function(
@@ -2552,6 +2555,74 @@ fn contains_column_aggregate(expr: &ast::Expr) -> bool {
 ///
 /// (`count` is not listed: a bare `count()` takes no column, and `count(x)`
 /// needs no promotion — it accepts any argument.)
+/// 4034 — an aggregate handed a column whose kind it cannot meaningfully
+/// aggregate. Verified on 3.2.3: none of these are engine errors — `SELECT
+/// math::sum(name) FROM t GROUP ALL` (a `string` column) answers `0`;
+/// `math::mean(name)` answers `NaN`; `math::max(name)` answers `-Infinity`;
+/// `time::min(name)` answers `NONE`. The call always succeeds, so this is a
+/// warning: a provably-wrong-kind column is almost never the intended
+/// aggregate, but nothing here is a runtime failure to report as one.
+///
+/// Only a plain column reference is judged (the same shape 4028 restricts
+/// itself to) — a computed argument is already checked under its own row
+/// context by the caller. Silent on `Any`, unresolved kinds, and a union with
+/// at least one member of the required family (`option<int>`, `int | string`):
+/// the finding is for a column that can *never* be the right kind, not one
+/// that might be at runtime.
+fn check_aggregate_column_kind(
+    call: &ast::Call,
+    arg: &ast::Spanned<ast::Expr>,
+    column: &Kind,
+    ctx: &mut AnalysisContext<'_>,
+) {
+    let path = call.path.node.as_str();
+    let (family, accepts): (&str, fn(&Kind) -> bool) = if NUMERIC_AGGREGATES.contains(&path) {
+        ("numeric", crate::kinds::is_numeric)
+    } else if matches!(path, "time::min" | "time::max") {
+        ("datetime", |kind| matches!(kind, Kind::Datetime))
+    } else {
+        return;
+    };
+    if crate::kinds::could_satisfy(column, &accepts) {
+        return;
+    }
+    let span = SourceSpan::new(ctx.source().clone(), arg.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            4034,
+            format!(
+                "`{path}` aggregates a `{}` column, which is not {family}",
+                crate::render_kind(column)
+            ),
+        )
+        .with_help(format!(
+            "SurrealDB does not error: it silently answers a placeholder (0, NaN, -Infinity, or NONE depending on the function) — `{path}` needs a {family} column"
+        )),
+    );
+}
+
+/// The `math::*` aggregates whose result is only meaningful over numbers.
+/// `math::mode` is excluded: verified on 3.2.3, `math::mode(n)` over a
+/// GROUP-collected `int` column already answers `[NONE, NONE, NONE]` —
+/// wrong regardless of the column's kind, so a kind check has nothing useful
+/// to say about it, and flagging only the non-numeric case would wrongly
+/// imply the numeric one works.
+const NUMERIC_AGGREGATES: &[&str] = &[
+    "math::sum",
+    "math::mean",
+    "math::min",
+    "math::max",
+    "math::median",
+    "math::product",
+    "math::stddev",
+    "math::variance",
+    "math::spread",
+    "math::midhinge",
+    "math::trimean",
+    "math::interquartile",
+];
+
 fn is_column_aggregate(path: &str) -> bool {
     matches!(
         path,
