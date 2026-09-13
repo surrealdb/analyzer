@@ -170,7 +170,27 @@ fn string_node_to_query(string: Node<'_>, text: &str) -> Option<EmbeddedQuery> {
 
 /// Rebuilds the template's contents as analyzable SurrealQL: string
 /// fragments copy verbatim (with a segment-map entry each), and every
-/// `${...}` substitution becomes a `$__hostN` parameter.
+/// `${...}` substitution becomes a `$__hostN` parameter — a bound value,
+/// which is what a substitution almost always is (`WHERE s = ${x}`,
+/// `LIMIT ${n}`, ...).
+///
+/// A `$param` is not valid everywhere, though: SurrealQL takes a plain
+/// identifier, not an expression, in `ORDER BY`/`GROUP BY`/a field or table
+/// name, so `` `SELECT * FROM t ORDER BY ${field} DESC` `` cannot parse as
+/// written — `$__host0` sits where the grammar wants an `Ident`. That used to
+/// surface as a hard `S0001` syntax error on the user's `.ts` file, for code
+/// the user has no way to fix (the query is only ever assembled at runtime).
+///
+/// Built optimistically first (every hole as a parameter) and, only if that
+/// does not parse clean, rebuilt once more with each hole tree-sitter-
+/// surrealql could not place turned into an opaque backtick identifier
+/// instead (`` `__host0` ``  — legal wherever a plain identifier is, and
+/// exactly as unreadable to the analyzer as a `$param` in a position it
+/// cannot check). A hole rebuilt this way is deliberately left out of
+/// [`EmbeddedQuery::substitutions`]: it is no longer a value the host binds,
+/// so nothing downstream should treat it as a generated parameter. If even
+/// that still fails to parse, the whole query is dropped — silence beats a
+/// syntax error on code the user cannot edit.
 fn template_to_query(template: Node<'_>, text: &str) -> Option<EmbeddedQuery> {
     let content_start = template.start_byte() + 1;
     let content_end = template.end_byte().saturating_sub(1);
@@ -178,43 +198,153 @@ fn template_to_query(template: Node<'_>, text: &str) -> Option<EmbeddedQuery> {
         return None;
     }
 
+    let mut walker = template.walk();
+    let holes: Vec<Node<'_>> = template
+        .children(&mut walker)
+        .filter(|child| child.kind() == "template_substitution")
+        .collect();
+
+    // Attempt 0: every hole as a `$param` — correct, and the only build ever
+    // needed, for the overwhelming majority of templates.
+    let opaque_none = std::collections::HashSet::new();
+    let (query, segments, substitutions) =
+        build_template_query(text, content_start, content_end, &holes, &opaque_none);
+    let broken = surrealql_error_spans(&query);
+    if broken.is_empty() {
+        return Some(EmbeddedQuery {
+            text: query,
+            host_range: content_start..content_end,
+            segments,
+            substitutions,
+            live: false,
+        });
+    }
+    let opaque: std::collections::HashSet<usize> = substitutions
+        .iter()
+        .filter(|sub| {
+            broken
+                .iter()
+                .any(|span| ranges_overlap(span, &sub.embed_range))
+        })
+        .filter_map(|sub| {
+            sub.param
+                .strip_prefix(HOST_PARAM_PREFIX)
+                .and_then(|index| index.parse::<usize>().ok())
+        })
+        .collect();
+    if opaque.is_empty() {
+        // Nothing here traces back to a hole — a genuine mistake in the
+        // template's own text, not a substitution the grammar cannot place.
+        // Return it exactly as attempt 0 built it, so the analyzer's own
+        // parse of the query still reports the real syntax error, the way
+        // it always has.
+        return Some(EmbeddedQuery {
+            text: query,
+            host_range: content_start..content_end,
+            segments,
+            substitutions,
+            live: false,
+        });
+    }
+
+    // Attempt 1: retry with exactly the holes implicated above turned opaque.
+    let (query, segments, substitutions) =
+        build_template_query(text, content_start, content_end, &holes, &opaque);
+    if surrealql_error_spans(&query).is_empty() {
+        return Some(EmbeddedQuery {
+            text: query,
+            host_range: content_start..content_end,
+            segments,
+            substitutions,
+            live: false,
+        });
+    }
+    // Still unparseable even opaque — give up rather than guess a third
+    // time. Silence beats a syntax error on code the user cannot edit.
+    None
+}
+
+/// Builds the template query text once, with the holes named in `opaque`
+/// rewritten as backtick identifiers instead of `$param`s. `holes` is every
+/// `template_substitution` child, in source order — its index is each hole's
+/// stable identity across the (at most two) times this runs, so a hole that
+/// tree-sitter-surrealql accepted on the first attempt keeps the same
+/// `$__hostN` name if a *different* hole needs the retry.
+fn build_template_query(
+    text: &str,
+    content_start: usize,
+    content_end: usize,
+    holes: &[Node<'_>],
+    opaque: &std::collections::HashSet<usize>,
+) -> (String, Vec<Segment>, Vec<Substitution>) {
     let mut query = String::new();
     let mut segments = Vec::new();
     let mut substitutions = Vec::new();
     let mut host_cursor = content_start;
 
-    let mut walker = template.walk();
-    let children: Vec<_> = template.children(&mut walker).collect();
-    for child in children {
-        if child.kind() != "template_substitution" {
-            continue;
-        }
+    for (index, child) in holes.iter().enumerate() {
         push_fragment(
             text,
             host_cursor..child.start_byte(),
             &mut query,
             &mut segments,
         );
-        let param = format!("{HOST_PARAM_PREFIX}{}", substitutions.len());
-        let embed_start = query.len();
-        query.push('$');
-        query.push_str(&param);
-        substitutions.push(Substitution {
-            param,
-            host_range: child.byte_range(),
-            embed_range: embed_start..query.len(),
-        });
+        let param = format!("{HOST_PARAM_PREFIX}{index}");
+        if opaque.contains(&index) {
+            query.push('`');
+            query.push_str(&param);
+            query.push('`');
+        } else {
+            let embed_start = query.len();
+            query.push('$');
+            query.push_str(&param);
+            substitutions.push(Substitution {
+                param,
+                host_range: child.byte_range(),
+                embed_range: embed_start..query.len(),
+            });
+        }
         host_cursor = child.end_byte();
     }
     push_fragment(text, host_cursor..content_end, &mut query, &mut segments);
 
-    Some(EmbeddedQuery {
-        text: query,
-        host_range: content_start..content_end,
-        segments,
-        substitutions,
-        live: false,
-    })
+    (query, segments, substitutions)
+}
+
+/// Byte ranges of every unparseable span (`ERROR`/missing-token node)
+/// SurrealQL's own grammar finds in `query`. Empty means `query` parses
+/// clean — the common case, checked before anything else runs.
+fn surrealql_error_spans(query: &str) -> Vec<std::ops::Range<usize>> {
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_surrealql::LANGUAGE.into())
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(query, None) else {
+        return Vec::new();
+    };
+    let mut spans = Vec::new();
+    collect_error_spans(tree.root_node(), &mut spans);
+    spans
+}
+
+fn collect_error_spans(node: Node<'_>, spans: &mut Vec<std::ops::Range<usize>>) {
+    if node.is_error() || node.is_missing() {
+        spans.push(node.byte_range());
+        // The whole span is already claimed as unparseable; nothing inside
+        // it narrows the answer further.
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_error_spans(child, spans);
+    }
+}
+
+fn ranges_overlap(a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> bool {
+    a.start < b.end && b.start < a.end
 }
 
 fn push_fragment(
@@ -358,5 +488,48 @@ const other = css`b { color: red }`;
 
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0].text, "SELECT 1 FROM person");
+    }
+
+    #[test]
+    fn a_hole_in_identifier_position_becomes_an_opaque_placeholder() {
+        // `${'n'}` sits where ORDER BY wants a plain field name, not a bound
+        // parameter — `$__host1` there does not parse. This used to surface
+        // as a hard S0001 on the .ts file for code the user cannot edit; it
+        // must now silently rewrite as a backtick identifier instead, and the
+        // query as a whole must still parse (and still type the value hole
+        // that DOES belong in a value position).
+        let source =
+            "const q = db.query(`SELECT n, s FROM t WHERE s = ${\"'x'\"} ORDER BY ${'n'} DESC`);";
+        let queries = extract_typescript(source, false);
+
+        assert_eq!(queries.len(), 1);
+        let query = &queries[0];
+        assert!(
+            surrealql_error_spans(&query.text).is_empty(),
+            "rebuilt query still fails to parse: {}",
+            query.text
+        );
+        // The value hole (`${"'x'"}`) stayed a real, host-bound parameter...
+        assert_eq!(query.substitutions.len(), 1);
+        assert_eq!(query.substitutions[0].param, "__host0");
+        assert_eq!(
+            &source[query.substitutions[0].host_range.clone()],
+            "${\"'x'\"}"
+        );
+        // ...and the identifier-position hole (`${'n'}`) became an opaque
+        // backtick identifier, not a second substitution.
+        assert!(query.text.contains("ORDER BY `__host1` DESC"));
+    }
+
+    #[test]
+    fn a_genuine_syntax_mistake_unrelated_to_a_hole_still_reports() {
+        // A parse error the retry cannot possibly fix (nothing here is a
+        // substitution) must still come back as a query — dropping it would
+        // silence a real mistake, not just a false positive.
+        let source = r#"const q = db.query(`SELECT * FROM t WHERE x = "abc`);"#;
+        let queries = extract_typescript(source, false);
+
+        assert_eq!(queries.len(), 1);
+        assert!(!surrealql_error_spans(&queries[0].text).is_empty());
     }
 }
