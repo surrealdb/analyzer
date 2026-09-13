@@ -30,7 +30,18 @@ pub(crate) fn analyze_array_reduce(
 ) -> Kind {
     let element = match args.first() {
         Some(Kind::Array(element, _) | Kind::Set(element, _)) => (**element).clone(),
-        _ => return Kind::Any,
+        Some(kind) => {
+            crate::analyzer::function::check_argument_could_be(
+                ctx,
+                call,
+                0,
+                kind,
+                |kind| matches!(kind, Kind::Array(_, _) | Kind::Set(_, _)),
+                "an array or set",
+            );
+            return Kind::Any;
+        }
+        None => return Kind::Any,
     };
     let (accumulator, closure) = (element.clone(), closure_arg(call, 1));
     let Some(closure) = closure else {
@@ -38,13 +49,19 @@ pub(crate) fn analyze_array_reduce(
     };
     check_closure_arity(ctx, call, closure, 3);
 
-    closure_return_kind(closure, &[accumulator, element, Kind::Int], ctx).unwrap_or(Kind::Any)
+    let param_kinds = [accumulator, element, Kind::Int];
+    let result = closure_return_kind(closure, &param_kinds, ctx).unwrap_or(Kind::Any);
+    crate::analyzer::expression::check::check_closure_with_param_kinds(ctx, closure, &param_kinds);
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analyzer::test_support;
+    use surrealql_analyzer_diagnostics::Finding;
+    use surrealql_analyzer_syntax::parse::parse_source;
+    use surrealql_analyzer_syntax::source::SourceId;
 
     #[test]
     fn without_a_closure_expression_the_result_is_unknown() {
@@ -57,5 +74,35 @@ mod tests {
                 Kind::Any
             );
         });
+    }
+
+    fn codes(query: &str) -> Vec<u16> {
+        let parsed = parse_source(SourceId::new("fn:test"), query).expect("query parses");
+        let lowered = surrealql_analyzer_syntax::lower::lower_first_expr(&parsed, "FunctionCall")
+            .expect("function call node");
+        let schema = crate::schema::SchemaIndex::default();
+        let mut diagnostics: Vec<Finding> = Vec::new();
+        let mut ctx = AnalysisContext::new(
+            &schema,
+            parsed.source_id().clone(),
+            parsed.text(),
+            &mut diagnostics,
+        );
+        crate::analyzer::expression::analyze_expr(&mut ctx, &lowered);
+        diagnostics.iter().map(|f| f.code().number()).collect()
+    }
+
+    #[test]
+    fn the_closures_body_is_checked_against_the_accumulator_and_element() {
+        // accumulator and element are both the array's element kind (string):
+        // `$acc + $v` is fine, so this stays silent…
+        assert!(!codes("RETURN array::reduce(['a', 'b'], |$acc, $v| $acc + $v);").contains(&2004));
+        // …but a mismatched body is still caught.
+        assert!(codes("RETURN array::reduce([1, 2], |$acc, $v| $acc + 'x');").contains(&2004));
+    }
+
+    #[test]
+    fn a_non_collection_receiver_is_5002() {
+        assert!(codes("RETURN array::reduce(30, |$acc, $v| $acc);").contains(&5002));
     }
 }

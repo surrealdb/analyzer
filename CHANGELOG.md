@@ -176,6 +176,20 @@ message quotes the engine text it predicts.
   broken the same way over a numeric column too, so a kind check has
   nothing useful to say about it.
 
+- **A closure's body is finally checked against the receiver's element
+  kind, not just its declared one.** `check_closure` bound an undeclared
+  parameter to `any` — the honest answer for a closure read on its own — but
+  `array::map`/`array::filter`/`array::reduce`/`array::fold` (and their
+  `set::` twins) already know the concrete element kind their own signature
+  applies the closure to, and had done since `closure_return_kind` first
+  existed to type the *return*; nothing ever threaded it into the checking
+  half. `array::map(tags, |$x| $x + 1)` over `array<string>` now reports the
+  same 2004 an explicit `|$x: string|` always did; `tags.filter(|$t| $t >
+  3)` and `.map(|$r| $r.nmae)` are caught the same way. 5002 also now
+  requires these functions' receiver to actually be a collection —
+  `array::map(age, ...)` over a scalar `int` errors on the engine and now
+  reports it instead of silently returning `Any`.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

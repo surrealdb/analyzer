@@ -24,6 +24,15 @@ RETURN record::table('ann');
 -- 5002: `type::table` takes a string or a record, not a bare number.
 RETURN type::table(30);
 
+-- 5002: a closure-taking collection function needs a collection receiver —
+-- `views` is a scalar `int`.
+SELECT array::map(views, |$x| $x) FROM article WHERE id = article:hello;
+
+-- 2004: the receiver's element kind is threaded into an undeclared closure
+-- parameter, so an operand mismatch inside the body is caught the same way
+-- an explicitly-typed `|$x: string|` already was — `tags` is `array<string>`.
+SELECT array::map(tags, |$x| $x + 1) FROM article WHERE id = article:hello;
+
 -- 5005: a constant argument that fails the function's value contract.
 SELECT type::field('nope') FROM article WHERE id = article:hello;
 

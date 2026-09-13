@@ -30,7 +30,18 @@ pub(crate) fn analyze_array_fold(
 ) -> Kind {
     let element = match args.first() {
         Some(Kind::Array(element, _) | Kind::Set(element, _)) => (**element).clone(),
-        _ => return Kind::Any,
+        Some(kind) => {
+            crate::analyzer::function::check_argument_could_be(
+                ctx,
+                call,
+                0,
+                kind,
+                |kind| matches!(kind, Kind::Array(_, _) | Kind::Set(_, _)),
+                "an array or set",
+            );
+            return Kind::Any;
+        }
+        None => return Kind::Any,
     };
     let (accumulator, closure) = (
         args.get(1).cloned().unwrap_or(Kind::Any),
@@ -41,7 +52,10 @@ pub(crate) fn analyze_array_fold(
     };
     check_closure_arity(ctx, call, closure, 3);
 
-    closure_return_kind(closure, &[accumulator, element, Kind::Int], ctx).unwrap_or(Kind::Any)
+    let param_kinds = [accumulator, element, Kind::Int];
+    let result = closure_return_kind(closure, &param_kinds, ctx).unwrap_or(Kind::Any);
+    crate::analyzer::expression::check::check_closure_with_param_kinds(ctx, closure, &param_kinds);
+    result
 }
 
 #[cfg(test)]
@@ -76,5 +90,35 @@ mod tests {
             crate::analyzer::expression::analyze_expr(&mut ctx, &lowered),
             Kind::String
         );
+    }
+
+    fn codes(query: &str) -> Vec<u16> {
+        let parsed = parse_source(SourceId::new("fn:test"), query).expect("query parses");
+        let lowered = surrealql_analyzer_syntax::lower::lower_first_expr(&parsed, "FunctionCall")
+            .expect("function call node");
+        let schema = SchemaIndex::default();
+        let mut diagnostics: Vec<Finding> = Vec::new();
+        let mut ctx = AnalysisContext::new(
+            &schema,
+            parsed.source_id().clone(),
+            parsed.text(),
+            &mut diagnostics,
+        );
+        crate::analyzer::expression::analyze_expr(&mut ctx, &lowered);
+        diagnostics.iter().map(|f| f.code().number()).collect()
+    }
+
+    #[test]
+    fn the_closures_body_is_checked_against_the_accumulator_and_element() {
+        // `$v` is the array's element kind (int); `$acc` is the init's kind
+        // (string) — `$acc + $v` mismatches even though the fold's own return
+        // kind (string, from the init) never reveals it.
+        assert!(codes("RETURN array::fold([1, 2], 'x', |$acc, $v| $acc + $v);").contains(&2004));
+        assert!(!codes("RETURN array::fold([1, 2], 0, |$acc, $v| $acc + $v);").contains(&2004));
+    }
+
+    #[test]
+    fn a_non_collection_receiver_is_5002() {
+        assert!(codes("RETURN array::fold(30, 0, |$acc, $v| $acc);").contains(&5002));
     }
 }

@@ -141,9 +141,31 @@ pub fn check_value_expression(ctx: &mut AnalysisContext<'_>, expr: &ast::Spanned
 /// proves nothing, so a body that depends on it stays silent — prove or stay
 /// silent, applied to a position that used to be silent unconditionally.
 fn check_closure(ctx: &mut AnalysisContext<'_>, closure: &ast::Closure) {
+    let declared = crate::analyzer::expression::infer::closure_param_kinds(closure, ctx);
+    check_closure_with_param_kinds(ctx, closure, &declared);
+}
+
+/// [`check_closure`], parametrized over the kinds its parameters are bound
+/// to — the call-site half of the rule. A collection-consuming function
+/// (`array::map`, `.filter()`, `array::fold`, …) knows a concrete element
+/// kind its own signature does not carry (the closure's *declared* kind is
+/// `any` on every closure nobody bothered to annotate, which is nearly all
+/// of them), and passes it here instead of falling back to `check_closure`'s
+/// declared-only binding — the same `arg_kinds` [`closure_return_kind`]
+/// already threads through for typing, now also reaching the checking half
+/// that never ran on a concrete kind before.
+///
+/// Reusing [`check_closure`]'s only caller — the generic per-expression
+/// walk — for the *same* closure with only its declared (usually `any`)
+/// kinds is not a double report: an `any`-bound body proves nothing, so
+/// [`check_value_expression`] stays silent on it either way.
+pub(crate) fn check_closure_with_param_kinds(
+    ctx: &mut AnalysisContext<'_>,
+    closure: &ast::Closure,
+    arg_kinds: &[Kind],
+) {
     ctx.with_child_env(|ctx| {
-        let declared = crate::analyzer::expression::infer::closure_param_kinds(closure, ctx);
-        crate::analyzer::expression::infer::bind_closure_params(closure, &declared, ctx);
+        crate::analyzer::expression::infer::bind_closure_params(closure, arg_kinds, ctx);
         // `expr_fact` is the entry that pairs inference with checking, and it
         // routes a block body through the block analyzer itself.
         crate::analyzer::expression::expr_fact(ctx, &closure.body);
@@ -1842,15 +1864,16 @@ mod tests {
     }
 
     #[test]
-    fn an_undeclared_closure_parameter_proves_nothing() {
-        // The parameters are bound at their DECLARED kinds. The element kind a
-        // `.map()` applies the closure to is a fact about the call site, and
-        // reading it here would be inventing one — so an undeclared parameter
-        // is `any` and a body that depends on it stays silent. Checking a
-        // position that used to be unconditionally silent is exactly where a
-        // false-positive wave would come from.
+    fn an_undeclared_closure_parameter_is_bound_from_the_call_site() {
+        // An undeclared parameter's kind is `any` when the closure is read on
+        // its own — but `array::map`/`array::filter`/`array::fold`/
+        // `array::reduce` (and their `set::` twins) know a concrete element
+        // kind from the receiver they were actually called with, and thread
+        // it into the body the same way `closure_return_kind` always has for
+        // typing: `[1, 2]`'s element is `int`, so `$v + 'a'` is the same
+        // operand mismatch `|$v: int| $v + 'a'` already reported.
         let query = "RETURN array::map([1, 2], |$v| $v + 'a');";
-        assert!(!fires(query, "E2004"), "codes: {:?}", codes(query));
+        assert!(fires(query, "E2004"), "codes: {:?}", codes(query));
 
         // A body that does NOT depend on the parameter is still checked.
         let independent = "RETURN array::map([1, 2], |$v| 'a'.nomethod());";
@@ -1859,6 +1882,10 @@ mod tests {
             "codes: {:?}",
             codes(independent)
         );
+
+        // A closure read on its own (not applied to a receiver) still gets
+        // only its declared kind — `any` here — and proves nothing.
+        assert!(!fires("LET $f = |$v| $v + 'a';", "E2004"));
     }
 
     // ---- a check inside a guarded region reads the guarded kind ----
