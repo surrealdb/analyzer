@@ -21,11 +21,23 @@
 //! `null` result), so the server is exercised with the protocol it will
 //! actually get — unless a test opts out to observe what an unanswering
 //! client provokes.
+//!
+//! Diagnostics are matched on their **version**, never on arrival order.
+//! `publishDiagnostics` is not one per notification: a `.surql` file in a
+//! workspace root is published by the `initialized` sweep and again by the
+//! `didOpen` that follows, and tower-lsp serves messages concurrently, so how
+//! many of those spares a later request happens to drain is a matter of
+//! timing. A harness that took the next publish for a URI therefore read the
+//! *previous* edit's diagnostics whenever one was still in flight — green
+//! locally, one failure in CI. Every edit here waits for the publish carrying
+//! the version it sent.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -52,6 +64,21 @@ DEFINE FIELD title ON organization_role TYPE string;
 DEFINE TABLE employee_of SCHEMAFULL TYPE RELATION FROM account TO organization;
 DEFINE TABLE assigned_to SCHEMAFULL TYPE RELATION FROM organization_unit TO organization_role;
 ";
+
+/// How long a test waits for a publish before ending the process.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Disarms a publish watchdog when the wait leaves scope — returning *or*
+/// unwinding. A panic on the way (a server that died mid-test) is a clean
+/// failure; an armed watchdog would turn it into an abort of the whole binary
+/// ten seconds later.
+struct Disarm(Arc<AtomicBool>);
+
+impl Drop for Disarm {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 const SCHEMA_URI: &str = "file:///workspace/a_schema.surql";
 const QUERY_URI: &str = "file:///workspace/b_query.surql";
@@ -219,27 +246,92 @@ impl Lsp {
 
     /// Opens a document and returns the diagnostics the server publishes for it.
     fn did_open(&mut self, uri: &str, text: &str) -> Vec<Value> {
+        self.did_open_as(uri, "surrealql", text)
+    }
+
+    /// Opens a document under the language id its editor would send — a host
+    /// file arrives as `svelte` or `typescript`, never as SurrealQL — and
+    /// returns the diagnostics published for it.
+    fn did_open_as(&mut self, uri: &str, language_id: &str, text: &str) -> Vec<Value> {
         self.notify(
             "textDocument/didOpen",
             json!({"textDocument": {
-                "uri": uri, "languageId": "surrealql", "version": 1, "text": text,
+                "uri": uri, "languageId": language_id, "version": 1, "text": text,
             }}),
         );
-        self.next_publish(uri)
+        self.publish_for_version(uri, 1)
     }
 
-    /// The next `publishDiagnostics` notification for `uri`.
-    fn next_publish(&mut self, uri: &str) -> Vec<Value> {
+    /// The diagnostics the server publishes for `uri` **at `version`** — the
+    /// document version the edit we just sent carries.
+    ///
+    /// Never "the next publish for this URI": publishes are not one per
+    /// notification. A workspace root's `.surql` files are scanned at
+    /// `initialize` and swept by `initialized`, so a file that is then opened
+    /// is published twice with the same text; a request sent in between may or
+    /// may not drain the spare, because tower-lsp serves messages
+    /// concurrently. Taking the next publish therefore returned the *previous*
+    /// edit's diagnostics whenever the spare was still in flight — the
+    /// suppression tests' "the directive silenced nothing" failure, seen once
+    /// in CI and never locally. The version says which edit a publish
+    /// describes, so the harness waits for the one it asked about.
+    ///
+    /// The wait is bounded, and the bound is **fatal to the whole test
+    /// binary**. It is a blocking read on the child's stdout, so a publish
+    /// that never comes is a hang, and neither cargo nor libtest has a
+    /// per-test timeout to end it — a broken publish gate would burn a CI job
+    /// instead of failing a test. There is no way to fail only the waiting
+    /// test from another thread, so the watchdog says what was awaited and
+    /// ends the process with a failing status; the run reports no counts, and
+    /// the message is the result.
+    ///
+    /// It writes to the real stderr rather than through `eprintln!`: libtest
+    /// captures per-test output in a thread-local buffer that the spawned
+    /// thread inherits and `exit` discards, so the one line that explains the
+    /// abort would be the one line lost.
+    ///
+    /// The disarm is a guard, not a statement at the end: a `read_framed`
+    /// panic (the server died, and the test is about to fail cleanly and
+    /// legibly) must not leave a watchdog armed to abort the binary ten
+    /// seconds later, erasing every other result with it.
+    fn publish_for_version(&mut self, uri: &str, version: i64) -> Vec<Value> {
+        let arrived = Arc::new(AtomicBool::new(false));
+        {
+            let armed = Arc::clone(&arrived);
+            let awaited = format!("{uri} at version {version}");
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + PUBLISH_TIMEOUT;
+                while Instant::now() < deadline {
+                    if armed.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "\nsurrealql-analyzer-lsp stdio tests: timed out after {PUBLISH_TIMEOUT:?} \
+                     waiting for diagnostics for {awaited} — aborting the test binary"
+                );
+                let _ = std::io::stderr().flush();
+                std::process::exit(101);
+            });
+        }
+        let _disarm = Disarm(arrived);
+
         loop {
             let message = self.read_message();
-            if message["method"] == "textDocument/publishDiagnostics"
-                && message["params"]["uri"] == uri
+            if message["method"] != "textDocument/publishDiagnostics"
+                || message["params"]["uri"] != uri
             {
-                return message["params"]["diagnostics"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
+                continue;
             }
+            if message["params"]["version"].as_i64() != Some(version) {
+                continue;
+            }
+            return message["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
         }
     }
 
@@ -296,7 +388,7 @@ impl Lsp {
                 "contentChanges": [{"text": text}],
             }),
         );
-        self.next_publish(uri)
+        self.publish_for_version(uri, version)
     }
 
     /// Reads one raw `Content-Length`-framed message.
@@ -857,13 +949,7 @@ fn text_at(text: &str, range: &Value) -> String {
 fn a_bad_query_in_a_svelte_file_is_flagged_on_the_offending_token() {
     let mut lsp = Lsp::start();
     let _ = lsp.did_open(SCHEMA_URI, SCHEMA);
-    lsp.notify(
-        "textDocument/didOpen",
-        json!({"textDocument": {
-            "uri": HOST_URI, "languageId": "svelte", "version": 1, "text": HOST,
-        }}),
-    );
-    let diagnostics = lsp.next_publish(HOST_URI);
+    let diagnostics = lsp.did_open_as(HOST_URI, "svelte", HOST);
 
     let unknown_field = diagnostics
         .iter()
@@ -897,14 +983,8 @@ fn a_host_file_the_schema_satisfies_publishes_nothing() {
             "export const answer = 42;\n",
         ),
     ] {
-        lsp.notify(
-            "textDocument/didOpen",
-            json!({"textDocument": {
-                "uri": uri, "languageId": "typescript", "version": 1, "text": text,
-            }}),
-        );
         assert_eq!(
-            lsp.next_publish(uri),
+            lsp.did_open_as(uri, "typescript", text),
             Vec::<Value>::new(),
             "{uri} must publish nothing"
         );
@@ -921,26 +1001,17 @@ fn a_template_substitution_is_a_parameter_not_an_unknown_name() {
     let uri = "file:///workspace/src/interpolated.ts";
     let text = "const name = 'ada';\n\
                 const q = db.query(`SELECT username FROM account WHERE username = ${name}`);\n";
-    lsp.notify(
-        "textDocument/didOpen",
-        json!({"textDocument": {
-            "uri": uri, "languageId": "typescript", "version": 1, "text": text,
-        }}),
+    assert_eq!(
+        lsp.did_open_as(uri, "typescript", text),
+        Vec::<Value>::new()
     );
-    assert_eq!(lsp.next_publish(uri), Vec::<Value>::new());
 }
 
 #[test]
 fn hover_inside_an_embedded_query_answers_as_the_query() {
     let mut lsp = Lsp::start();
     let _ = lsp.did_open(SCHEMA_URI, SCHEMA);
-    lsp.notify(
-        "textDocument/didOpen",
-        json!({"textDocument": {
-            "uri": HOST_URI, "languageId": "svelte", "version": 1, "text": HOST,
-        }}),
-    );
-    let _ = lsp.next_publish(HOST_URI);
+    let _ = lsp.did_open_as(HOST_URI, "svelte", HOST);
 
     let cursor = HOST.find("username").expect("the field is in the template") + 2;
     let result = lsp.request(
@@ -1008,13 +1079,7 @@ fn a_query_inside_a_svelte_file_comes_back_syntax_highlighted() {
     let mut lsp = Lsp::start();
     let legend = lsp.token_legend();
     let _ = lsp.did_open(SCHEMA_URI, SCHEMA);
-    lsp.notify(
-        "textDocument/didOpen",
-        json!({"textDocument": {
-            "uri": HOST_URI, "languageId": "svelte", "version": 1, "text": HOST,
-        }}),
-    );
-    let _ = lsp.next_publish(HOST_URI);
+    let _ = lsp.did_open_as(HOST_URI, "svelte", HOST);
 
     let result = lsp.request(
         "textDocument/semanticTokens/full",
@@ -1353,7 +1418,7 @@ strict = false
         "workspace/didChangeWatchedFiles",
         json!({"changes": [{"uri": config_uri, "type": 2}]}),
     );
-    let after = lsp.next_publish(&page_uri);
+    let after = lsp.publish_for_version(&page_uri, 1);
     assert!(
         !after.iter().any(|d| d["code"] == "E1001"),
         "an allowed code must stop being published, got: {after:?}"
@@ -1450,6 +1515,34 @@ fn a_lint_is_suppressed_by_its_category_code_not_the_one_the_editor_displays() {
     assert_eq!(
         apply_lsp_edit("[lints]\n7015 = \"warn\"\n", &in_config),
         "[lints]\n7015 = \"allow\"\n"
+    );
+}
+
+/// The flake this pins: publishes are not one per notification, so "the next
+/// publish for this URI" is not this edit's answer.
+#[test]
+fn an_edit_is_answered_by_its_own_diagnostics_not_by_a_publish_still_in_flight() {
+    let root = TempRoot::new("versions");
+    root.write("a_schema.surql", ROOT_SCHEMA);
+    let query = "SELECT * FROM persn;\n";
+    let query_uri = root.write("b_query.surql", query);
+    root.write("surrealql-analyzer.toml", "[analysis]\nstrict = false\n");
+
+    // The query file is on disk, so the `initialized` sweep publishes it
+    // before any editor opens it, and the `didOpen` publishes the same
+    // findings again: two publishes, one `didOpen`. Nothing below drains the
+    // spare — whether an intervening request happened to do so was exactly
+    // what decided this suite's pass or failure in CI.
+    let mut lsp = Lsp::start_in(&root.path);
+    let opened = lsp.did_open(&query_uri, query);
+    let _ = diagnostic_with_code(&opened, "E1001");
+
+    let suppressed = "-- surrealql-analyzer: allow(E1001)\nSELECT * FROM persn;\n";
+    let after = lsp.did_change(&query_uri, 2, suppressed);
+    assert!(
+        !after.iter().any(|d| d["code"] == "E1001"),
+        "the answer to version 2 must be version 2's diagnostics, not the \
+         ones published for the text before it: {after:?}"
     );
 }
 
