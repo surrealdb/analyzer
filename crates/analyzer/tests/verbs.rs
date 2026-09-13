@@ -567,3 +567,47 @@ fn resolution_walks_up_from_the_output_directory_the_way_node_does() {
         .expect("empty package");
     assert!(!client_package_is_resolvable(&bare));
 }
+
+#[test]
+fn a_file_that_is_not_utf8_is_reported_and_the_rest_of_the_run_continues() {
+    // One stray latin-1 or binary file used to abort the whole run: exit 2,
+    // "stream did not contain valid UTF-8", and not one diagnostic for the
+    // files that were fine. The file is now one finding, at the byte that is
+    // not UTF-8, and every other source is still analyzed.
+    let root = temp_project_dir("not-utf8");
+    fs::create_dir_all(root.join("schema")).expect("schema dir");
+    fs::create_dir_all(root.join("queries")).expect("queries dir");
+    fs::write(
+        root.join("surrealql-analyzer.toml"),
+        "[sources]\nschema = [\"schema/**/*.surql\"]\nqueries = [\"queries/**/*.surql\"]\n",
+    )
+    .expect("write config");
+    fs::write(
+        root.join("schema/user.surql"),
+        "DEFINE TABLE user SCHEMAFULL;\nDEFINE FIELD name ON user TYPE string;",
+    )
+    .expect("write schema");
+    // `RETURN '<0xFF>';` — valid SurrealQL but for one byte no encoding of
+    // UTF-8 produces. The offset it names is where decoding stopped.
+    fs::write(root.join("queries/latin1.surql"), b"RETURN '\xff';").expect("write latin-1");
+    fs::write(root.join("queries/bad.surql"), "SELECT nope FROM user;").expect("write query");
+
+    let report = check(&discover(&root)).expect("the run is not aborted by one bad file");
+
+    assert!(!report.passed());
+    let undecodable: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("not UTF-8 text"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(undecodable.len(), 1, "{:#?}", report.diagnostics);
+    assert!(undecodable[0].contains("byte 8"), "{}", undecodable[0]);
+
+    // The good query was still analyzed.
+    let codes: Vec<&str> = report.diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert!(
+        codes.iter().any(|c| c.starts_with("E1002")),
+        "the other sources must still be analyzed: {codes:?}"
+    );
+}
