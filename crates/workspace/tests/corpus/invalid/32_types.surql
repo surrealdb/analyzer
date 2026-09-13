@@ -105,3 +105,6 @@ DEFINE FIELD grade ON ticket TYPE int DEFAULT 9 ASSERT $value <= 5;
 
 -- 2038: a constant write that fails the field's ASSERT.
 UPDATE ticket:1 SET priority = 9;
+
+-- 2039: a write to an existing relation row's in/out is silently discarded.
+UPDATE likes SET in = account:bob;

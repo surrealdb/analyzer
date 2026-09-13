@@ -126,6 +126,7 @@ removed table unknown); 1028 → 1027.
 | 2036 | GeoJSON literals have their declared shape | `{type: 'Pointt', ...}` | E | ✅ emitting |
 | 2037 | a field's DEFAULT satisfies its own ASSERT | `DEFAULT 'activ' ASSERT $value IN ['active','inactive']` | E | ✅ emitting |
 | 2038 | a constant written to a field satisfies the field's ASSERT | `DEFINE FIELD status ON t TYPE string ASSERT $value IN ['active','inactive']; CREATE t SET status = 'activ'` — the same fold as 2037 with `$value` bound to the written constant, at every constant write (`SET`, `CONTENT`/`MERGE`/`REPLACE`, `INSERT` objects and `VALUES`, `RELATE`, PATCH `add`/`replace`); silent unless the ASSERT folds to `false` outright, and silent when 2001 already rejected the value | E | ✅ emitting |
+| 2039 | a write to an existing relation row's `in`/`out` is silently discarded | `UPDATE wrote SET in = user:2` — verified on 3.2.3: the statement reports success and the row's `in` is unchanged; `CONTENT`/`MERGE` naming `in`/`out` do the same. `in`/`out` are fixed for the row's life once `RELATE`/`INSERT RELATION` creates it, so `UPDATE`/`UPSERT` naming either is never a mistake the engine tells the author about on its own — this is not the engine erroring, so it is a warning; `CREATE`/`INSERT` on a relation table are already 4019 (a different mistake, and an error) | W | ✅ emitting |
 
 Folded by the contract audit (2026-07-09): 2002, 2003, 2009, 2010, 2027 →
 2001; 2006, 2011 → 2005; 2013 → 2012; 2014, 2029 → 2004; 2023 → 2008;

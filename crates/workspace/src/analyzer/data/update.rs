@@ -149,6 +149,86 @@ mod tests {
         assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
     }
 
+    fn wrote_schema() -> SchemaIndex {
+        let parsed = parse_source(
+            SourceId::new("schema"),
+            "DEFINE TABLE account SCHEMAFULL;\n\
+             DEFINE TABLE wrote TYPE RELATION FROM account TO account SCHEMAFULL;\n\
+             DEFINE FIELD weight ON wrote TYPE float;",
+        )
+        .expect("schema should parse");
+        extract_schema(&[parsed]).schema
+    }
+
+    fn discarded_endpoint_writes(diagnostics: &[surrealql_analyzer_diagnostics::Finding]) -> usize {
+        diagnostics
+            .iter()
+            .filter(|finding| finding.code().number() == 2039)
+            .count()
+    }
+
+    #[test]
+    fn set_on_in_or_out_of_an_existing_edge_is_2039() {
+        let schema = wrote_schema();
+        for query in [
+            "UPDATE wrote SET in = account:2;",
+            "UPDATE wrote SET out = account:2;",
+            "UPDATE wrote:1 SET in = account:2, weight = 2.0;",
+        ] {
+            let (_, diagnostics) = analyze_with_diagnostics(&schema, query);
+            assert_eq!(
+                discarded_endpoint_writes(&diagnostics),
+                1,
+                "{query}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_or_merge_naming_in_or_out_of_an_existing_edge_is_2039() {
+        let schema = wrote_schema();
+        for query in [
+            "UPDATE wrote:1 CONTENT { in: account:2, out: account:3, weight: 1.0 };",
+            "UPDATE wrote:1 MERGE { in: account:2 };",
+        ] {
+            let (_, diagnostics) = analyze_with_diagnostics(&schema, query);
+            assert!(
+                discarded_endpoint_writes(&diagnostics) >= 1,
+                "{query}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_write_that_never_names_in_or_out_stays_silent() {
+        let schema = wrote_schema();
+        let (_, diagnostics) =
+            analyze_with_diagnostics(&schema, "UPDATE wrote:1 SET weight = 2.0;");
+        assert_eq!(
+            discarded_endpoint_writes(&diagnostics),
+            0,
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn in_or_out_on_a_plain_table_is_not_2039() {
+        // `in`/`out` are ordinary field names on a table that is not a
+        // relation — nothing is discarded there.
+        let schema_parsed = parse_source(
+            SourceId::new("schema"),
+            "DEFINE TABLE plain SCHEMAFULL;\nDEFINE FIELD in ON plain TYPE string;",
+        )
+        .expect("schema should parse");
+        let schema = extract_schema(&[schema_parsed]).schema;
+        let (_, diagnostics) = analyze_with_diagnostics(&schema, "UPDATE plain:1 SET in = 'x';");
+        assert_eq!(
+            discarded_endpoint_writes(&diagnostics),
+            0,
+            "{diagnostics:?}"
+        );
+    }
+
     #[test]
     fn infers_array_of_full_table_rows_by_default() {
         let schema_parsed = parse_source(

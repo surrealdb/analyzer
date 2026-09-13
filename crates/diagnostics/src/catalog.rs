@@ -70,6 +70,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (2036, "GeoJSON literals have their declared shape", Severity::Error, Deny),
     (2037, "a field's DEFAULT satisfies its own ASSERT", Severity::Error, Deny),
     (2038, "a constant written to a field satisfies the field's ASSERT", Severity::Error, Deny),
+    (2039, "a write to an existing relation row's `in`/`out` is silently discarded", Severity::Warning, Warn),
     (3001, "a step traverses a relation table", Severity::Error, Deny),
     (3002, "the usage matches the relation's declared shape (`in`->edge->`out`)", Severity::Error, Deny),
     (3004, "a FROM-position chain is complete (edge->target pairs)", Severity::Error, Warn),

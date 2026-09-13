@@ -90,6 +90,18 @@ pub(crate) fn analyze_expression_positions_for(
                         check_assignment_target(ctx, table, &assignment.target);
                         check_assignment_value(ctx, table, assignment);
                         check_field_write_flags(ctx, table, &assignment.target, creating);
+                        if !creating {
+                            if let Some(segments) = plain_field_segments(&assignment.target.node) {
+                                if let [field] = segments.as_slice() {
+                                    check_relation_endpoint_write(
+                                        ctx,
+                                        table,
+                                        field,
+                                        assignment.target.span,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -114,6 +126,13 @@ pub(crate) fn analyze_expression_positions_for(
                         _ => Position::MutationContent,
                     };
                     check_payload_object_keys(ctx, position, table, expr);
+                    if !creating {
+                        if let ast::Expr::Object(fields) = &expr.node {
+                            for (key, _) in fields {
+                                check_relation_endpoint_write(ctx, table, &key.node, key.span);
+                            }
+                        }
+                    }
                     // REPLACE provides the whole document, and DEFAULT is not
                     // re-applied — so every non-optional field must be named,
                     // DEFAULT or not (2034). A payload of unknown shape (an
@@ -324,6 +343,41 @@ pub fn check_whole_table_write(
             ),
         ));
     }
+}
+
+/// 2039 — a write to an existing relation row's `in`/`out` is silently
+/// discarded.
+///
+/// `in`/`out` are fixed for the row's whole life once `RELATE`/`INSERT
+/// RELATION` creates it. Verified on 3.2.3: `UPDATE wrote SET in = user:2`
+/// reports success and the row's `in` is unchanged afterward — no error, so
+/// this is a warning, not 2025's READONLY contract (which the engine *does*
+/// enforce with a hard failure) and not 4019 (CREATE/INSERT making a
+/// relation-shaped row from scratch, which the engine also refuses outright —
+/// this is the opposite case: a row that already exists, being *updated*).
+fn check_relation_endpoint_write(
+    ctx: &mut AnalysisContext<'_>,
+    table: &TableDef,
+    field: &str,
+    span: ByteRange,
+) {
+    if table.relation.is_none() || !matches!(field, "in" | "out") {
+        return;
+    }
+    let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            2039,
+            format!(
+                "`{field}` can't be changed on an existing `{}` row — the write is silently discarded",
+                table.name
+            ),
+        )
+        .with_help(format!(
+            "SurrealDB reports success but `{field}` keeps its original value; RELATE a new edge instead"
+        )),
+    );
 }
 
 /// Whether `name` is a table declared `TYPE RELATION`.

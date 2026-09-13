@@ -155,6 +155,16 @@ message quotes the engine text it predicts.
   near-miss filter, which stays 4026's territory). Silent whenever the inner
   query proves it itself (an inner `ONLY`, or a literal `LIMIT` of at most 1).
 
+- **2039 (new): writing `in`/`out` on an existing relation row is silently
+  discarded.** `UPDATE wrote SET in = user:2` reports success on 3.2.3, and
+  `in` keeps its original value — `CONTENT`/`MERGE` naming either endpoint do
+  the same. `in`/`out` are fixed for an edge's whole life once
+  `RELATE`/`INSERT RELATION` creates it; the engine does not error, so this
+  is a warning, not 2025's READONLY contract (a hard failure) and not 4019
+  (`CREATE`/`INSERT` building a relation-shaped row from scratch, which the
+  engine does refuse outright — the opposite case, an existing row being
+  updated).
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

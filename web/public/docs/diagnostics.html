@@ -157,7 +157,7 @@
   <main class="docs-main">
     <span class="eyebrow-doc">// reference</span>
     <h1>Diagnostics &amp; lints</h1>
-    <p class="lead-p">Every construct in SurrealQL has a <strong>contract</strong> — what the author must mean for the statement to make sense. A diagnostic fires when that contract is provably violated, whether or not SurrealDB would run the query. This is the complete catalog: <strong>98 codes</strong> across eight families, plus the parser's own <a class="link" href="#fam-0">0xxx</a> codes.</p>
+    <p class="lead-p">Every construct in SurrealQL has a <strong>contract</strong> — what the author must mean for the statement to make sense. A diagnostic fires when that contract is provably violated, whether or not SurrealDB would run the query. This is the complete catalog: <strong>99 codes</strong> across eight families, plus the parser's own <a class="link" href="#fam-0">0xxx</a> codes.</p>
 
     <div class="genbar">
       <span>generated from <code>crates/diagnostics/src/catalog.rs</code></span>
@@ -213,7 +213,7 @@
     <div class="fam-nav">
       <a class="n0" href="#fam-0"><b>0xxx</b> syntax · 3</a>
       <a class="n1" href="#fam-1"><b>1xxx</b> schema · 12</a>
-      <a class="n2" href="#fam-2"><b>2xxx</b> types · 24</a>
+      <a class="n2" href="#fam-2"><b>2xxx</b> types · 25</a>
       <a class="n3" href="#fam-3"><b>3xxx</b> graph · 5</a>
       <a class="n4" href="#fam-4"><b>4xxx</b> statement · 27</a>
       <a class="n5" href="#fam-5"><b>5xxx</b> functions · 5</a>
@@ -272,7 +272,7 @@
       <div class="fam-head">
         <span class="fam-badge">2xxx</span>
         <span class="ft">Types &amp; nullability</span>
-        <span class="fc">24 codes</span>
+        <span class="fc">25 codes</span>
       </div>
       <p class="fam-desc">Values must inhabit the kinds their position demands; operators, casts, and clauses require operands they can act on.</p>
       <div class="tbl-wrap"><table>
@@ -302,6 +302,7 @@
           <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">2036</span></span></td><td><span class="lvl deny">deny</span></td><td>GeoJSON literals have their declared shape <span class="covers">— <code>{type: &#39;Pointt&#39;, ...}</code></span></td></tr>
           <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">2037</span></span></td><td><span class="lvl deny">deny</span></td><td>A field&#39;s DEFAULT satisfies its own ASSERT <span class="covers">— <code>DEFAULT &#39;activ&#39; ASSERT $value IN [&#39;active&#39;,&#39;inactive&#39;]</code></span></td></tr>
           <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">2038</span></span></td><td><span class="lvl deny">deny</span></td><td>A constant written to a field satisfies the field&#39;s ASSERT <span class="covers">— <code>DEFINE FIELD status ON t TYPE string ASSERT $value IN [&#39;active&#39;,&#39;inactive&#39;]; CREATE t SET status = &#39;activ&#39;</code> — the same fold as 2037 with <code>$value</code> bound to the written constant, at every constant write (<code>SET</code>, <code>CONTENT</code>/<code>MERGE</code>/<code>REPLACE</code>, <code>INSERT</code> objects and <code>VALUES</code>, <code>RELATE</code>, PATCH <code>add</code>/<code>replace</code>); silent unless the ASSERT folds to <code>false</code> outright, and silent when 2001 already rejected the value</span></td></tr>
+          <tr><td><span class="cd"><span class="sevb w">W</span><span class="num">2039</span></span></td><td><span class="lvl warn">warn</span></td><td>A write to an existing relation row&#39;s <code>in</code>/<code>out</code> is silently discarded <span class="covers">— <code>UPDATE wrote SET in = user:2</code> — verified on 3.2.3: the statement reports success and the row&#39;s <code>in</code> is unchanged; <code>CONTENT</code>/<code>MERGE</code> naming <code>in</code>/<code>out</code> do the same. <code>in</code>/<code>out</code> are fixed for the row&#39;s life once <code>RELATE</code>/<code>INSERT RELATION</code> creates it, so <code>UPDATE</code>/<code>UPSERT</code> naming either is never a mistake the engine tells the author about on its own — this is not the engine erroring, so it is a warning; <code>CREATE</code>/<code>INSERT</code> on a relation table are already 4019 (a different mistake, and an error)</span></td></tr>
         </tbody>
       </table></div>
     </section>
