@@ -120,6 +120,17 @@ message quotes the engine text it predicts.
   pre-existing corpus query relied on the gap this closes and is fixed
   alongside it.
 
+- **4033 (new): `FOR` iterating an inline `SELECT` subquery directly may
+  fail, depending on how many rows it matches.** SurrealQL's
+  bracketed-subquery convention collapses a one-row result to that row
+  itself, not a one-element array — `FOR $x IN (SELECT * FROM user)` fails
+  on 3.2.3 with "Cannot execute statement using value: user:1" when exactly
+  one row matches, and iterates normally with two or more (or zero).
+  Genuinely data-dependent, so this is a Warning ("may"), not an Error, and
+  only for an inline subquery written directly in the iterable position:
+  `LET $ids = (SELECT ...); FOR $u IN $ids` is a fixed value by the time
+  `FOR` sees it and is not flagged.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

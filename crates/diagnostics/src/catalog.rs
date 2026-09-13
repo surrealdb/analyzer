@@ -106,6 +106,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (4030, "INSERT's RELATION and IGNORE modifiers are in the order the engine parses", Severity::Error, Deny),
     (4031, "a payload `id` names the record the statement targets", Severity::Error, Deny),
     (4032, "ORDER BY/LIMIT/START have more than one row to act on", Severity::Warning, Warn),
+    (4033, "FOR iterating an inline SELECT subquery may fail depending on how many rows it matches", Severity::Warning, Warn),
     (5001, "a call resolves to a function that exists", Severity::Error, Deny),
     (5002, "a call matches the function's signature", Severity::Error, Deny),
     (5005, "a const argument satisfies the function's value contract", Severity::Error, Deny),

@@ -157,7 +157,7 @@
   <main class="docs-main">
     <span class="eyebrow-doc">// reference</span>
     <h1>Diagnostics &amp; lints</h1>
-    <p class="lead-p">Every construct in SurrealQL has a <strong>contract</strong> — what the author must mean for the statement to make sense. A diagnostic fires when that contract is provably violated, whether or not SurrealDB would run the query. This is the complete catalog: <strong>97 codes</strong> across eight families, plus the parser's own <a class="link" href="#fam-0">0xxx</a> codes.</p>
+    <p class="lead-p">Every construct in SurrealQL has a <strong>contract</strong> — what the author must mean for the statement to make sense. A diagnostic fires when that contract is provably violated, whether or not SurrealDB would run the query. This is the complete catalog: <strong>98 codes</strong> across eight families, plus the parser's own <a class="link" href="#fam-0">0xxx</a> codes.</p>
 
     <div class="genbar">
       <span>generated from <code>crates/diagnostics/src/catalog.rs</code></span>
@@ -215,7 +215,7 @@
       <a class="n1" href="#fam-1"><b>1xxx</b> schema · 12</a>
       <a class="n2" href="#fam-2"><b>2xxx</b> types · 24</a>
       <a class="n3" href="#fam-3"><b>3xxx</b> graph · 5</a>
-      <a class="n4" href="#fam-4"><b>4xxx</b> statement · 26</a>
+      <a class="n4" href="#fam-4"><b>4xxx</b> statement · 27</a>
       <a class="n5" href="#fam-5"><b>5xxx</b> functions · 5</a>
       <a class="n6" href="#fam-6"><b>6xxx</b> params · 7</a>
       <a class="n7" href="#fam-7"><b>7xxx</b> lints · 15</a>
@@ -331,7 +331,7 @@
       <div class="fam-head">
         <span class="fam-badge">4xxx</span>
         <span class="ft">Statement &amp; clause / flow</span>
-        <span class="fc">26 codes</span>
+        <span class="fc">27 codes</span>
       </div>
       <p class="fam-desc">Clauses must be valid on their statement, and control flow must be well-formed and reachable.</p>
       <div class="tbl-wrap"><table>
@@ -363,6 +363,7 @@
           <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">4030</span></span></td><td><span class="lvl deny">deny</span></td><td>INSERT&#39;s RELATION and IGNORE modifiers are in the order the engine parses <span class="covers">— <code>INSERT IGNORE RELATION INTO likes {…}</code> — the engine&#39;s parser eats <code>RELATION</code> then <code>IGNORE</code> (<code>syn/parser/stmt/insert.rs</code>, unchanged since RELATION arrived in 2.0), so the reversed spelling is a parse error pointing at the token after the mistake and naming neither keyword, and no version of SurrealDB ever took it. The grammar accepts both orders on purpose: a parse error is fatal to the whole source. Fires only when both keywords are present and <code>IGNORE</code> comes first</span></td></tr>
           <tr><td><span class="cd"><span class="sevb e">E</span><span class="num">4031</span></span></td><td><span class="lvl deny">deny</span></td><td>A payload <code>id</code> names the record the statement targets <span class="covers">— <code>CREATE p:1 CONTENT { id: p:2, … }</code>, <code>UPDATE p:1 SET id = p:2</code>, <code>UPSERT p:1 MERGE { id: p:2 }</code> — the row is named twice, differently, and the engine refuses to pick: &quot;Found p:2 for the <code>id</code> field, but a specific record has been specified&quot; (3.2.3; CREATE/UPDATE/UPSERT, SET/CONTENT/MERGE alike). Fires only for a literal record id that differs from the target; the same id twice is redundant and silent, a table target (<code>CREATE p CONTENT { id: p:9 }</code>) is how a payload chooses its id, and a computed id is not judged</span></td></tr>
           <tr><td><span class="cd"><span class="sevb w">W</span><span class="num">4032</span></span></td><td><span class="lvl warn">warn</span></td><td>ORDER BY/LIMIT/START have more than one row to act on <span class="covers">— <code>SELECT * FROM p:1 ORDER BY n LIMIT 5 START 2</code> — a single record id is at most one row, so ORDER BY and LIMIT do nothing and START skips the row: engine-verified on 3.2.3, the statement returns <code>[]</code>. Silent for a record-id range, a multi-source FROM, a table, <code>START 0</code>, and a bare <code>LIMIT 1</code> (the harmless belt-and-braces spelling beside ONLY)</span></td></tr>
+          <tr><td><span class="cd"><span class="sevb w">W</span><span class="num">4033</span></span></td><td><span class="lvl warn">warn</span></td><td>FOR iterating an inline SELECT subquery may fail depending on how many rows it matches <span class="covers">— <code>FOR $x IN (SELECT * FROM user) {...}</code> — a bracketed subquery that matches exactly one row collapses to that row itself rather than a one-element array (the same convention <code>LET $x = (SELECT VALUE n FROM ONLY t LIMIT 1)</code> relies on to bind a scalar), and FOR cannot iterate it: &quot;Cannot execute statement using value: user:1&quot; on 3.2.3, with two-or-more matches (or zero) iterating normally. Genuinely data-dependent, so this is a &quot;may&quot;, never a &quot;does&quot;; scoped to an inline subquery written directly in the iterable position — <code>LET $ids = (SELECT ...); FOR $u IN $ids</code> is a fixed value by the time FOR sees it and is not this check&#39;s concern</span></td></tr>
         </tbody>
       </table></div>
     </section>

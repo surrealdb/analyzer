@@ -72,3 +72,8 @@ SELECT author, title FROM article GROUP BY author;
 
 -- 4028: an aggregate over a column with no GROUP clause.
 SELECT math::sum(views) AS total FROM article WHERE views > 0;
+
+-- 4033: FOR iterating an inline SELECT subquery directly — the subquery
+-- collapses to a bare row, not a one-element array, whenever it matches
+-- exactly one, and FOR cannot iterate that.
+FOR $a IN (SELECT * FROM article) { RETURN $a; };
