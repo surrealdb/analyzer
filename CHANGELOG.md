@@ -101,6 +101,193 @@ round and broke 31% of the then-current valid conformance corpus (KILL, NOT,
 optional chaining, PARALLEL, THROW/IF-as-expression, DEFINE ACCESS/USER and
 more), so it is not adopted; see `docs/grammar-conformance.md` for the full
 comparison and rule-by-rule cost.
+### Added — diagnostics (batch 2)
+
+Every entry below was established against a live SurrealDB 3.2.3; each
+message quotes the engine text it predicts.
+
+- **1022 is an error, and says what the engine actually does.** A plain
+  redefinition does not "silently replace the earlier one" — SurrealDB 3.2
+  fails the statement, one message per kind: `The table 'user' already
+  exists`, and likewise for `field`, `index`, `event`, `function`, `param`
+  and `analyzer` (all seven verified). The code moves from Warning/Warn to
+  Error/Deny and the message names the engine's own text; the help offers
+  both spellings the engine accepts, `OVERWRITE` (replace) and `IF NOT
+  EXISTS` (keep the first), where it used to offer only the first.
+- **4013 is an error, and owns a mistyped GROUP key.** `SELECT age, count()
+  FROM person GROUP BY name` is not a query SurrealDB 3.x runs — it is one it
+  refuses to finish parsing: `Missing group idiom 'name' in statement
+  selection`, caret under the projection list. Reported as a warning, it
+  passed `check`. It is now Error/Deny, and it covers the case that used to
+  go to 1002 alone (a key the source table does not have either): the
+  engine's complaint is about the selection whichever it is, and "the table
+  has no field `nmae`" sent the reader at a schema defect that projecting the
+  key would not fix. The help says when the key is absent from the source too,
+  so the typo is still named.
+- **ORDER BY a name the projection does not carry is 2017, not 1002.** Same
+  rule, same engine text (`Missing order idiom 'total' in statement
+  selection`): with an explicit projection list the result rows are
+  synthesized from it, so a key it lacks names nothing to sort by whether or
+  not the table declares it. A wildcard projection stays on 1002 — `*` hands
+  the source row through, so the key really must be a field of it, and that
+  is the one form the engine accepts (it sorts every row by NONE).
+- **4019 is an error, and `in`/`out` no longer buy an exemption.** A row of a
+  `TYPE RELATION` table is a different kind of record, not an ordinary row
+  that happens to carry `in` and `out`, and only `RELATE` / `INSERT RELATION`
+  makes one. `CREATE wrote SET in = user:1, out = post:1` fails on 3.2.3 with
+  `Found record: \`wrote:v9fh…\` which is not a relation, but expected a
+  RELATION IN user OUT post` — as does the `CONTENT` spelling, a literal
+  record-id target, and plain `INSERT INTO`, none of which said anything
+  before. The exemption stood in front of the most misleading spelling: the
+  one that looks like it has done everything right. `INSERT RELATION INTO`
+  stays silent.
+- **2033 checks the keys each PATCH operation needs**, not only the op name.
+  Every op takes `path`; `add`/`replace`/`test`/`change` take `value`;
+  `move`/`copy` take `from`. The finding names the key that is actually
+  absent, which the engine does not: it answers every shortfall but a missing
+  `path` with `Key 'from' missing` — including an `add` or a `test` that is
+  missing `value` and takes no `from` at all — so its own message sends the
+  reader after the wrong key. The help quotes it anyway, so the two can be
+  matched up.
+- **2008 knows three more impossible conversions**, all silent before and all
+  hard runtime errors on 3.2.3:
+  - `record<A>` to `record<B>` where the table sets cannot overlap
+    ("Could not cast into record<company> using input person:1"). An
+    overlapping arm, an unconstrained `record` on either side, and a string
+    operand all stay silent.
+  - a collection target handed something that is not one, and an `object`
+    target handed something that is (`<array> {obj}`, `<array> 'abc'`,
+    `<object> [1,2]`). The rows are a closed list of *proven* failures probed
+    against the engine, not an allowlist read off the type names — `<array>
+    <bytes>'ab'` is `[97, 98]` and stays silent, and an operand kind the
+    analyzer cannot pin down (a union, `any`) is never judged.
+  - `type::int('abc')` and its siblings `type::float` / `type::datetime` /
+    `type::duration` / `type::record`. The cast spelling has been reported
+    since 2008 existed; the function spelling was not, so whether the same
+    mistake was visible depended on how it was written. Constant arguments
+    only, and the finding never changes what the call returns.
+
+  A known-constant operand also reaches the kind half now: it used to return
+  as soon as the value check passed, which made a literal the one shape
+  `<array> 'abc'` could not be caught in.
+- **5002 stops treating four `rand::`/`type::`/`record::` signatures as more
+  lenient than they are.**
+  - `rand::int`/`rand::float`/`rand::time` take 0 **or** 2 arguments, not a
+    `0..=2` range — 3.2.3 answers `rand::int(1)` with "Incorrect arguments
+    for function rand::int(). Expected 0 or 2 arguments", so the one-argument
+    gap in the middle is now reported per function (`rand::string(5)` keeps
+    its legitimate single argument). `rand::duration` needs both bounds, not
+    an optional range, and gets the plain arity fix.
+  - `record::id`/`record::tb`/`record::table` require a `record` argument —
+    `record::id('ann')` fails with "Incorrect arguments for function
+    record::id(). Argument 1 was the wrong type. Expected \`record\` but
+    found \`'ann'\`" — where `Any` let any kind through unchecked.
+  - `type::table` accepts a `string` or a `record` (`type::table(person:1)`
+    legitimately answers `person`), so `type::table(30)` and
+    `type::table(true)` are now 5002; a plain-string signature would have
+    made the record form a false positive.
+
+- **1033 covers three more ways a DEFINE FIELD/INDEX clause is one the
+  engine refuses**, all verified on 3.2.3:
+  - `COMPUTED` excludes `DEFAULT`/`VALUE`/`READONLY`/`ASSERT` — a `COMPUTED`
+    field is never stored, so a clause that would also decide its value or
+    govern its writes has nothing to act on ("Cannot use the `VALUE`
+    keyword with `COMPUTED`", and likewise for the other three).
+  - Redefining `in`/`out` on a `TYPE RELATION` table without
+    `OVERWRITE`/`IF NOT EXISTS` is reported as 1022, not silence: they are
+    already fields of the table, implicitly, from the relation clause
+    itself ("The field 'in' already exists"), which the ordinary duplicate
+    check cannot see on its own since `in`/`out` are resolved through the
+    relation's tables, never stored in the field map.
+  - An index cannot cover a `COMPUTED` field ("Computed fields cannot be
+    indexed. Index: 'idouble' - Field: 'double'") — a plain `VALUE` field IS
+    stored and indexes fine, so the check reads a new, narrower
+    `computed_clause` flag rather than the existing `computed` one (which
+    2026 also sets for a `VALUE` that ignores `$value`/`$input`).
+
+- **2034 follows required fields into REPLACE and bare-table UPSERT.**
+  `REPLACE` provides the whole document and never re-applies `DEFAULT`
+  (verified on 3.2.3: a field `TYPE bool DEFAULT true`, omitted from a
+  `REPLACE` payload, fails "Expected `bool` but found `NONE`"), so it is
+  checked against every non-optional field regardless of `DEFAULT` — only a
+  `VALUE`/`COMPUTED` clause stays exempt, since either recomputes
+  unconditionally on write. `UPSERT <table> SET …` with a bare table target
+  and no `WHERE` always creates a fresh record (same as `CREATE`), so it is
+  checked the same way; `UPSERT person:1 SET …` (a record-id target) is not,
+  since it may be updating a row that already carries the field, and
+  flagging it would conflate "might not exist yet" with "always wrong". One
+  pre-existing corpus query relied on the gap this closes and is fixed
+  alongside it.
+
+- **4033 (new): `FOR` iterating an inline `SELECT` subquery directly may
+  fail, depending on how many rows it matches.** SurrealQL's
+  bracketed-subquery convention collapses a one-row result to that row
+  itself, not a one-element array — `FOR $x IN (SELECT * FROM user)` fails
+  on 3.2.3 with "Cannot execute statement using value: user:1" when exactly
+  one row matches, and iterates normally with two or more (or zero).
+  Genuinely data-dependent, so this is a Warning ("may"), not an Error, and
+  only for an inline subquery written directly in the iterable position:
+  `LET $ids = (SELECT ...); FOR $u IN $ids` is a fixed value by the time
+  `FOR` sees it and is not flagged.
+
+- **1022 catches a cross-file ordering trap: a field registered before its
+  own table.** A `DEFINE FIELD … ON t` implicitly creates `t` schemaless
+  when nothing has defined it yet — silent, and correctly so, since that is
+  valid SurrealQL on its own. But when a real `DEFINE TABLE t` follows it
+  anywhere else in the workspace, plainly (no `OVERWRITE`/`IF NOT EXISTS`),
+  it fails the same way any other redefinition does: `The table 't' already
+  exists`. Neither statement's own per-source check can see this: the
+  field's table-exists check reads the incrementally-built schema, which is
+  right to say `t` doesn't exist *yet*; the table's redefinition check reads
+  the same incremental schema, which never actually recorded `t` there
+  either, because a field targeting a not-yet-defined table is silently
+  dropped rather than retried once the table appears. A new whole-source-set
+  scan, run once after the per-source walk, catches the pairing that neither
+  side can, and reports it at the `DEFINE TABLE`.
+
+- **4003 follows ONLY into an inline subquery target.** `SELECT * FROM ONLY
+  (SELECT * FROM user)` fails on 3.2.3 with "Expected a single result output
+  when using the ONLY keyword" whenever the subquery matches more than one
+  row — the identical contract 4003 already enforces for a bare whole-table
+  `FROM ONLY`, extended rather than given a new code, since the two share the
+  same shape: no static proof of singularity was supplied at all (not a
+  near-miss filter, which stays 4026's territory). Silent whenever the inner
+  query proves it itself (an inner `ONLY`, or a literal `LIMIT` of at most 1).
+
+- **2039 (new): writing `in`/`out` on an existing relation row is silently
+  discarded.** `UPDATE wrote SET in = user:2` reports success on 3.2.3, and
+  `in` keeps its original value — `CONTENT`/`MERGE` naming either endpoint do
+  the same. `in`/`out` are fixed for an edge's whole life once
+  `RELATE`/`INSERT RELATION` creates it; the engine does not error, so this
+  is a warning, not 2025's READONLY contract (a hard failure) and not 4019
+  (`CREATE`/`INSERT` building a relation-shaped row from scratch, which the
+  engine does refuse outright — the opposite case, an existing row being
+  updated).
+
+- **4034 (new): an aggregate handed a column whose kind it cannot
+  meaningfully aggregate.** None of this errors on 3.2.3 — `SELECT
+  math::sum(name) FROM t GROUP ALL` over a `string` column answers `0`;
+  `math::mean` answers `NaN`; `math::max` answers `-Infinity`;
+  `time::min`/`time::max` answer `NONE`. A warning, since the call always
+  succeeds; scoped to a plain column reference (the same restriction 4028
+  places on itself), silent on `Any`/unresolved kinds and on a union
+  carrying a member of the required family. `math::mode` is excluded: it is
+  broken the same way over a numeric column too, so a kind check has
+  nothing useful to say about it.
+
+- **A closure's body is finally checked against the receiver's element
+  kind, not just its declared one.** `check_closure` bound an undeclared
+  parameter to `any` — the honest answer for a closure read on its own — but
+  `array::map`/`array::filter`/`array::reduce`/`array::fold` (and their
+  `set::` twins) already know the concrete element kind their own signature
+  applies the closure to, and had done since `closure_return_kind` first
+  existed to type the *return*; nothing ever threaded it into the checking
+  half. `array::map(tags, |$x| $x + 1)` over `array<string>` now reports the
+  same 2004 an explicit `|$x: string|` always did; `tags.filter(|$t| $t >
+  3)` and `.map(|$r| $r.nmae)` are caught the same way. 5002 also now
+  requires these functions' receiver to actually be a collection —
+  `array::map(age, ...)` over a scalar `int` errors on the engine and now
+  reports it instead of silently returning `Any`.
 
 ### Fixed — a watch could re-trigger itself forever
 

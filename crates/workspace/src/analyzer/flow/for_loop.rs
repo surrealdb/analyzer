@@ -95,6 +95,8 @@ pub(crate) fn analyze_for_loop_flow(ctx: &mut AnalysisContext<'_>, stmt: &ast::F
         }
     }
 
+    check_inline_select_iterable(ctx, stmt);
+
     let body = ctx.with_child_env(|ctx| {
         let mut binding =
             ExpressionFact::new(iterable.span.clone(), ExpressionValueClass::Variable);
@@ -122,6 +124,48 @@ pub(crate) fn analyze_for_loop_flow(ctx: &mut AnalysisContext<'_>, stmt: &ast::F
         value: Kind::None,
         diverges: false,
     }
+}
+
+/// 4033 — a `FOR` iterating an inline `SELECT` subquery directly may fail,
+/// depending on how many rows the subquery matches.
+///
+/// SurrealQL's bracketed-subquery convention collapses a one-row result down
+/// to that row itself rather than a one-element array (the same convention
+/// that lets `LET $x = (SELECT VALUE n FROM ONLY t LIMIT 1)` bind a scalar).
+/// `FOR` cannot iterate the row it collapses to, and the failure is not about
+/// the row's *shape* — verified on 3.2.3, a plain `SELECT * FROM user` with
+/// one match fails with "Cannot execute statement using value: user:1" or the
+/// same for `SELECT * FROM user LIMIT 1` / `SELECT * FROM ONLY user`, while
+/// the identical query with two-or-more matches iterates normally. So this is
+/// genuinely data-dependent: statically provable only as "may", never as
+/// "does".
+///
+/// Scoped to an inline subquery written directly in `FOR`'s iterable position
+/// — `FOR $x IN (SELECT ...)`. A `LET`-bound name (`LET $ids = (SELECT ...);
+/// FOR $u IN $ids`) is not this check's concern: by the time it reaches
+/// `$ids`, whatever the subquery evaluated to is already a fixed value, no
+/// different from any other array-or-scalar parameter FOR might iterate, and
+/// there is nothing about *that* position that collapses one thing into
+/// another.
+fn check_inline_select_iterable(ctx: &mut AnalysisContext<'_>, stmt: &ast::ForStmt) {
+    let ast::Expr::Subquery(inner) = &stmt.iterable.node else {
+        return;
+    };
+    if !matches!(inner.node, ast::Statement::Select(_)) {
+        return;
+    }
+    let span =
+        surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), stmt.iterable.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            4033,
+            "this FOR may fail if the subquery matches exactly one row".to_string(),
+        )
+        .with_help(
+            "a one-row `(SELECT ...)` collapses to that row itself, not a one-element array, and FOR cannot iterate it; SurrealDB fails with \"Cannot execute statement using value: ...\". Bind it to a LET first if the row count isn't fixed by the query"
+        ),
+    );
 }
 
 #[cfg(test)]
@@ -199,5 +243,39 @@ mod tests {
         assert!(!bogus_method(
             "FOR $x IN (SELECT VALUE label FROM ONLY t LIMIT 1) { RETURN $x.not_a_real_method(); };"
         ));
+    }
+
+    fn codes(query: &str) -> Vec<u16> {
+        use crate::analysis::{analyze_query, Workspace};
+        let mut workspace = Workspace::default();
+        analyze_query(&mut workspace, query)
+            .diagnostics
+            .iter()
+            .map(|finding| finding.code().number())
+            .collect()
+    }
+
+    #[test]
+    fn an_inline_select_subquery_iterable_is_4033() {
+        for query in [
+            "FOR $x IN (SELECT * FROM user) { RETURN $x; };",
+            "FOR $x IN (SELECT * FROM user LIMIT 1) { RETURN $x; };",
+            "FOR $x IN (SELECT * FROM ONLY user) { RETURN $x; };",
+        ] {
+            assert!(codes(query).contains(&4033), "{query}: {:?}", codes(query));
+        }
+    }
+
+    #[test]
+    fn a_let_bound_iterable_is_not_4033() {
+        // By the time `$ids` reaches FOR, whatever the subquery evaluated to
+        // is a fixed value — no different from any other parameter.
+        let query = "LET $ids = (SELECT * FROM user); FOR $u IN $ids { RETURN $u; };";
+        assert!(!codes(query).contains(&4033), "{:?}", codes(query));
+    }
+
+    #[test]
+    fn a_plain_array_iterable_is_not_4033() {
+        assert!(!codes("FOR $x IN [1, 2, 3] { RETURN $x; };").contains(&4033));
     }
 }

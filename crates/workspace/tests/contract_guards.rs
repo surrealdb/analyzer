@@ -69,6 +69,11 @@ const GUARDS: &[Guard] = &[
         "REBUILD INDEX user_vec ON user;",
     ),
     guard(
+        1022,
+        "DEFINE TABLE post SCHEMAFULL;",
+        "DEFINE TABLE OVERWRITE post SCHEMAFULL;",
+    ),
+    guard(
         1025,
         "DEFINE FIELD age.part ON user TYPE int;",
         "DEFINE FIELD prefs ON user TYPE object; DEFINE FIELD prefs.theme ON user TYPE string;",
@@ -154,6 +159,13 @@ const GUARDS: &[Guard] = &[
         "UPDATE user:a PATCH [{ op: 'teleport', path: '/age', value: 1 }];",
         "UPDATE user:a PATCH [{ op: 'replace', path: '/age', value: 1 }];",
     ),
+    // A PATCH operation missing the key its op needs is the same contract;
+    // the guard rows cover one code apiece, so this one rides on 2033's.
+    guard(
+        2033,
+        "UPDATE user:a PATCH [{ op: 'copy', path: '/age' }];",
+        "UPDATE user:a PATCH [{ op: 'copy', path: '/age', from: '/name' }];",
+    ),
     guard(
         2034,
         "CREATE user SET name = 'a';",
@@ -212,6 +224,16 @@ const GUARDS: &[Guard] = &[
         4009,
         "LIVE SELECT name FROM user:ada;",
         "LIVE SELECT name FROM user;",
+    ),
+    guard(
+        4013,
+        "SELECT age, count() FROM user GROUP BY name;",
+        "SELECT name, count() FROM user GROUP BY name;",
+    ),
+    guard(
+        4019,
+        "CREATE wrote SET in = user:a, out = post:b;",
+        "RELATE user:a -> wrote -> post:b;",
     ),
     guard(
         4025,

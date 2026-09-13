@@ -23,5 +23,6 @@ pub(crate) fn analyze_rand_time(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    super::check_bounds_come_in_pairs(ctx, call);
     apply(ctx, call, &signature(), args)
 }

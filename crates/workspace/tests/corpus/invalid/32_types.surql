@@ -16,6 +16,20 @@ RETURN <ghost> 1;
 RETURN <int> 'abc';
 RETURN <duration> true;
 
+-- 2008: record tables that cannot overlap ("Could not cast into
+-- `record<person>` using input `account:…`"), and the two collection rows —
+-- an object is not an array and an array is not an object, whatever is in it.
+SELECT <record<person>> author FROM article WHERE id = article:hello;
+RETURN <array> 'abc';
+RETURN <object> 5;
+
+-- 2008: the `type::` constructors are the function spelling of a cast, and
+-- fail with the same message ("Could not cast into `int` using input `'abc'`").
+RETURN type::int('abc');
+RETURN type::datetime('not-a-date');
+RETURN type::duration('5 apples');
+RETURN type::record('nope');
+
 -- 2012: a body that does not return what it declares.
 DEFINE FUNCTION fn::bad::returns_int() -> string { RETURN 1; };
 
@@ -61,8 +75,24 @@ RETURN u'not-a-uuid';
 UPDATE article:hello PATCH [{ op: 'teleport', path: '/views', value: 1 }];
 UPDATE article:hello PATCH [{ op: 'replace', path: 'views', value: 1 }];
 
+-- 2033: operations missing the key the op needs. `replace` needs `value`,
+-- `copy` needs `from`, every op needs `path` — and the engine answers all
+-- three of these with "Key 'from' missing", including the two that are not
+-- missing a `from` at all.
+UPDATE article:hello PATCH [{ op: 'replace', path: '/views' }];
+UPDATE article:hello PATCH [{ op: 'copy', path: '/views' }];
+UPDATE article:hello PATCH [{ op: 'remove' }];
+
 -- 2034: a creation that omits required fields.
 CREATE article SET title = 'only a title';
+
+-- 2034: a bare-table UPSERT (no id, no WHERE) always creates a fresh record,
+-- so it is checked the same as a CREATE.
+UPSERT article SET title = 'only a title';
+
+-- 2034: REPLACE does not re-apply DEFAULT, so a field that a CREATE could
+-- omit (`views`/`tags`/`created_at`, all DEFAULT'd) is still required here.
+UPDATE article:hello REPLACE { title: 't', slug: 's', body: 'b', author: account:ada, embedding: [0.1, 0.2, 0.3] };
 
 -- 2035: analyzer filter arguments out of order.
 DEFINE ANALYZER bad_ngram TOKENIZERS blank FILTERS edgengram(5, 2);
@@ -75,3 +105,6 @@ DEFINE FIELD grade ON ticket TYPE int DEFAULT 9 ASSERT $value <= 5;
 
 -- 2038: a constant write that fails the field's ASSERT.
 UPDATE ticket:1 SET priority = 9;
+
+-- 2039: a write to an existing relation row's in/out is silently discarded.
+UPDATE likes SET in = account:bob;

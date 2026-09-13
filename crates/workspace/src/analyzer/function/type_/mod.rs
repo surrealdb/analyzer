@@ -1,5 +1,6 @@
 //! `type` function family: every built-in it dispatches, with its analyzer.
 
+use surrealdb_types::Kind;
 use surrealql_analyzer_syntax::ast;
 
 use crate::analyzer::context::AnalysisContext;
@@ -338,6 +339,48 @@ pub(crate) static CATALOG: &[BuiltinEntry] = &[
         set::analyze_type_set,
     ),
 ];
+
+/// 2008 for a `type::` constructor handed a constant it cannot convert.
+///
+/// `type::int('abc')` is the function spelling of `<int> 'abc'`, and the
+/// engine treats it as one — "Could not cast into int using input 'abc'"
+/// either way. The cast form has been reported since 2008 existed;
+/// only the function form was silent, which made the same mistake visible or
+/// not depending on how it was written.
+///
+/// Constant arguments only, through the same const channel
+/// [`constant_table_arg`] uses, so a `LET`-bound literal counts and a runtime
+/// value is never guessed at. The finding does not change what the call
+/// returns: `type::int(...)` is an `int` whether or not this input reaches it.
+pub(super) fn check_constant_conversion(
+    ctx: &mut AnalysisContext<'_>,
+    call: &ast::Call,
+    target: &Kind,
+) {
+    let Some(surrealdb_types::Value::String(text)) =
+        crate::analyzer::function::const_value_arg(ctx, call, 0)
+    else {
+        return;
+    };
+    if !crate::analyzer::expression::check::constant_string_cast_fails(&text, target) {
+        return;
+    }
+    let Some(arg) = call.args.first() else {
+        return;
+    };
+    let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), arg.span);
+    let rendered = crate::render_kind(target);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            2008,
+            format!("`{text}` can't be converted to `{rendered}`"),
+        )
+        .with_help(format!(
+            "SurrealDB fails the call: \"Could not cast into `{rendered}` using input `'{text}'`\""
+        )),
+    );
+}
 
 /// The table a `type::` constructor's table argument names, when the argument
 /// is provably one table and not merely "some table".

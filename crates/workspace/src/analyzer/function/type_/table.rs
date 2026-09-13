@@ -4,6 +4,15 @@
 //! is `'table'` on 3.2.3 — so a constant argument makes this the same kind a
 //! bare table name in the source infers (`Kind::Table(vec![person])`), and a
 //! runtime argument leaves the table unconstrained.
+//!
+//! The argument is a `string` OR a `record` — verified on 3.2.3,
+//! `type::table(person:1)` succeeds and answers `person` (the record's own
+//! table), while `type::table(30)` and `type::table(true)` both fail with
+//! "Found 30 for the Record ID but this is not a valid table name". Checked
+//! through [`crate::analyzer::function::check_argument_could_be`] rather than
+//! `arg_kinds`, the same way `record::id` is: an `option<record<t>>` or
+//! `option<string>` argument only fails when it actually is `NONE`, and is
+//! not a call that is always wrong.
 
 use surrealdb_types::Kind;
 use surrealql_analyzer_syntax::ast;
@@ -26,6 +35,16 @@ pub(crate) fn analyze_type_table(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    if let Some(kind) = args.first() {
+        crate::analyzer::function::check_argument_could_be(
+            ctx,
+            call,
+            0,
+            kind,
+            |kind| matches!(kind, Kind::String | Kind::Record(_)),
+            "a `string` or `record`",
+        );
+    }
     let tables = super::constant_table_arg(ctx, call, 0)
         .map(|table| vec![table])
         .unwrap_or_default();
@@ -58,5 +77,46 @@ mod tests {
             kind_of("RETURN type::table($name);"),
             Some(Kind::Table(Vec::new()))
         );
+    }
+
+    fn fires(query: &str, code: &str) -> bool {
+        let mut workspace = Workspace::default();
+        analyze_query(&mut workspace, query)
+            .diagnostics
+            .iter()
+            .any(|finding| finding.code().to_string() == code)
+    }
+
+    #[test]
+    fn a_non_string_non_record_argument_is_5002() {
+        assert!(fires("RETURN type::table(30);", "E5002"));
+        assert!(fires("RETURN type::table(true);", "E5002"));
+    }
+
+    #[test]
+    fn a_record_argument_stays_silent() {
+        // `type::table(person:1)` is legal on 3.2.3 — it answers the
+        // record's own table.
+        assert!(!fires("RETURN type::table(person:1);", "E5002"));
+    }
+
+    #[test]
+    fn an_optional_record_argument_stays_silent() {
+        // `$o` might be NONE at runtime, but is not a call that is *always*
+        // wrong — flagging it would conflate "might fail" with "can never
+        // succeed".
+        let schema = "DEFINE TABLE person SCHEMAFULL; DEFINE TABLE document SCHEMAFULL;\n\
+             DEFINE FIELD owner ON document TYPE option<record<person>>;";
+        let query = format!(
+            "{schema} LET $o = (SELECT VALUE owner FROM ONLY document LIMIT 1); RETURN type::table($o);"
+        );
+        assert!(!fires(&query, "E5002"), "{:?}", {
+            let mut workspace = Workspace::default();
+            analyze_query(&mut workspace, &query)
+                .diagnostics
+                .iter()
+                .map(|f| f.code().to_string())
+                .collect::<Vec<_>>()
+        });
     }
 }

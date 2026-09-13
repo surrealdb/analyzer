@@ -1,4 +1,9 @@
 //! `record::table` function analysis: `record::table(record) -> table`.
+//!
+//! The argument must be a `record`; see `record::id` for the engine text and
+//! why the check goes through
+//! [`crate::analyzer::function::check_argument_could_be`] rather than
+//! `arg_kinds`.
 
 use surrealdb_types::Kind;
 use surrealql_analyzer_syntax::ast;
@@ -21,6 +26,16 @@ pub(crate) fn analyze_record_table(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    if let Some(kind) = args.first() {
+        crate::analyzer::function::check_argument_could_be(
+            ctx,
+            call,
+            0,
+            kind,
+            |kind| matches!(kind, Kind::Record(_)),
+            "a `record`",
+        );
+    }
     apply(ctx, call, &signature(), args)
 }
 

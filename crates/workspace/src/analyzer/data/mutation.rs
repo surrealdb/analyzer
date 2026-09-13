@@ -96,6 +96,18 @@ pub(crate) fn analyze_expression_positions_for(
                             &assignment.value,
                             creating,
                         );
+if !creating {
+                            if let Some(segments) = plain_field_segments(&assignment.target.node) {
+                                if let [field] = segments.as_slice() {
+                                    check_relation_endpoint_write(
+                                        ctx,
+                                        table,
+                                        field,
+                                        assignment.target.span,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -120,6 +132,28 @@ pub(crate) fn analyze_expression_positions_for(
                         _ => Position::MutationContent,
                     };
                     check_payload_object_keys(ctx, position, table, expr);
+                    if !creating {
+                        if let ast::Expr::Object(fields) = &expr.node {
+                            for (key, _) in fields {
+                                check_relation_endpoint_write(ctx, table, &key.node, key.span);
+                            }
+                        }
+                    }
+                    // REPLACE provides the whole document, and DEFAULT is not
+                    // re-applied — so every non-optional field must be named,
+                    // DEFAULT or not (2034). A payload of unknown shape (an
+                    // unbound `$payload`) is not evidence a field is missing.
+                    if matches!(clause, ast::DataClause::Replace(_)) {
+                        if let Some(keys) = payload_field_names(ctx, expr) {
+                            check_required_fields_for(
+                                ctx,
+                                table,
+                                &keys,
+                                expr.span,
+                                RequiredFieldsMode::Replace,
+                            );
+                        }
+                    }
                 }
             }
             Some(ast::DataClause::Patch(expr)) => {
@@ -142,10 +176,44 @@ pub fn check_required_fields(
     provided: &[String],
     anchor: surrealql_analyzer_syntax::span::ByteRange,
 ) {
+    check_required_fields_for(ctx, table, provided, anchor, RequiredFieldsMode::Create);
+}
+
+/// Which write is being checked — the two differ in exactly one thing: a
+/// `DEFAULT` excuses an omitted field from a create, but a `REPLACE` never
+/// re-applies one, so the same field is required there too.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequiredFieldsMode {
+    /// `CREATE`/`INSERT` (and a `SET`/`CONTENT`/`MERGE` write that creates):
+    /// a field with a `DEFAULT` is satisfied even when the payload omits it.
+    Create,
+    /// `REPLACE`: verified on 3.2.3, a field declared `TYPE bool DEFAULT
+    /// true` and omitted from a `REPLACE` payload fails with "Expected
+    /// `bool` but found `NONE`" — the DEFAULT is a create-time fallback for
+    /// a missing key, and `REPLACE` provides the whole document, so there is
+    /// no missing key for it to fill.
+    Replace,
+}
+
+/// [`check_required_fields`], parametrized over which write is being made —
+/// see [`RequiredFieldsMode`].
+pub(crate) fn check_required_fields_for(
+    ctx: &mut AnalysisContext<'_>,
+    table: &TableDef,
+    provided: &[String],
+    anchor: surrealql_analyzer_syntax::span::ByteRange,
+    mode: RequiredFieldsMode,
+) {
     for (path, field) in &table.fields {
         // Only top-level fields are directly required; nested paths are
-        // satisfied through their parent object.
-        if field.path.len() != 1 || path == "id" || field.has_default {
+        // satisfied through their parent object. A plain `DEFAULT` excuses a
+        // create but not a REPLACE; `VALUE`/`COMPUTED` excuse both, since
+        // either recomputes unconditionally regardless of the write.
+        let excused = match mode {
+            RequiredFieldsMode::Create => field.has_default,
+            RequiredFieldsMode::Replace => field.has_value_or_computed,
+        };
+        if field.path.len() != 1 || path == "id" || excused {
             continue;
         }
         let Some(kind) = &field.kind else {
@@ -162,17 +230,27 @@ pub fn check_required_fields(
             continue;
         }
         let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), anchor);
-        ctx.emit(
-            surrealql_analyzer_diagnostics::catalog::finding(
-                span,
-                2034,
-                format!("`{path}` must be set when creating a `{}`", table.name),
-            )
-            .with_help(format!(
+        let verb = match mode {
+            RequiredFieldsMode::Create => "creating",
+            RequiredFieldsMode::Replace => "REPLACE-ing",
+        };
+        let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            2034,
+            format!("`{path}` must be set when {verb} a `{}`", table.name),
+        );
+        finding = match mode {
+            RequiredFieldsMode::Create => finding.with_help(format!(
                 "`{path}` is `{}` with no `DEFAULT`, so every create must provide it",
                 crate::render_kind(kind)
-            ))
-            .with_related(field.name_span.clone(), format!("`{path}` is defined here")),
+            )),
+            RequiredFieldsMode::Replace => finding.with_help(format!(
+                "REPLACE does not re-apply DEFAULT — `{path}` is `{}`, so every REPLACE must provide it, DEFAULT or not",
+                crate::render_kind(kind)
+            )),
+        };
+        ctx.emit(
+            finding.with_related(field.name_span.clone(), format!("`{path}` is defined here")),
         );
     }
 }
@@ -273,98 +351,146 @@ pub fn check_whole_table_write(
     }
 }
 
-/// Relation rows need `in` and `out`; creating one without them makes an
-/// edge connected to nothing (4019).
+/// 2039 — a write to an existing relation row's `in`/`out` is silently
+/// discarded.
+///
+/// `in`/`out` are fixed for the row's whole life once `RELATE`/`INSERT
+/// RELATION` creates it. Verified on 3.2.3: `UPDATE wrote SET in = user:2`
+/// reports success and the row's `in` is unchanged afterward — no error, so
+/// this is a warning, not 2025's READONLY contract (which the engine *does*
+/// enforce with a hard failure) and not 4019 (CREATE/INSERT making a
+/// relation-shaped row from scratch, which the engine also refuses outright —
+/// this is the opposite case: a row that already exists, being *updated*).
+fn check_relation_endpoint_write(
+    ctx: &mut AnalysisContext<'_>,
+    table: &TableDef,
+    field: &str,
+    span: ByteRange,
+) {
+    if table.relation.is_none() || !matches!(field, "in" | "out") {
+        return;
+    }
+    let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            2039,
+            format!(
+                "`{field}` can't be changed on an existing `{}` row — the write is silently discarded",
+                table.name
+            ),
+        )
+        .with_help(format!(
+            "SurrealDB reports success but `{field}` keeps its original value; RELATE a new edge instead"
+        )),
+    );
+}
+
+/// Whether `name` is a table declared `TYPE RELATION`.
+fn is_relation_table(ctx: &AnalysisContext<'_>, name: &str) -> bool {
+    ctx.schema()
+        .tables
+        .get(name)
+        .is_some_and(|table| table.relation.is_some())
+}
+
+/// 4019 for `CREATE <relation table>`, and the finding both halves share.
+///
+/// A row of a `TYPE RELATION` table is not an ordinary row that happens to
+/// carry `in` and `out` — it is a different kind of record, and only `RELATE`
+/// (or `INSERT RELATION`) makes one. Supplying `in` and `out` by hand does
+/// not help: the row is still built as a normal record and the engine rejects
+/// it on the way out, verified on 3.2.3 for `SET`, `CONTENT`, a table target
+/// and a literal record id alike:
+///
+/// ```text
+/// CREATE wrote SET in = user:1, out = post:1
+///   -> Found record: `wrote:v9fh…` which is not a relation,
+///      but expected a RELATION IN user OUT post
+/// ```
+///
+/// The `in`/`out`-present exemption this used to carry therefore stood in
+/// front of the *most* misleading spelling — the one that looks like it has
+/// done everything right — and the warning tier undersold a statement that
+/// cannot succeed under any input.
 pub fn check_relation_write(
     ctx: &mut AnalysisContext<'_>,
     target: Option<&ast::Spanned<ast::Expr>>,
     data: Option<&ast::DataClause>,
 ) {
+    let _ = data;
     let Some(target) = target else {
         return;
     };
     let Some(name) = source_table_name(Some(target)) else {
         return;
     };
-    let is_relation = ctx
-        .schema()
-        .tables
-        .get(&name)
-        .is_some_and(|table| table.relation.is_some());
-    if !is_relation {
+    if !is_relation_table(ctx, &name) {
         return;
     }
-    let provides = |key: &str| match data {
-        Some(ast::DataClause::Set(assignments)) => assignments.iter().any(|assignment| {
-            crate::analyzer::expression::infer::plain_field_segments(&assignment.target.node)
-                .is_some_and(|segments| segments == [key])
-        }),
-        Some(ast::DataClause::Content(expr) | ast::DataClause::Replace(expr)) => {
-            matches!(&expr.node, ast::Expr::Object(fields)
-                if fields.iter().any(|(k, _)| k.node == key))
-        }
-        _ => false,
-    };
-    if !(provides("in") && provides("out")) {
-        let span =
-            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target.span);
-        ctx.emit(surrealql_analyzer_diagnostics::catalog::finding(
-            span,
-            4019,
-            format!("`{name}` is a relation; use RELATE (or provide `in` and `out`)"),
-        ));
-    }
+    emit_relation_write(ctx, &name, target.span, "RELATE $in -> {name} -> $out");
 }
 
 /// INSERT's variant of the relation contract (4019).
+///
+/// `INSERT RELATION INTO <table>` is the spelling that works and is exempt;
+/// plain `INSERT INTO` is not, whatever the payload carries.
 pub fn check_relation_insert(
     ctx: &mut AnalysisContext<'_>,
+    stmt: &ast::InsertStmt,
     target: Option<&ast::Spanned<ast::Expr>>,
-    data: &ast::InsertData,
 ) {
+    if stmt.relation.is_some() {
+        return;
+    }
     let Some(target) = target else {
         return;
     };
     let Some(name) = source_table_name(Some(target)) else {
         return;
     };
-    let is_relation = ctx
-        .schema()
-        .tables
-        .get(&name)
-        .is_some_and(|table| table.relation.is_some());
-    if !is_relation {
+    if !is_relation_table(ctx, &name) {
         return;
     }
-    let object_has = |expr: &ast::Spanned<ast::Expr>, key: &str| {
-        matches!(&expr.node, ast::Expr::Object(fields)
-            if fields.iter().any(|(k, _)| k.node == key))
-    };
-    let provided = match data {
-        ast::InsertData::Values(values) => values
-            .iter()
-            .flat_map(|value| insert_payload_rows(value))
-            .all(|row| object_has(row, "in") && object_has(row, "out")),
-        ast::InsertData::Rows { rows, .. } => rows.iter().all(|row| {
-            let has = |key: &str| {
-                row.iter().any(|(column, _)| {
-                    crate::analyzer::expression::infer::plain_field_segments(&column.node)
-                        .is_some_and(|segments| segments == [key])
-                })
-            };
-            has("in") && has("out")
-        }),
-        _ => false,
-    };
-    if !provided {
-        let span =
-            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target.span);
-        ctx.emit(surrealql_analyzer_diagnostics::catalog::finding(
+    emit_relation_write(ctx, &name, target.span, "INSERT RELATION INTO {name} …");
+}
+
+/// The shared 4019 finding. `fix` is a template whose `{name}` is the table.
+fn emit_relation_write(
+    ctx: &mut AnalysisContext<'_>,
+    name: &str,
+    target_span: surrealql_analyzer_syntax::span::ByteRange,
+    fix: &str,
+) {
+    let shape = ctx
+        .schema()
+        .tables
+        .get(name)
+        .and_then(|table| table.relation.as_ref())
+        .map_or_else(
+            || "RELATION".to_string(),
+            |relation| match (
+                relation.in_tables.join(" | "),
+                relation.out_tables.join(" | "),
+            ) {
+                (a, b) if a.is_empty() || b.is_empty() => "RELATION".to_string(),
+                (a, b) => format!("RELATION IN {a} OUT {b}"),
+            },
+        );
+    let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), target_span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
             span,
             4019,
-            format!("`{name}` is a relation; use RELATE (or provide `in` and `out`)"),
-        ));
-    }
+            format!(
+                "`{name}` is a relation table, and this statement makes an ordinary record — writing `in` and `out` by hand does not make it an edge"
+            ),
+        )
+        .with_help(format!(
+            "write `{}` instead; SurrealDB fails this one with \"Found record: `{name}:…` which is not a relation, but expected a {shape}\"",
+            fix.replace("{name}", name)
+        )),
+    );
 }
 
 /// `CREATE ... RETURN BEFORE` always returns NONE — there is no before
@@ -435,8 +561,22 @@ fn check_patch_payload_is_a_list(ctx: &mut AnalysisContext<'_>, expr: &ast::Span
     );
 }
 
-/// PATCH operations must be well-formed JSON-Patch (2033): known ops and
-/// `/`-prefixed paths. Only constant payloads are checkable.
+/// PATCH operations must be well-formed JSON-Patch (2033): known ops,
+/// `/`-prefixed paths, and the keys the op itself needs. Only constant
+/// payloads are checkable.
+///
+/// The per-op key requirements, each verified against 3.2.3:
+///
+/// ```text
+/// every op                          -> path
+/// add / replace / test / change     -> value
+/// move / copy                       -> from
+/// ```
+///
+/// The engine's own message is worth beating here. A missing `path` gives
+/// `Key 'path' missing`, but *every* other shortfall gives `Key 'from'
+/// missing` — including an `add` or a `test` that is in fact missing `value`,
+/// which sends the reader looking for a key that op does not take at all.
 ///
 /// An `add`/`replace` whose `path` names a field is a write to that field, so
 /// its `value` is held to the field's contracts exactly as a `CONTENT` key is
@@ -495,6 +635,7 @@ fn check_patch_operations(
                 ));
             }
         }
+        check_patch_operation_keys(ctx, operation, fields, op);
         let (Some(table), Some("add" | "replace"), Some((pointer, pointer_span)), Some(value)) =
             (table, op, path, written)
         else {
@@ -536,6 +677,55 @@ fn check_patch_operations(
 /// an empty pointer (the whole document), an empty step, or a step that is an
 /// array position (`0`, `-`) rather than a key. `~1` and `~0` unescape to `/`
 /// and `~` per RFC 6901.
+/// 2033: the keys a single PATCH operation must carry.
+///
+/// Presence is all that is asked, and it is asked of the written keys only —
+/// a key whose value is a param or a call still counts, because the contract
+/// is "the operation has a `from`", not "the analyzer can read it". A `path`
+/// that is present but malformed is the loop above's business.
+///
+/// Silent when the `op` is not a known constant string: without it there is
+/// no requirement set to check against, and an unknown op name has already
+/// been reported on its own.
+fn check_patch_operation_keys(
+    ctx: &mut AnalysisContext<'_>,
+    operation: &ast::Spanned<ast::Expr>,
+    fields: &[(ast::Spanned<String>, ast::Spanned<ast::Expr>)],
+    op: Option<&str>,
+) {
+    let Some(op) = op else {
+        return;
+    };
+    let has = |key: &str| fields.iter().any(|(name, _)| name.node == key);
+    let mut required = vec!["path"];
+    match op {
+        "add" | "replace" | "test" | "change" => required.push("value"),
+        "move" | "copy" => required.push("from"),
+        _ => {}
+    }
+    for key in required {
+        if has(key) {
+            continue;
+        }
+        let span =
+            surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), operation.span);
+        // What the engine will actually print, so the reader can match the
+        // two up — it says `from` for a missing `value`, which is why this
+        // check exists rather than deferring to the runtime error.
+        let engine_key = if key == "path" { "path" } else { "from" };
+        ctx.emit(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                span,
+                2033,
+                format!("a `{op}` PATCH operation needs a `{key}` key"),
+            )
+            .with_help(format!(
+                "SurrealDB rejects the whole patch: \"The JSON Patch contains invalid operations. Failed to parse JSON patch structure: Key '{engine_key}' missing\""
+            )),
+        );
+    }
+}
+
 fn json_pointer_field_segments(pointer: &str) -> Option<Vec<String>> {
     let body = pointer.strip_prefix('/')?;
     if body.is_empty() {
@@ -1457,6 +1647,96 @@ mod tests {
     use crate::schema::extract_schema;
 
     const PERSON_SCHEMA: &str = "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nDEFINE FIELD age ON person TYPE int;";
+
+    /// Every finding an `UPDATE` raises, for the clause-shape checks.
+    fn update_diagnostics(
+        schema_src: &str,
+        query: &str,
+    ) -> Vec<surrealql_analyzer_diagnostics::Finding> {
+        let schema_parsed =
+            parse_source(SourceId::new("schema"), schema_src).expect("schema should parse");
+        let schema = extract_schema(&[schema_parsed]).schema;
+        let parsed = parse_source(SourceId::new("query"), query).expect("query should parse");
+        let ast::Statement::Update(stmt) =
+            surrealql_analyzer_syntax::lower::lower_first_statement(&parsed, "UpdateStatement")
+                .expect("update statement exists")
+                .node
+        else {
+            panic!("expected an update statement");
+        };
+        let mut diagnostics: Vec<surrealql_analyzer_diagnostics::Finding> = Vec::new();
+        {
+            let mut ctx = AnalysisContext::scoped(
+                &schema,
+                parsed.source_id().clone(),
+                parsed.text(),
+                &mut diagnostics,
+                crate::statement_env::StatementEnv::default(),
+                None,
+            );
+            crate::analyzer::data::update::update_response_kind(&stmt, &mut ctx);
+        }
+        diagnostics
+    }
+
+    #[test]
+    fn a_patch_operation_missing_a_required_key_is_2033() {
+        let messages = |query: &str| -> Vec<String> {
+            update_diagnostics(PERSON_SCHEMA, query)
+                .iter()
+                .filter(|finding| finding.code().number() == 2033)
+                .map(|finding| finding.message().to_string())
+                .collect()
+        };
+        // Every op needs `path`; add/replace/test/change need `value`;
+        // move/copy need `from` (each verified on 3.2.3).
+        for (query, needed) in [
+            ("UPDATE person:1 PATCH [{ op: 'remove' }];", "`path`"),
+            (
+                "UPDATE person:1 PATCH [{ op: 'add', path: '/age' }];",
+                "`value`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'test', path: '/age' }];",
+                "`value`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'change', path: '/name' }];",
+                "`value`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'copy', path: '/age' }];",
+                "`from`",
+            ),
+            (
+                "UPDATE person:1 PATCH [{ op: 'move', path: '/age' }];",
+                "`from`",
+            ),
+        ] {
+            let found = messages(query);
+            assert!(
+                found.iter().any(|message| message.contains(needed)),
+                "{query} should want {needed}: {found:?}"
+            );
+        }
+
+        // The near misses: each op with the keys it actually needs, and a
+        // `from` whose value the analyzer cannot read still counts as present.
+        for query in [
+            "UPDATE person:1 PATCH [{ op: 'remove', path: '/age' }];",
+            "UPDATE person:1 PATCH [{ op: 'add', path: '/age', value: 2 }];",
+            "UPDATE person:1 PATCH [{ op: 'copy', path: '/age', from: '/name' }];",
+            "UPDATE person:1 PATCH [{ op: 'move', path: '/age', from: $src }];",
+        ] {
+            assert!(messages(query).is_empty(), "{query}: {:?}", messages(query));
+        }
+
+        // An op name that is not an op was already reported as such; there is
+        // no key requirement to add on top of it.
+        let unknown = messages("UPDATE person:1 PATCH [{ op: 'teleport' }];");
+        assert_eq!(unknown.len(), 1, "{unknown:?}");
+        assert!(unknown[0].contains("teleport"), "{unknown:?}");
+    }
 
     fn build_kind(schema_src: &str, query: &str, statement_kind: &str) -> Kind {
         let schema_parsed =

@@ -21,5 +21,6 @@ pub(crate) fn analyze_type_float(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    super::check_constant_conversion(ctx, call, &Kind::Float);
     apply(ctx, call, &signature(), args)
 }

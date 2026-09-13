@@ -22,17 +22,20 @@ SELECT * FROM organization SPLIT owner.ghost;
 
 SELECT * FROM organization FETCH owner.ghost;
 
--- GROUP BY reported only that the key wasn't projected (4013), whose remedy —
--- "add it to the projection" — cannot label a group by a field that does not
--- exist. 1002 is the root cause and now stands alone.
+-- GROUP BY and ORDER BY over an EXPLICIT projection list are the selection's
+-- contract, not the schema's: SurrealDB 3.x does not run either query and
+-- does not finish parsing it ("Missing group idiom `owner.ghost` in statement
+-- selection" / "Missing order idiom ..."), and the fix — project the key — is
+-- the same whether the key is a typo or a real field the list dropped. So
+-- these are 4013 and 2017, and the help names the absent field.
 SELECT name FROM organization GROUP BY owner.ghost;
 
--- Same for ORDER BY and 2017.
 SELECT name FROM organization ORDER BY owner.ghost;
 
 -- A wildcard projection is the case the engine itself accepts: it takes any
 -- ORDER BY idiom, sorts every row by NONE, and returns them in an order the
--- author did not ask for. Nothing rejects this but us.
+-- author did not ask for. Nothing rejects this but us — and because `*` hands
+-- the whole source row through, the key really must be a field of it: 1002.
 SELECT * FROM organization ORDER BY owner.ghost;
 
 -- Multi-hop, to show the finding lands on the table actually missing the
@@ -44,3 +47,8 @@ SELECT * FROM organization ORDER BY owner.person.ghost;
 -- the projection's rule, now the clauses' rule too. `document.owner` is a
 -- `record<account | organization>`; neither declares `ghost`.
 SELECT * FROM document ORDER BY owner.ghost;
+
+-- 2017: an ORDER BY key that names an ALIAS the query never projects. The
+-- table has no `total` either, but the defect is the projection list, so the
+-- reader is sent there rather than to the schema.
+SELECT name, count() AS n FROM organization GROUP BY name ORDER BY total;

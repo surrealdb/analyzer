@@ -21,6 +21,7 @@ pub(crate) fn analyze_type_int(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    super::check_constant_conversion(ctx, call, &Kind::Int);
     apply(ctx, call, &signature(), args)
 }
 

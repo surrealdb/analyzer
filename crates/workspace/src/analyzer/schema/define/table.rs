@@ -23,8 +23,12 @@ pub(crate) fn analyze_define_table(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
                 super::emit_duplicate_definition(
                     ctx,
                     stmt.name.span,
-                    &format!("`{}`", stmt.name.node),
-                    &format!("DEFINE TABLE OVERWRITE {}", stmt.name.node),
+                    &super::Redefined {
+                        kind: "table",
+                        name: &stmt.name.node,
+                        subject: &format!("`{}`", stmt.name.node),
+                        redefine: &format!("DEFINE TABLE OVERWRITE {}", stmt.name.node),
+                    },
                     existing,
                 );
             }

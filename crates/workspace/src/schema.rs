@@ -210,6 +210,27 @@ pub struct FieldDef {
     /// string::slug($value)`): that clause transforms the written value, so
     /// the field is hand-written by design.
     pub computed: bool,
+    /// `COMPUTED <expr>` specifically — narrower than [`FieldDef::computed`],
+    /// which a plain `VALUE` clause also sets. A `COMPUTED` field is never
+    /// stored at all, which is the reason 1033 rejects an index over one
+    /// ("Computed fields cannot be indexed"); a `VALUE`-derived field IS
+    /// stored (verified on 3.2.3: `DEFINE INDEX` over a `VALUE time::now()`
+    /// field succeeds), so that broader flag would have flagged a legal
+    /// index as a false positive.
+    pub computed_clause: bool,
+    /// Whether the field carries a `VALUE` or `COMPUTED` clause — either way,
+    /// its stored value is recomputed on every write regardless of what (if
+    /// anything) the write provides, unlike a plain `DEFAULT`.
+    ///
+    /// This is 2034's REPLACE exemption, and it is deliberately not
+    /// [`FieldDef::has_default`]: a `REPLACE` never re-applies a bare
+    /// `DEFAULT` (verified on 3.2.3: a field `TYPE bool DEFAULT true`,
+    /// omitted from a `REPLACE` payload, fails with "Expected `bool` but
+    /// found `NONE`"), so that field is still required there even though a
+    /// `CREATE` could omit it. `VALUE`/`COMPUTED` are exempt regardless,
+    /// because they recompute unconditionally — verified for both a
+    /// `COMPUTED` field and a `VALUE` field that does not read `$value`.
+    pub has_value_or_computed: bool,
     /// `REFERENCE` — the field's `record<...>` link is a reference, so a
     /// `<~` back-traversal on the target table can resolve through it.
     pub reference: bool,
@@ -1113,6 +1134,12 @@ fn view_field_defs(
                 // write is discarded") on our own, ahead of and possibly at
                 // odds with that PR's own diagnostic for the same write.
                 computed: false,
+                // A projected view field carries no `COMPUTED` clause, so it
+                // is not the thing 1033 refuses to index — and an index over
+                // one does build (verified on 3.2.3). Nor can a view be
+                // written to, so it is never a `REPLACE` payload's business.
+                computed_clause: false,
+                has_value_or_computed: false,
                 reference: false,
                 path: vec![name.clone()],
                 steps: vec![FieldStep::Field(name.clone())],
@@ -1164,6 +1191,8 @@ pub(crate) fn field_def_from_ast(
                 .value
                 .as_ref()
                 .is_some_and(|value| !expr_reads_written_value(value)),
+        computed_clause: def.computed.is_some(),
+        has_value_or_computed: def.value.is_some() || def.computed.is_some(),
         reference: def.reference,
         path: idiom_field_path(&def.path.node),
         steps: idiom_field_steps(&def.path.node),
@@ -2253,7 +2282,7 @@ mod tests {
         assert_eq!(duplicates.len(), 1);
         assert_eq!(
             duplicates[0].message(),
-            "`person` is already defined; this DEFINE silently replaces the earlier one"
+        "`person` is already defined; SurrealDB rejects this DEFINE with \"The table 'person' already exists\""
         );
     }
 

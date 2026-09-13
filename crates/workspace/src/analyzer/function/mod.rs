@@ -476,6 +476,42 @@ pub(crate) fn const_value_arg(
     crate::analyzer::expression::infer::infer_expression_fact(arg, ctx).value
 }
 
+/// 5002 for an argument that can *never* satisfy `accepts` — not the ordinary
+/// declarative `Signature`/`ParamKind::Exact` path, because that one rejects
+/// an `option<T>` argument outright whenever `NONE` is not itself accepted
+/// (the union-source rule requires every branch to fit). `record::id`/
+/// `record::tb`/`record::table`/`type::table` reject a wrong concrete kind
+/// but only fail on `NONE` when the value actually is `NONE`, so a handful of
+/// functions use this instead of `arg_kinds` for their one argument: see
+/// [`crate::kinds::could_satisfy`].
+pub(crate) fn check_argument_could_be(
+    ctx: &mut crate::analyzer::context::AnalysisContext<'_>,
+    call: &ast::Call,
+    index: usize,
+    kind: &Kind,
+    accepts: impl Fn(&Kind) -> bool,
+    expected_label: &str,
+) {
+    if crate::kinds::could_satisfy(kind, &accepts) {
+        return;
+    }
+    let Some(arg_expr) = call.args.get(index) else {
+        return;
+    };
+    let span =
+        surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), arg_expr.span);
+    ctx.emit(surrealql_analyzer_diagnostics::catalog::finding(
+        span,
+        5002,
+        format!(
+            "argument {} to `{}` is a `{}`, but {expected_label} is required",
+            index + 1,
+            call.path.node,
+            crate::render_kind(kind),
+        ),
+    ));
+}
+
 /// `fn::` calls check against the DEFINE FUNCTION signature: argument
 /// count and, where the params declare kinds, per-argument kinds (5002).
 fn check_custom_call(

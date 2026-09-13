@@ -191,7 +191,7 @@ fn analyze_workspace_reports_duplicate_table_declarations() {
     assert_eq!(duplicates.len(), 1);
     assert_eq!(
         duplicates[0].message(),
-        "`person` is already defined; this DEFINE silently replaces the earlier one"
+        "`person` is already defined; SurrealDB rejects this DEFINE with \"The table 'person' already exists\""
     );
     assert_eq!(duplicates[0].span().range().start(), 34);
     assert_eq!(duplicates[0].span().range().end(), 40);

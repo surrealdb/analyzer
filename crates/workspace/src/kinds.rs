@@ -41,6 +41,42 @@ pub(crate) fn kind_admits_none(kind: &Kind) -> bool {
     }
 }
 
+/// Whether `kind` could possibly satisfy `accepts` on some concrete branch —
+/// true unless a concrete (non-`NONE`/`NULL`) branch exists and every one
+/// definitely does not.
+///
+/// This is deliberately weaker than [`kind_is_assignable_to`]'s union rule
+/// (which requires *every* branch to fit): a handful of function arguments —
+/// `record::id`, `type::table` — reject a wrong concrete kind outright but
+/// only fail on `NONE` when the value actually turns out to be `NONE` at
+/// runtime, so an `option<record<t>>` argument is not a call that is *always*
+/// wrong. Flagging it as a 5002 error the way an `Int` argument is would
+/// conflate "might be NONE" with "can never be right" — the same distinction
+/// 2015 draws for optional values in general, at Warning rather than Error.
+/// A bare `NONE`/`Any` (nothing concrete to judge, or genuinely unknown) is
+/// given the same benefit of the doubt — a `NONE` argument's own problem is
+/// not this check's contract to restate, and narrowing can legitimately
+/// intersect down to exactly `NONE` inside a branch that is unreachable for
+/// an unrelated reason (4024's contract, not this one's).
+pub(crate) fn could_satisfy(kind: &Kind, accepts: &impl Fn(&Kind) -> bool) -> bool {
+    match kind {
+        Kind::Any | Kind::None | Kind::Null => true,
+        Kind::Either(variants) => {
+            let concrete: Vec<&Kind> = variants
+                .iter()
+                .filter(|variant| !matches!(variant, Kind::None | Kind::Null))
+                .collect();
+            if concrete.is_empty() {
+                return true;
+            }
+            concrete
+                .iter()
+                .any(|variant| could_satisfy(variant, accepts))
+        }
+        other => accepts(other),
+    }
+}
+
 /// Whether a value of `actual` may land where `expected` is required — the one
 /// contract behind 2001 and friends, and the subtyping order
 /// [`crate::lattice`] is built on.
@@ -704,6 +740,28 @@ mod tests {
 
     fn string_literal(value: &str) -> Kind {
         Kind::Literal(KindLiteral::String(value.to_string()))
+    }
+
+    #[test]
+    fn could_satisfy_gives_none_the_benefit_of_the_doubt() {
+        let is_record = |kind: &Kind| matches!(kind, Kind::Record(_));
+        // A concrete wrong kind never satisfies — this is what 5002 flags.
+        assert!(!could_satisfy(&Kind::Int, &is_record));
+        assert!(!could_satisfy(&Kind::String, &is_record));
+        // A concrete right kind always satisfies.
+        assert!(could_satisfy(&Kind::Record(Vec::new()), &is_record));
+        // `option<record>` — might be NONE at runtime, but is not a call
+        // that is *always* wrong, so it stays silent.
+        let optional_record = Kind::Either(vec![Kind::None, Kind::Record(Vec::new())]);
+        assert!(could_satisfy(&optional_record, &is_record));
+        // A bare NONE/NULL — nothing concrete to judge — is also given the
+        // benefit of the doubt, and so is `any`.
+        assert!(could_satisfy(&Kind::None, &is_record));
+        assert!(could_satisfy(&Kind::Null, &is_record));
+        assert!(could_satisfy(&Kind::Any, &is_record));
+        // A union with no matching concrete variant never satisfies.
+        let optional_int = Kind::Either(vec![Kind::None, Kind::Int]);
+        assert!(!could_satisfy(&optional_int, &is_record));
     }
 
     #[test]
