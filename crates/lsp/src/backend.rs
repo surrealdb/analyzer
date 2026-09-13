@@ -50,6 +50,12 @@ pub struct Backend {
     /// The last semantic-token answer per document, keyed by the text it was
     /// computed from; see [`Self::semantic_tokens_full`].
     semantic_cache: Mutex<HashMap<Url, SemanticEntry>>,
+    /// Which workspace generation each document's diagnostics were last
+    /// published from; see [`PublishOrder`]. An async mutex because it is held
+    /// across the send itself, which is what makes the check and the send one
+    /// step — and therefore the *innermost* lock on every path: nothing else
+    /// may be acquired while it is held.
+    published: tokio::sync::Mutex<PublishOrder>,
     /// The `surrealql-analyzer.toml` the policy came from, when a workspace root has
     /// one. `None` leaves the workspace-wide suppression action unoffered:
     /// creating a config file is a resource operation not every client
@@ -67,6 +73,73 @@ pub struct Backend {
     /// Registration is a server->client *request*, so — like semantic-token
     /// refresh — it is only sent to a client that declared it accepts one.
     watched_files_support: AtomicBool,
+}
+
+/// Which workspace generation each document's diagnostics were last published
+/// from — the gate that keeps a document's marks moving forwards only.
+///
+/// Publishing is not instantaneous: a handler analyzes, then sends. tower-lsp
+/// serves messages concurrently, so the handler for an older snapshot can still
+/// be between those two steps when the handler for a newer one finishes, and
+/// its send would then overwrite fresh diagnostics with stale ones — squiggles
+/// for text the user has already replaced, or for a schema they have already
+/// fixed, left standing until the next edit happens to land.
+///
+/// The ordering key is the *workspace* generation
+/// ([`Workspace::generation`]), not the document's own version. A document's
+/// findings depend on every other document and on the config: a sweep
+/// re-publishing a query against a just-edited schema carries the version that
+/// query has had all along, so ordering by version would drop the very answer
+/// the edit was for. Newer snapshot wins, at equal generations either answer
+/// describes the same state, and a publish from a snapshot already overtaken is
+/// dropped.
+///
+/// A closed document is marked [`CLOSED`] rather than forgotten: an analysis
+/// still in flight when the close lands must not repaint a buffer the editor
+/// has shut, and must not leave a mark behind that then outranks the reopen.
+/// Only a `didOpen` lifts it, because only the client can say the document is
+/// back. The map holds one entry per distinct URI the session has touched —
+/// bounded by the files opened, a word apiece.
+#[derive(Debug, Default)]
+struct PublishOrder(HashMap<Url, u64>);
+
+/// The mark a closed document carries: no generation can exceed it, so every
+/// publish for that document is dropped until it is opened again.
+const CLOSED: u64 = u64::MAX;
+
+impl PublishOrder {
+    /// Whether diagnostics analyzed at `generation` may still be sent for
+    /// `uri`, recording them as the newest published when they may.
+    fn accepts(&mut self, uri: &Url, generation: u64) -> bool {
+        if self.0.get(uri).is_some_and(|newest| *newest > generation) {
+            return false;
+        }
+        self.0.insert(uri.clone(), generation);
+        true
+    }
+
+    /// The document was closed: nothing more may be published for it.
+    fn closed(&mut self, uri: &Url) {
+        self.0.insert(uri.clone(), CLOSED);
+    }
+
+    /// The document was opened at `generation`: the [`CLOSED`] mark is lifted
+    /// so the open's own diagnostics get through.
+    ///
+    /// It lifts the mark; it does not erase the order. Clearing the entry
+    /// outright would let an answer from *before* the close — still in flight,
+    /// holding pre-close findings — land afterwards and repaint the freshly
+    /// opened buffer, which the open's own publish need not correct (a
+    /// document the analysis cannot produce a result for publishes nothing at
+    /// all). The mark becomes the open's own generation instead: every later
+    /// answer exceeds it, every earlier one does not.
+    fn reopened(&mut self, uri: &Url, generation: u64) {
+        let mark = match self.0.get(uri) {
+            Some(&CLOSED) | None => generation,
+            Some(&standing) => standing.max(generation),
+        };
+        self.0.insert(uri.clone(), mark);
+    }
 }
 
 /// One document's encoded semantic tokens and the text they describe. The
@@ -132,6 +205,7 @@ impl Backend {
             policy: RwLock::new(PolicyConfig::default()),
             refresh: Arc::new(RefreshState::default()),
             semantic_cache: Mutex::new(HashMap::new()),
+            published: tokio::sync::Mutex::new(PublishOrder::default()),
             config: RwLock::new(None),
             code_action_literal_support: AtomicBool::new(false),
             watched_files_support: AtomicBool::new(false),
@@ -222,9 +296,16 @@ impl Backend {
     /// analysis result shares the workspace's text by `Arc`, so this costs
     /// the document's findings and no copy of anything.
     async fn publish_document_diagnostics(&self, uri: &Url) {
-        let result = {
+        // Version and generation are read under the same guard as the
+        // analysis, so they always name the exact state these diagnostics
+        // describe — never a newer one a mutation installed in between.
+        let (result, version, generation) = {
             let ws = self.workspace.read().await;
-            ws.diagnostic_analysis(uri)
+            (
+                ws.diagnostic_analysis(uri),
+                ws.document_version(uri),
+                ws.generation(),
+            )
         };
 
         let Some(result) = result else {
@@ -245,8 +326,36 @@ impl Backend {
             .collect();
         drop(policy);
 
+        self.publish(uri, lsp_diagnostics, version, generation)
+            .await;
+    }
+
+    /// Send one document's diagnostics, stamped with the version of the text
+    /// they describe — unless a newer snapshot's diagnostics have already gone
+    /// out for this document, in which case this answer is obsolete and is
+    /// dropped.
+    ///
+    /// The version is `PublishDiagnosticsParams.version` (LSP 3.15): it lets a
+    /// client discard an answer that no longer matches its buffer, and it is
+    /// how a test knows which edit a publish belongs to. It is not what orders
+    /// the publishes — `generation` is; see [`PublishOrder`].
+    ///
+    /// The gate is held across the send so the check and the send cannot
+    /// interleave with another publish of the same document. It is the
+    /// innermost lock: no other lock may be taken while it is held.
+    async fn publish(
+        &self,
+        uri: &Url,
+        diagnostics: Vec<Diagnostic>,
+        version: Option<i32>,
+        generation: u64,
+    ) {
+        let mut published = self.published.lock().await;
+        if !published.accepts(uri, generation) {
+            return;
+        }
         self.client
-            .publish_diagnostics(uri.clone(), lsp_diagnostics, None)
+            .publish_diagnostics(uri.clone(), diagnostics, version)
             .await;
     }
 
@@ -1032,12 +1141,26 @@ impl LanguageServer for Backend {
         })))
     }
 
+    /// The client opened a buffer. Whatever it says the text is, is the text:
+    /// an open is never measured against what was tracked before, because a
+    /// reopened buffer numbers its versions from the start again and a reload
+    /// may repeat an open we have already seen.
+    ///
+    /// The publish order starts over with it. Anything published for this URI
+    /// before belongs to an incarnation that is gone — including the [`CLOSED`]
+    /// mark a `didClose` left, which otherwise swallows this open's own
+    /// diagnostics.
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.clone();
-        {
+        let generation = {
             let mut ws = self.workspace.write().await;
-            ws.upsert(params.text_document.uri, params.text_document.text);
-        }
+            ws.open(
+                params.text_document.uri,
+                params.text_document.text,
+                params.text_document.version,
+            )
+        };
+        self.published.lock().await.reopened(&uri, generation);
         self.publish_diagnostics(&uri).await;
     }
 
@@ -1055,9 +1178,29 @@ impl LanguageServer for Backend {
                 ws.reanalyzed_source_count(),
             )
         };
-        if let Some(change) = params.content_changes.into_iter().last() {
-            let mut ws = self.workspace.write().await;
-            ws.upsert(uri.clone(), change.text);
+        // No content change is no edit: the document is exactly as it was, so
+        // there is nothing to re-analyze and nothing to say about it — least
+        // of all a publish carrying the version this notification announced.
+        let Some(change) = params.content_changes.into_iter().last() else {
+            return;
+        };
+        {
+            let applied = {
+                let mut ws = self.workspace.write().await;
+                ws.edit(uri.clone(), change.text, params.text_document.version)
+            };
+            // A refused edit changed nothing, so there is nothing to say: the
+            // client already holds the diagnostics for the text we still have,
+            // and re-sending them would only add a publish for a snapshot
+            // newer than the one that answer came from.
+            if !applied {
+                eprintln!(
+                    "[surrealql-analyzer] edit \u{2192} dropped (version {} is older than the \
+                     text already held)",
+                    params.text_document.version
+                );
+                return;
+            }
         }
         let started = std::time::Instant::now();
         self.publish_diagnostics(&uri).await;
@@ -1096,6 +1239,366 @@ impl LanguageServer for Backend {
         if let Ok(mut cache) = self.semantic_cache.lock() {
             cache.remove(&uri);
         }
+        // Marking the document closed and clearing its marks is one step, and
+        // the clear goes out ungated: it is the close itself, not an answer
+        // about any snapshot. The mark stops an analysis that was already in
+        // flight from repainting a buffer the editor has shut, and a later
+        // `didOpen` lifts it.
+        let mut published = self.published.lock().await;
+        published.closed(&uri);
         self.client.publish_diagnostics(uri, Vec::new(), None).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tower_lsp::LspService;
+
+    use super::*;
+
+    fn uri(name: &str) -> Url {
+        Url::parse(&format!("file:///workspace/{name}.surql")).expect("valid uri")
+    }
+
+    /// One finding, so a publish can be told from an empty one.
+    fn a_finding() -> Diagnostic {
+        Diagnostic {
+            message: "a finding".to_string(),
+            ..Diagnostic::default()
+        }
+    }
+
+    #[test]
+    fn a_publish_from_a_snapshot_already_overtaken_is_dropped() {
+        let mut order = PublishOrder::default();
+        let query = uri("query");
+
+        assert!(order.accepts(&query, 1));
+        assert!(order.accepts(&query, 2));
+        assert!(
+            !order.accepts(&query, 1),
+            "generation 1 describes a workspace two mutations ago"
+        );
+        // Equal generations describe the same state, so neither is stale: a
+        // sweep re-publishing a document nothing has touched still goes out.
+        assert!(order.accepts(&query, 2));
+        // Documents are ordered one by one.
+        assert!(order.accepts(&uri("other"), 1));
+    }
+
+    #[test]
+    fn a_sweep_holding_older_text_cannot_overwrite_the_open_buffer() {
+        // The `initialized` sweep reads a file from disk and analyzes it; the
+        // editor opens the same file meanwhile and its diagnostics go out
+        // first. The sweep's answer describes the workspace *before* the open
+        // — an unversioned one at that, which a client cannot discard by
+        // version — so the gate has to drop it. It carries a generation like
+        // every other publish, and that is what decides it.
+        let mut order = PublishOrder::default();
+        let query = uri("query");
+
+        let sweep_read_the_file = 4;
+        let the_editor_opened_it = 5;
+
+        assert!(order.accepts(&query, the_editor_opened_it));
+        assert!(!order.accepts(&query, sweep_read_the_file));
+    }
+
+    #[test]
+    fn a_republish_against_a_newer_schema_survives_an_edit_that_beat_it() {
+        // The reason the order is a *workspace* generation and not the
+        // document's version: a schema edit changes `query.surql`'s findings
+        // without changing `query.surql`. Here a `didChange` (version 3)
+        // analyzed before the schema landed and published first; the sweep the
+        // schema edit provoked then publishes the same document, still at
+        // version 3, with the findings the new schema produces. Ordering by
+        // version would drop the only answer that has the schema in it.
+        let mut order = PublishOrder::default();
+        let query = uri("query");
+
+        let edit_analyzed_before_the_schema_landed = 7;
+        let sweep_after_the_schema_landed = 9;
+
+        assert!(order.accepts(&query, edit_analyzed_before_the_schema_landed));
+        assert!(order.accepts(&query, sweep_after_the_schema_landed));
+    }
+
+    #[test]
+    fn nothing_is_published_for_a_closed_document_until_it_is_opened_again() {
+        let mut order = PublishOrder::default();
+        let query = uri("query");
+
+        assert!(order.accepts(&query, 3));
+        order.closed(&query);
+        assert!(
+            !order.accepts(&query, 4),
+            "an analysis still in flight when the close landed must not \
+             repaint a buffer the editor has shut"
+        );
+        assert!(!order.accepts(&query, CLOSED - 1));
+
+        // Only the client can say the document is back — and then its own
+        // diagnostics must get through.
+        order.reopened(&query, 5);
+        assert!(order.accepts(&query, 5));
+    }
+
+    #[test]
+    fn an_open_lifts_the_closed_mark_without_erasing_the_order() {
+        let mut order = PublishOrder::default();
+        let query = uri("query");
+
+        // A sweep captured the document, then the editor closed it, then
+        // opened it again — all while that sweep was still analyzing.
+        assert!(order.accepts(&query, 40));
+        order.closed(&query);
+        order.reopened(&query, 42);
+        assert!(
+            !order.accepts(&query, 41),
+            "an answer from before the close must not repaint the reopened \
+             buffer: the open lifts the mark, it does not erase the order"
+        );
+        assert!(
+            order.accepts(&query, 42),
+            "the open's own answer gets through"
+        );
+
+        // An open on a document that was never closed keeps what is standing:
+        // the order only ever moves forwards.
+        let other = uri("other");
+        assert!(order.accepts(&other, 50));
+        order.reopened(&other, 42);
+        assert!(!order.accepts(&other, 45));
+        assert!(order.accepts(&other, 50));
+    }
+
+    /// A handshaken server, the backend behind it, and the messages a client
+    /// would have read — enough to drive [`Backend::publish`] itself, which is
+    /// where the publish order is decided.
+    struct Wired {
+        service: LspService<Backend>,
+        socket: std::pin::Pin<Box<tower_lsp::ClientSocket>>,
+        seen: Vec<PublishDiagnosticsParams>,
+    }
+
+    impl Wired {
+        async fn start() -> Self {
+            let (service, socket) = LspService::new(Backend::new);
+            let mut wired = Wired {
+                service,
+                socket: Box::pin(socket),
+                seen: Vec::new(),
+            };
+            wired
+                .call(
+                    tower_lsp::jsonrpc::Request::build("initialize")
+                        .id(1)
+                        .params(serde_json::json!({"capabilities": {}}))
+                        .finish(),
+                )
+                .await;
+            wired
+                .call(
+                    tower_lsp::jsonrpc::Request::build("initialized")
+                        .params(serde_json::json!({}))
+                        .finish(),
+                )
+                .await;
+            let _ = wired.publishes().await;
+            wired
+        }
+
+        fn backend(&self) -> &Backend {
+            self.service.inner()
+        }
+
+        /// Sends one request or notification, draining what the handler sends
+        /// while it runs — the client channel is bounded, so a handler that
+        /// publishes blocks until someone reads.
+        async fn call(&mut self, request: tower_lsp::jsonrpc::Request) {
+            use tower::{Service, ServiceExt};
+            let service = self.service.ready().await.expect("service ready");
+            let call = service.call(request);
+            tokio::pin!(call);
+            loop {
+                tokio::select! {
+                    outcome = &mut call => {
+                        let _ = outcome.expect("call succeeds");
+                        return;
+                    }
+                    message = futures::StreamExt::next(&mut self.socket) => {
+                        match message {
+                            Some(message) => self.record(message),
+                            None => return,
+                        }
+                    }
+                }
+            }
+        }
+
+        async fn did_open(&mut self, uri: &Url, version: i32, text: &str) {
+            self.call(
+                tower_lsp::jsonrpc::Request::build("textDocument/didOpen")
+                    .params(serde_json::json!({"textDocument": {
+                        "uri": uri, "languageId": "surrealql",
+                        "version": version, "text": text,
+                    }}))
+                    .finish(),
+            )
+            .await;
+        }
+
+        async fn did_change(&mut self, uri: &Url, version: i32, text: &str) {
+            self.call(
+                tower_lsp::jsonrpc::Request::build("textDocument/didChange")
+                    .params(serde_json::json!({
+                        "textDocument": {"uri": uri, "version": version},
+                        "contentChanges": [{"text": text}],
+                    }))
+                    .finish(),
+            )
+            .await;
+        }
+
+        async fn did_save(&mut self, uri: &Url) {
+            self.call(
+                tower_lsp::jsonrpc::Request::build("textDocument/didSave")
+                    .params(serde_json::json!({"textDocument": {"uri": uri}}))
+                    .finish(),
+            )
+            .await;
+        }
+
+        /// Publishes through the backend, draining what reaches the client
+        /// while it runs.
+        ///
+        /// The client channel holds exactly one message, so two publishes in a
+        /// row with nobody reading deadlock the second — and a gate that has
+        /// stopped dropping anything publishes twice where it should publish
+        /// once. Draining alongside keeps that a failed assertion rather than
+        /// a hung test binary.
+        async fn publish(
+            &mut self,
+            uri: &Url,
+            diagnostics: Vec<Diagnostic>,
+            version: Option<i32>,
+            generation: u64,
+        ) {
+            let mut drained = Vec::new();
+            {
+                let socket = &mut self.socket;
+                let publish = self
+                    .service
+                    .inner()
+                    .publish(uri, diagnostics, version, generation);
+                tokio::pin!(publish);
+                loop {
+                    tokio::select! {
+                        () = &mut publish => break,
+                        message = futures::StreamExt::next(socket) => {
+                            match message {
+                                Some(message) => drained.push(message),
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            }
+            for message in drained {
+                self.record(message);
+            }
+        }
+
+        /// The generation the workspace is on, which a publish is ordered by.
+        async fn generation(&self) -> u64 {
+            self.backend().workspace.read().await.generation()
+        }
+
+        /// Everything published since this was last called.
+        async fn publishes(&mut self) -> Vec<PublishDiagnosticsParams> {
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+                while let Some(Some(message)) =
+                    futures::FutureExt::now_or_never(futures::StreamExt::next(&mut self.socket))
+                {
+                    self.record(message);
+                }
+            }
+            std::mem::take(&mut self.seen)
+        }
+
+        fn record(&mut self, message: tower_lsp::jsonrpc::Request) {
+            if message.method() != "textDocument/publishDiagnostics" {
+                return;
+            }
+            let (_, _, params) = message.into_parts();
+            let params = params.expect("publishDiagnostics carries params");
+            self.seen
+                .push(serde_json::from_value(params).expect("publishDiagnostics params decode"));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_from_an_overtaken_snapshot_is_dropped_at_the_same_version() {
+        // Two answers for one document at one version, from two states of the
+        // workspace — the shape a slow analysis and a fast one produce when a
+        // schema moves under them. Only the newer may reach the client.
+        let mut wired = Wired::start().await;
+        let query = uri("query");
+
+        wired.publish(&query, Vec::new(), Some(1), 41).await;
+        wired.publish(&query, vec![a_finding()], Some(1), 40).await;
+
+        let publishes = wired.publishes().await;
+        assert_eq!(
+            publishes.len(),
+            1,
+            "the answer from generation 40 is obsolete: {publishes:?}"
+        );
+        assert!(publishes[0].diagnostics.is_empty());
+        assert_eq!(publishes[0].version, Some(1));
+    }
+
+    #[tokio::test]
+    async fn the_publish_path_is_ordered_by_generation_not_by_document_version() {
+        // The same, through the real handlers: the query is opened once and
+        // never edited, while the workspace moves on around it. An answer from
+        // one of those earlier states must be dropped — and its generation is
+        // *higher* than the query's version, which is exactly what an order
+        // built on the document version cannot see.
+        let mut wired = Wired::start().await;
+        let schema = uri("a_schema");
+        let query = uri("b_query");
+
+        wired.did_open(&schema, 1, "\n").await;
+        wired.did_open(&query, 1, "SELECT * FROM persn;\n").await;
+        wired.did_change(&schema, 2, "DEFINE TABLE persn;\n").await;
+        wired.did_save(&schema).await;
+        let published = wired.publishes().await;
+        assert!(
+            published.iter().any(|publish| publish.uri == query),
+            "the sweep republishes the query: {published:?}"
+        );
+
+        let generation = wired.generation().await;
+        let stale = generation - 1;
+        assert!(
+            stale > 1,
+            "the stale key must outrank the document version, or this test \
+             cannot tell the two orders apart"
+        );
+
+        wired
+            .publish(&query, vec![a_finding()], Some(1), stale)
+            .await;
+        assert!(
+            wired.publishes().await.is_empty(),
+            "an answer from a snapshot already overtaken must be dropped, \
+             whatever version it carries"
+        );
+
+        // An answer from the state the workspace is actually in still goes out.
+        wired.publish(&query, Vec::new(), Some(1), generation).await;
+        assert_eq!(wired.publishes().await.len(), 1);
     }
 }

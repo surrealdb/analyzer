@@ -280,7 +280,13 @@ pub fn analyze_source(workspace: &Workspace, source: SourceId) -> AnalysisOutput
                 workspace.config().diagnostics.require_suppression_reasons,
                 workspace.config().analysis.target_version(),
             );
-            output.diagnostics.extend(pipeline_output.diagnostics);
+            let unparsed = unparsed_regions(parsed.text(), parsed.syntax_diagnostics());
+            output.diagnostics.extend(
+                pipeline_output
+                    .diagnostics
+                    .drain(..)
+                    .filter(|finding| !is_in_unparsed_region(&unparsed, finding)),
+            );
             if let Some(analysis) = pipeline_output.sources.remove(&source) {
                 output.response_kind = single_response_kind(&analysis.statements);
                 output.statements = analysis.statements;
@@ -367,17 +373,35 @@ pub fn analyze_workspace(workspace: &Workspace) -> WorkspaceAnalysis {
                 );
             }
         }
+        let unparsed = unparsed_regions(parsed.text(), parsed.syntax_diagnostics());
+        live.retain(|finding| !is_in_unparsed_region(&unparsed, finding));
         if let Some(output) = sources.get_mut(parsed.source_id()) {
             output.diagnostics.extend(live.iter().cloned());
         }
         diagnostics.extend(live);
     }
 
-    let pipeline_output = pipeline::analyze_sources_with(
+    let mut pipeline_output = pipeline::analyze_sources_with(
         &parsed_sources,
         workspace.config().diagnostics.require_suppression_reasons,
         workspace.config().analysis.target_version(),
     );
+    // A statement the parser could not read gets no semantic findings — see
+    // [`unparsed_regions`].
+    let unparsed: BTreeMap<SourceId, Vec<(u32, u32)>> = parsed_sources
+        .iter()
+        .map(|parsed| {
+            (
+                parsed.source_id().clone(),
+                unparsed_regions(parsed.text(), parsed.syntax_diagnostics()),
+            )
+        })
+        .collect();
+    pipeline_output.diagnostics.retain(|finding| {
+        unparsed
+            .get(finding.span().source())
+            .is_none_or(|regions| !is_in_unparsed_region(regions, finding))
+    });
     for (source, analysis) in pipeline_output.sources {
         if let Some(source_output) = sources.get_mut(&source) {
             source_output.response_kind = single_response_kind(&analysis.statements);
@@ -877,7 +901,12 @@ pub fn reanalyze_sources<P: std::borrow::Borrow<ParsedSource>>(
                 .collect(),
             ..AnalysisOutput::default()
         };
-        output.diagnostics.extend(one.diagnostics);
+        let unparsed = unparsed_regions(parsed.text(), parsed.syntax_diagnostics());
+        output.diagnostics.extend(
+            one.diagnostics
+                .into_iter()
+                .filter(|finding| !is_in_unparsed_region(&unparsed, finding)),
+        );
         output.response_kind = single_response_kind(&one.analysis.statements);
         output.statements = one.analysis.statements;
         output.inferred_params = one.analysis.params;
@@ -896,6 +925,63 @@ pub fn build_workspace_schema<P: std::borrow::Borrow<ParsedSource>>(
     parsed_sources: &[P],
 ) -> crate::schema::SchemaIndex {
     pipeline::build_run_schema(parsed_sources)
+}
+
+/// The regions of a source the parser could not read: every syntax
+/// diagnostic widened to the `;`-delimited statement it sits in.
+///
+/// A statement that failed to parse has no structure a semantic check can
+/// hold it to, so the checks must not speak about it. They did: `LIVE SELECT
+/// count() FROM person GROUP ALL` raised `S0001` *and* `W4023`, advising the
+/// reader to "add `GROUP ALL`" to a statement whose text already says it —
+/// the clause the parser choked on is the one the lint could not see. Most of
+/// a broken statement already collapses to `Statement::Partial` and is inert,
+/// but not all: tree-sitter can park the unreadable tail in an `ERROR` node
+/// *beside* a statement that otherwise lowers cleanly, and the truncated
+/// statement then gets analyzed as if the tail were not written.
+///
+/// The widening is what connects the two: statements are `;`-separated, so an
+/// error not separated from a statement by a terminator is part of it. A `;`
+/// inside a string or comment can only cut a region short, which reports more
+/// rather than less.
+fn unparsed_regions(text: &str, syntax: &[SyntaxDiagnostic]) -> Vec<(u32, u32)> {
+    let bytes = text.as_bytes();
+    let mut regions: Vec<(u32, u32)> = Vec::new();
+    for diagnostic in syntax {
+        let range = diagnostic.span().range();
+        let from = usize::try_from(range.start())
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let to = usize::try_from(range.end())
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        let start = bytes[..from]
+            .iter()
+            .rposition(|byte| *byte == b';')
+            .map_or(0, |index| index + 1);
+        let end = bytes[to..]
+            .iter()
+            .position(|byte| *byte == b';')
+            .map_or(bytes.len(), |index| to + index + 1);
+        let region = (
+            u32::try_from(start).unwrap_or(u32::MAX),
+            u32::try_from(end).unwrap_or(u32::MAX),
+        );
+        if !regions.contains(&region) {
+            regions.push(region);
+        }
+    }
+    regions
+}
+
+/// Whether `finding` speaks about a statement the parser could not read.
+/// Syntax findings are the report of that failure and always stand.
+fn is_in_unparsed_region(regions: &[(u32, u32)], finding: &Finding) -> bool {
+    if finding.code().category() == surrealql_analyzer_diagnostics::FindingCategory::Syntax {
+        return false;
+    }
+    let at = finding.span().range().start();
+    regions.iter().any(|(start, end)| at >= *start && at < *end)
 }
 
 fn syntax_diagnostic_to_finding(diagnostic: &SyntaxDiagnostic) -> Finding {

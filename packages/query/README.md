@@ -29,32 +29,35 @@ const stop = people.subscribe((state) => {
 
 ## Getting `db` and `livePeople`
 
-Both come from the module SurrealQL Analyzer generates off your schema. Install the
-client (the generated file augments it *by name*, so it must resolve) and
-generate with an `--out` that matches how you import it — bare `generate` writes
-to the workspace root, which is usually not where your import points:
+Both come from the types SurrealQL Analyzer generates off your schema. Install
+the client (it is the runtime; the generated `.d.ts` has none) and generate with
+an `--out` that matches how you import it — bare `generate` writes to the
+workspace root, which is usually not where your import points:
 
 ```sh
 npm install @surrealdb/analyzer-query @surrealdb/analyzer-client surrealdb
 cargo install surrealkit    # the command line: check, generate, watch
-surrealkit generate --out src/surrealql-analyzer.generated.ts
+surrealkit generate --out src/surrealql-analyzer.d.ts
 ```
 
 ```ts
 // src/db.ts
-import { createClient } from "./surrealql-analyzer.generated";
-export const db = createClient({ url: "ws://localhost:8000/rpc" });
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "./surrealql-analyzer";
+
+export const db = createClient<Queries>({ url: "ws://localhost:8000/rpc" });
+export const { defineQuery, defineLive } = db;
 ```
 
 ```ts
 // src/queries.ts
-import { defineLive } from "./surrealql-analyzer.generated";
+import { defineLive } from "./db";
 export const livePeople = defineLive("SELECT id, name, age FROM person");
 ```
 
-Import `createClient` and `defineLive` **from the generated file** — that is
-what loads the registry augmentation. If results come back `any` rather than
-typed, see [When everything is `any`](../client/README.md#when-everything-is-any)
+The type argument on `createClient` is what types everything downstream. If
+results come back `unknown` rather than typed, see
+[When everything is `unknown`](../client/README.md#when-everything-is-unknown-or-any)
 in the client README.
 
 ## What it does

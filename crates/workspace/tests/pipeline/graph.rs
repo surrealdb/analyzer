@@ -11,7 +11,7 @@ fn analyze_workspace_reports_unknown_later_multi_hop_graph_edge_table() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE comment;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nSELECT * FROM person->likes->post->missing->comment;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE comment;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nSELECT * FROM person->likes->post->missing->comment;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -30,7 +30,7 @@ fn analyze_workspace_reports_unknown_graph_edge_and_target_tables() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nSELECT * FROM person->missing->post;\nSELECT * FROM person->likes->ghost;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nSELECT * FROM person->missing->post;\nSELECT * FROM person->likes->ghost;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -76,7 +76,7 @@ fn analyze_workspace_type_checks_edge_filter_conditions() {
     let mut workspace = Workspace::default();
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nDEFINE FIELD since ON likes TYPE datetime;\nSELECT * FROM person->likes[WHERE since > 5]->post;\nSELECT * FROM person->(likes WHERE since + 1)->post;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nDEFINE FIELD since ON likes TYPE datetime;\nSELECT * FROM person->likes[WHERE since > 5]->post;\nSELECT * FROM person->(likes WHERE since + 1)->post;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -104,7 +104,7 @@ fn analyze_workspace_reports_unreachable_graph_hop_targets() {
     let mut workspace = Workspace::default();
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE comment;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nSELECT * FROM person->likes->comment;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE comment;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nSELECT * FROM person->likes->comment;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -126,7 +126,7 @@ fn analyze_workspace_reports_mismatched_graph_relation_endpoints() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nSELECT * FROM post->likes->person;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nSELECT * FROM post->likes->person;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -148,7 +148,7 @@ fn analyze_workspace_allows_matching_relate_relation_endpoints() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nRELATE person:one->likes->post:one;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nRELATE person:one->likes->post:one;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -164,7 +164,7 @@ fn analyze_workspace_reports_mismatched_relate_relation_endpoints() {
     let mut workspace = Workspace::default();
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nRELATE post:one->likes->person:one;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nRELATE post:one->likes->person:one;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -220,7 +220,7 @@ fn analyze_workspace_validates_parenthesized_graph_where_against_edge_fields() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nDEFINE FIELD created_at ON likes TYPE datetime;\nSELECT * FROM person->(likes WHERE created_at > $since)->post;\nSELECT * FROM person->(likes WHERE missing_since > $since)->post;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE TABLE post SCHEMAFULL;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nDEFINE FIELD created_at ON likes TYPE datetime;\nSELECT * FROM person->(likes WHERE created_at > $since)->post;\nSELECT * FROM person->(likes WHERE missing_since > $since)->post;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -239,7 +239,7 @@ fn analyze_workspace_validates_bracketed_graph_filter_against_edge_fields() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nDEFINE FIELD created_at ON likes TYPE datetime;\nSELECT * FROM person->likes[WHERE created_at > $since]->post;\nSELECT * FROM person->likes[WHERE missing_since > $since]->post;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE TABLE post SCHEMAFULL;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nDEFINE FIELD created_at ON likes TYPE datetime;\nSELECT * FROM person->likes[WHERE created_at > $since]->post;\nSELECT * FROM person->likes[WHERE missing_since > $since]->post;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -260,7 +260,7 @@ fn analyze_workspace_reports_graph_step_through_non_relation_table() {
     // be a relation table; `post` is a plain table, so it trips 3001.
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nSELECT ->(likes, post) FROM person;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nSELECT ->(likes, post) FROM person;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -286,7 +286,7 @@ fn analyze_workspace_reports_single_step_traversal_through_plain_table() {
     // form `->likes->post` stays quiet.
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes TYPE RELATION IN person OUT post;\nSELECT ->post FROM person;\nSELECT ->likes->post FROM person;".into(),
+        "DEFINE TABLE person;\nDEFINE TABLE post;\nDEFINE TABLE likes SCHEMAFULL TYPE RELATION IN person OUT post;\nSELECT ->post FROM person;\nSELECT ->likes->post FROM person;".into(),
     );
 
     let output = analyze_workspace(&workspace);

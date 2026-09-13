@@ -30,6 +30,7 @@ pub(crate) fn analyze_define_field(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         .map_or(&no_partial, |parsed| &parsed.partial);
     check_field_definition(ctx, stmt, partial);
     check_id_field_clauses(ctx, stmt);
+    check_computed_excludes_other_clauses(ctx, stmt);
     check_record_targets(ctx, stmt, declared.as_ref());
     check_reference_type(ctx, stmt, declared.as_ref());
     check_reference_back_target(ctx, stmt);
@@ -89,7 +90,24 @@ pub(crate) fn analyze_define_field(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     }
 
     if let Some(assert) = &stmt.assert {
-        let kind = with_value_bound(ctx, declared.clone(), &stmt.table.node, |ctx| {
+        // `$value` inside an ASSERT is never NONE: the engine does not run the
+        // clause for an absent value at all. 3.2.3, with `nick ON u TYPE
+        // option<string> ASSERT string::len($value) > 2`: `CREATE u:a` writes
+        // the row, `CREATE u:b SET nick = 'x'` raises "Found 'x' for field
+        // `nick` … but field must conform to". So the optional's NONE arm is
+        // dropped here, and `ASSERT string::len($value) > 2` on an
+        // `option<string>` stops being a 5002.
+        //
+        // Only ASSERT. `VALUE` and `DEFAULT` *are* evaluated with NONE — the
+        // same schema spelled `VALUE string::uppercase($value)` answers
+        // "Argument 1 was the wrong type. Expected `string` but found `NONE`"
+        // on `CREATE`, and `DEFAULT string::uppercase($value)` does too — so
+        // `$value` keeps the declared kind whole in those clauses, and the
+        // finding they raise is a true positive.
+        let asserted = declared
+            .clone()
+            .map(|kind| crate::lattice::subtract(&kind, &Kind::None).unwrap_or(kind));
+        let kind = with_value_bound(ctx, asserted, &stmt.table.node, |ctx| {
             let fact = crate::analyzer::expression::infer::infer_expression_fact(assert, ctx);
             crate::analyzer::expression::check::check_value_expression(ctx, assert);
             fact.kind
@@ -339,6 +357,83 @@ fn check_id_field_clauses(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineField
     }
 }
 
+/// 1033 — `COMPUTED` excludes every other clause that could also decide the
+/// field's value or writability: `DEFAULT`, `VALUE`, `READONLY`, `ASSERT`.
+/// Each verified on 3.2.3, `OVERWRITE`d against a fresh field so the real
+/// answer is not masked by a 1022 redefinition:
+///
+/// ```text
+/// DEFINE FIELD OVERWRITE c ON t TYPE int COMPUTED 1 DEFAULT 2   -> Cannot use the `DEFAULT` keyword with `COMPUTED`.
+/// DEFINE FIELD OVERWRITE c ON t TYPE int COMPUTED 1 VALUE 2     -> Cannot use the `VALUE` keyword with `COMPUTED`.
+/// DEFINE FIELD OVERWRITE c ON t TYPE int COMPUTED 1 READONLY    -> Cannot use the `READONLY` keyword with `COMPUTED`.
+/// DEFINE FIELD OVERWRITE c ON t TYPE int COMPUTED 1 ASSERT $value > 0 -> Cannot use the `ASSERT` keyword with `COMPUTED`.
+/// ```
+///
+/// `COMPUTED` is never stored, so a value clause has nothing to write into and
+/// a write-time clause (`READONLY`/`ASSERT`) has no write to govern — the
+/// engine rejects the combination outright rather than reconciling it.
+fn check_computed_excludes_other_clauses(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineField) {
+    if stmt.computed.is_none() {
+        return;
+    }
+    for keyword in [
+        stmt.default.is_some().then_some("DEFAULT"),
+        stmt.value.is_some().then_some("VALUE"),
+        stmt.readonly.then_some("READONLY"),
+        stmt.assert.is_some().then_some("ASSERT"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ctx.emit(
+            surrealql_analyzer_diagnostics::catalog::finding(
+                surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), stmt.path.span),
+                1033,
+                format!("`COMPUTED` rejects a `{keyword}` clause"),
+            )
+            .with_help(format!(
+                "SurrealDB fails this definition with \"Cannot use the `{keyword}` keyword with `COMPUTED`\""
+            )),
+        );
+    }
+}
+
+/// 1033 — `in`/`out` are already fields of a `TYPE RELATION` table, implicitly,
+/// before any `DEFINE FIELD` names them: verified on 3.2.3,
+/// `DEFINE FIELD in ON t TYPE record<a>` on a relation table fails with "The
+/// field 'in' already exists" — the same message a genuine redefinition
+/// gives, which is why this reuses that finding rather than minting a new
+/// code. `OVERWRITE`/`IF NOT EXISTS` make it a deliberate replacement, exactly
+/// as they do for an explicit prior definition; [`field_is_duplicate`] cannot
+/// see this on its own because `in`/`out` are resolved through the relation's
+/// `in_tables`/`out_tables` (schema.rs), never stored in `table.fields`.
+fn check_relation_in_out_redefinition(
+    ctx: &mut AnalysisContext<'_>,
+    stmt: &ast::DefineField,
+    field_key: &str,
+) {
+    if stmt.overwrite || stmt.if_not_exists || !matches!(field_key, "in" | "out") {
+        return;
+    }
+    let Some(table) = ctx.schema().table(&stmt.table.node) else {
+        return;
+    };
+    let Some(relation) = &table.relation else {
+        return;
+    };
+    super::emit_duplicate_definition(
+        ctx,
+        stmt.path.span,
+        &super::Redefined {
+            kind: "field",
+            name: field_key,
+            subject: &format!("`{field_key}`"),
+            redefine: &format!("DEFINE FIELD OVERWRITE {field_key} ON {}", stmt.table.node),
+        },
+        relation.span.clone(),
+    );
+}
+
 fn check_field_definition(
     ctx: &mut AnalysisContext<'_>,
     stmt: &ast::DefineField,
@@ -346,6 +441,7 @@ fn check_field_definition(
 ) {
     let path = crate::schema::idiom_field_path(&stmt.path.node);
     let field_key = path.join(".");
+    check_relation_in_out_redefinition(ctx, stmt, &field_key);
 
     if let Some(reason) = partial.iter().find_map(|reason| match reason {
         PartialReason::UnsupportedSyntax(text) => Some(text),
@@ -382,7 +478,17 @@ fn check_field_definition(
         Some(table)
             if !stmt.overwrite
                 && !stmt.if_not_exists
-                && field_is_duplicate(table, &stmt.path.node, &field_key) =>
+                && field_is_duplicate(table, &stmt.path.node, &field_key)
+                // The additive pre-pass makes every OTHER source's field look
+                // already defined regardless of registration order — only a
+                // genuine predecessor (this same source, earlier, or a source
+                // that truly precedes it) is one this statement redefines;
+                // the other side of a cross-file pair reports it, once, from
+                // there. See `table.rs`'s identical guard.
+                && table
+                    .fields
+                    .get(&field_key)
+                    .is_some_and(|existing| ctx.source_precedes(existing.name_span.source())) =>
         {
             let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
                 surrealql_analyzer_syntax::span::SourceSpan::new(
@@ -390,9 +496,14 @@ fn check_field_definition(
                     stmt.path.span,
                 ),
                 1022,
-                format!("`{field_key}` is already defined on `{}`", stmt.table.node),
+                format!(
+                    "`{field_key}` is already defined on `{}`; SurrealDB rejects this DEFINE with \"The field '{field_key}' already exists\"",
+                    stmt.table.node
+                ),
             )
-            .with_help("use `DEFINE FIELD OVERWRITE` to redefine it intentionally");
+            .with_help(
+                "write `DEFINE FIELD OVERWRITE` to replace the earlier definition, or add `IF NOT EXISTS` to keep it",
+            );
             if let Some(existing) = table.fields.get(&field_key) {
                 finding = finding.with_related(
                     existing.name_span.clone(),
@@ -817,5 +928,49 @@ mod tests {
     #[test]
     fn sleep_is_a_known_builtin() {
         assert!(!fires("RETURN sleep(1ms);", "E5001"));
+    }
+
+    #[test]
+    fn computed_rejects_default_value_readonly_and_assert() {
+        let base = "DEFINE TABLE t SCHEMAFULL;";
+        for bad in [
+            "TYPE int COMPUTED 1 DEFAULT 2",
+            "TYPE int COMPUTED 1 VALUE 2",
+            "TYPE int COMPUTED 1 READONLY",
+            "TYPE int COMPUTED 1 ASSERT $value > 0",
+        ] {
+            let query = format!("{base} DEFINE FIELD c ON t {bad};");
+            assert!(fires(&query, "E1033"), "{bad}: {:?}", codes(&query));
+        }
+        // A plain COMPUTED field, with none of the rejected clauses, is fine.
+        assert!(!fires(
+            &format!("{base} DEFINE FIELD c ON t TYPE int COMPUTED 1;"),
+            "E1033"
+        ));
+    }
+
+    #[test]
+    fn redefining_in_or_out_on_a_relation_table_is_1022() {
+        let base = "DEFINE TABLE a SCHEMAFULL; DEFINE TABLE b SCHEMAFULL; \
+             DEFINE TABLE t TYPE RELATION FROM a TO b SCHEMAFULL;";
+        for field in ["in", "out"] {
+            let query = format!("{base} DEFINE FIELD {field} ON t TYPE record<a>;");
+            assert!(fires(&query, "E1022"), "{field}: {:?}", codes(&query));
+        }
+        // OVERWRITE/IF NOT EXISTS make it a deliberate replacement, same as
+        // any other redefinition.
+        assert!(!fires(
+            &format!("{base} DEFINE FIELD OVERWRITE in ON t TYPE record<a>;"),
+            "E1022"
+        ));
+        assert!(!fires(
+            &format!("{base} DEFINE FIELD IF NOT EXISTS in ON t TYPE record<a>;"),
+            "E1022"
+        ));
+        // A plain (non-relation) table's `in`/`out` are ordinary field names.
+        assert!(!fires(
+            "DEFINE TABLE p SCHEMAFULL; DEFINE FIELD in ON p TYPE string;",
+            "E1022"
+        ));
     }
 }

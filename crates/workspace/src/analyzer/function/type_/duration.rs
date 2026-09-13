@@ -21,5 +21,6 @@ pub(crate) fn analyze_type_duration(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    super::check_constant_conversion(ctx, call, &Kind::Duration);
     apply(ctx, call, &signature(), args)
 }

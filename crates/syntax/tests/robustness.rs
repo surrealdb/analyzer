@@ -313,3 +313,44 @@ fn every_prefix_of_a_statement_parses_and_lowers() {
         }
     }
 }
+
+/// Nesting depth is unbounded input, and the front end walks it three times:
+/// the syntax-diagnostic sweep, the highlighter, and lowering. The first two
+/// keep their own stack; the third stops at
+/// [`surrealql_analyzer_syntax::lower::MAX_NESTING_DEPTH`]. Before any of
+/// that, fifty thousand nested parentheses — a hundred-kilobyte file — killed
+/// the process with `stack overflow` and no diagnostic.
+///
+/// Run on a thread with a main thread's stack: the harness gives a test 2 MiB
+/// and the budgets are sized against the 8 MiB a consumer's main thread has.
+#[test]
+fn the_front_end_survives_fifty_thousand_levels_of_nesting() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for (label, text) in [
+                (
+                    "parentheses",
+                    format!("RETURN {}1{};", "(".repeat(50_000), ")".repeat(50_000)),
+                ),
+                (
+                    "unclosed parentheses",
+                    format!("RETURN {}1;", "(".repeat(50_000)),
+                ),
+                (
+                    "arrays",
+                    format!("RETURN {}1{};", "[".repeat(50_000), "]".repeat(50_000)),
+                ),
+            ] {
+                let parsed =
+                    parse_source(SourceId::new("deep"), text.as_str()).expect("a tree comes back");
+                let _ = parsed.syntax_diagnostics();
+                let _ = highlight::tokens(&parsed);
+                let statements = lower_statements(&parsed);
+                assert!(!statements.is_empty(), "{label}");
+            }
+        })
+        .expect("spawn")
+        .join()
+        .expect("the front end must not abort the process");
+}

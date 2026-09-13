@@ -18,7 +18,7 @@ default = ["runtime"]
 runtime = ["dep:surrealdb"]
 
 [dependencies]
-surrealql-analyzer-macros = { path = "../macros", version = "0.5.3" }
+surrealql-analyzer-macros = { path = "../macros", version = "0.6.0" }
 # Not optional: generated result types implement `SurrealValue`, which is what
 # the SDK's `take` requires. This crate is small and carries no engine.
 surrealdb-types.workspace = true

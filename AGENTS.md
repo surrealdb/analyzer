@@ -24,9 +24,12 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
 4. **Type the queries:**
    - Rust: wrap queries in the `query!` macro (`cargo add surrealql-analyzer-rs`). They
      are checked at compile time; a violation fails `cargo check`.
-   - TypeScript: run `surrealkit generate --out src/surrealql-analyzer.generated.ts`,
-     import `SurrealQLAnalyzerClient` from that file (it extends the `surrealdb` SDK),
-     and pass string literals to `db.query("…")` — destructure the first result,
+   - TypeScript: run `surrealkit generate --out src/surrealql-analyzer.d.ts`
+     (types only — nothing in that file exists at runtime), then
+     `import { createClient } from "@surrealdb/analyzer-client"` and
+     `import type { Queries } from "./surrealql-analyzer"`, and build the client
+     as `createClient<Queries>({ url })`. Pass string literals to
+     `db.query("…")` — destructure the first result,
      `const [rows] = await db.query("…")`.
 
 ## Working inside this repository
@@ -108,6 +111,12 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     with a verdict, and the gate reports what is NEW (needs triage) and what is
     GONE (a check stopped firing — usually a regression). Run
     `scripts/oracle.py check`; after triaging, `scripts/oracle.py update`.
+    The corpus path comes from `SG_ORACLE_CORPUS` (the built-in default is one
+    machine's). Without a corpus the gate *fails* — a missing directory and a
+    mistyped path look identical, so a pass would mean nothing; set
+    `SG_ORACLE_SKIP_MISSING=1` to make it print one line and exit 0 instead, or
+    run `scripts/release.sh check --no-oracle`, which skips the step and says so
+    loudly. Neither belongs in a run that gates a release.
 
     **Do not treat the finding count as the invariant.** That corpus is not
     all-valid — it contains genuinely broken SurrealQL — so the count *should*
@@ -116,6 +125,37 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
     `GROUP` clause was once declined purely because it would add +2 findings,
     even though the engine rejects both of those queries outright. A bare count
     also hides the worst case — one gained plus one lost reads as no change.
+
+  - `tools/type-oracle` — the **type oracle**, and the only harness that can say
+    whether an inferred type is *true*. Everything above proves inference is
+    stable or not degrading; a snapshot of a wrong answer is still a green test.
+    The oracle takes the `response_kind` the analyzer infers for a statement,
+    takes the `Value` SurrealDB actually returns for that same statement from an
+    embedded `kv-mem` engine, and asks whether the value **inhabits** the kind
+    (`Value::is_kind`, the engine's own relation — with one divergence: a
+    missing object key is read as `NONE`, because SurrealDB does not store a
+    NONE field). Two sources: SurrealDB's own `language-tests/tests/**` corpus,
+    whose `[[test.results]]` entries line up 1:1 with `AnalysisOutput.statements`,
+    and the vendored corpus, executed instead of only analyzed. Run
+    `scripts/type-oracle.sh check`; after triaging, `scripts/type-oracle.sh
+    update`. It needs a SurrealDB checkout at the **pinned tag `v3.2.3`**
+    (`SURREALDB_REPO=…`, or a sibling `../surrealdb`) matching the engine version
+    the crate depends on and the baseline was generated against.
+
+    Like `scripts/oracle.py` this is a **triage gate, not a count**:
+    `tools/type-oracle/baseline.txt` records every mismatch with a verdict
+    (`BUG` — the observed value contradicts the inferred kind, a TODO on us;
+    `expected` — the engine's behaviour here is not knowable statically). A NEW
+    or UNTRIAGED mismatch fails; one that DISAPPEARED is reported so it can be
+    deleted, because fixing an inference bug is *supposed* to move the number.
+    It also counts, without gating, what the oracle cannot yet assert on —
+    statements with no inferred kind, and files the analyzer rejects that the
+    engine runs cleanly (false positives, a negative-gate backlog).
+
+    It lives in its own workspace with its own `Cargo.lock`, outside
+    `crates/`, on purpose: the embedded engine drags `surrealdb-core` and about
+    two gigabytes of debug rlib behind it, and `cargo test --workspace` must
+    never build any of that. CI runs it as a separate job.
 
   - `crates/lsp/tests/stdio.rs` — spawns the **real** `surrealql-analyzer-lsp` binary
     and asserts on hover, inlay hints, completion and diagnostics at specific
@@ -126,20 +166,24 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
   - `crates/codegen/tests/golden.rs` — the **generated-TypeScript golden**.
     `generate` emits a module nothing used to compile, so a type
     error in the emitter's output would ship undetected. The test runs the
-    library's generation path (`QueryEntry::from_analysis` + `render_registry`)
+    library's generation path (`QueryTypes::from_analysis` + `TypesDocument::new`
+    + `render_types_module`)
     over the fixture workspace `crates/codegen/tests/fixtures/typecheck/`
     (schema with option/record/array/literal-union/object fields, an edge
     table, `fn::` functions, a host `src/queries.ts`) and compares the module
-    byte-for-byte with `packages/client/test-d/gen/surrealql-analyzer.generated.ts`.
+    byte-for-byte with `packages/client/test-d/gen/surrealql-analyzer.d.ts`.
     That file is then compiled by `pnpm -r run typecheck` as part of
     `@surrealdb/analyzer-client` against the real `surrealdb` types, and
     `test-d/gen/*.test-d.ts` + `test/generated.test.ts` assert what the
-    resolved types are. Regenerate with
+    resolved types are — including `test-d/gen/consumer.test-d.ts`, which does
+    what a user does (`createClient<Queries>`, `db.query("<literal>")`) with no
+    module augmentation anywhere in it. Regenerate with
     `UPDATE_SNAPSHOTS=1 cargo test -p surrealql-analyzer-codegen --test golden`, then
     run the package typecheck — the golden records *current* output, and the
-    Rust side cannot tell whether it is valid TypeScript. Augment
-    `SurqlRegistry` only through `"@surrealdb/analyzer-client"` in that package
-    (never `../src/registry.js`): one interface augmented through two
+    Rust side cannot tell whether it is valid TypeScript. Where a test still
+    augments the global `SurqlRegistry` (`test-d/query.test-d.ts`, which pins
+    the opt-in path), do it only through `"@surrealdb/analyzer-client"` in that
+    package (never `../src/registry.js`): one interface augmented through two
     specifiers gets two merged clones, and which one a file sees depends on
     program order.
 - **Grammar:** the parser is the vendored `crates/tree-sitter-surrealql`

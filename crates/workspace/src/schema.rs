@@ -210,6 +210,27 @@ pub struct FieldDef {
     /// string::slug($value)`): that clause transforms the written value, so
     /// the field is hand-written by design.
     pub computed: bool,
+    /// `COMPUTED <expr>` specifically — narrower than [`FieldDef::computed`],
+    /// which a plain `VALUE` clause also sets. A `COMPUTED` field is never
+    /// stored at all, which is the reason 1033 rejects an index over one
+    /// ("Computed fields cannot be indexed"); a `VALUE`-derived field IS
+    /// stored (verified on 3.2.3: `DEFINE INDEX` over a `VALUE time::now()`
+    /// field succeeds), so that broader flag would have flagged a legal
+    /// index as a false positive.
+    pub computed_clause: bool,
+    /// Whether the field carries a `VALUE` or `COMPUTED` clause — either way,
+    /// its stored value is recomputed on every write regardless of what (if
+    /// anything) the write provides, unlike a plain `DEFAULT`.
+    ///
+    /// This is 2034's REPLACE exemption, and it is deliberately not
+    /// [`FieldDef::has_default`]: a `REPLACE` never re-applies a bare
+    /// `DEFAULT` (verified on 3.2.3: a field `TYPE bool DEFAULT true`,
+    /// omitted from a `REPLACE` payload, fails with "Expected `bool` but
+    /// found `NONE`"), so that field is still required there even though a
+    /// `CREATE` could omit it. `VALUE`/`COMPUTED` are exempt regardless,
+    /// because they recompute unconditionally — verified for both a
+    /// `COMPUTED` field and a `VALUE` field that does not read `$value`.
+    pub has_value_or_computed: bool,
     /// `REFERENCE` — the field's `record<...>` link is a reference, so a
     /// `<~` back-traversal on the target table can resolve through it.
     pub reference: bool,
@@ -775,7 +796,7 @@ pub(crate) fn apply_schema_statement_effects(
     match &stmt.node {
         ast::Statement::Define(def) => match def {
             ast::DefineStmt::Table(def) => {
-                schema.insert_table(table_def_from_ast(def, source), def.overwrite);
+                schema.insert_table(table_def_from_ast(def, source, text), def.overwrite);
             }
             ast::DefineStmt::Field(def) => {
                 let mut field = field_def_from_ast(def, source, text);
@@ -1037,12 +1058,20 @@ pub(crate) fn index_field_path_exists_on_table(table: &TableDef, path: &[String]
             .is_some_and(|head| table.implicit_field_kind(head).is_some())
 }
 
-pub(crate) fn table_def_from_ast(def: &ast::DefineTable, source: &SourceId) -> TableDef {
+pub(crate) fn table_def_from_ast(
+    def: &ast::DefineTable,
+    source: &SourceId,
+    text: &str,
+) -> TableDef {
     TableDef {
         name: def.name.node.clone(),
         source: source.clone(),
         name_span: span(source, def.name.span),
-        fields: BTreeMap::new(),
+        fields: def
+            .view
+            .as_ref()
+            .map(|view| view_field_defs(view, &def.name.node, source, text))
+            .unwrap_or_default(),
         indexes: BTreeMap::new(),
         events: BTreeMap::new(),
         relation: def.relation.as_ref().map(|relation| RelationDef {
@@ -1054,6 +1083,77 @@ pub(crate) fn table_def_from_ast(def: &ast::DefineTable, source: &SourceId) -> T
         drop_table: def.drop,
         changefeed: def.changefeed,
     }
+}
+
+/// A view's field set, from its `AS SELECT` projection: what the engine
+/// builds and what `SELECT * FROM <view>` (and any index over it) actually
+/// sees. Modeled as ordinary [`FieldDef`]s — the same shape a `DEFINE FIELD`
+/// produces — so every existing consumer (1002 on a read, an index's field
+/// check, hover) recognizes a view column without a second code path.
+///
+/// Only the named cases resolve: a bare field (`name`) keeps its name, `expr
+/// AS alias` uses the alias, and a computed expression falls back to the same
+/// key `SELECT`'s own projection would give it (`count()` → `count`,
+/// `string::upper(x)` → the source text). A `*` projection names no single
+/// field and contributes none — the view is at least as permissive as this
+/// models, never more, which is what "prove-or-stay-silent" requires here.
+/// Untyped (`kind: None`) on purpose: inferring a view column's real type
+/// means resolving the whole projection against its `FROM` table's schema,
+/// which is a bigger feature than closing the false E1002 this exists for.
+fn view_field_defs(
+    view: &ast::ViewClause,
+    table_name: &str,
+    source: &SourceId,
+    text: &str,
+) -> BTreeMap<String, FieldDef> {
+    let mut fields = BTreeMap::new();
+    for projection in &view.projections {
+        let ast::Projection::Expr { expr, alias } = projection else {
+            continue;
+        };
+        let (name, name_range) = match alias {
+            Some(alias) => (alias.node.clone(), alias.span),
+            None => (
+                crate::analyzer::data::select::unaliased_computed_key(expr, text),
+                expr.span,
+            ),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let name_span = span(source, name_range);
+        fields.insert(
+            name.clone(),
+            FieldDef {
+                has_default: false,
+                assert: None,
+                readonly: false,
+                // Not `true`: a view's write contract (rejecting CREATE, and
+                // whatever UPDATE/DELETE turn out to mean) is a sibling PR's;
+                // marking these `computed` here would raise 2026 ("this
+                // write is discarded") on our own, ahead of and possibly at
+                // odds with that PR's own diagnostic for the same write.
+                computed: false,
+                // A projected view field carries no `COMPUTED` clause, so it
+                // is not the thing 1033 refuses to index — and an index over
+                // one does build (verified on 3.2.3). Nor can a view be
+                // written to, so it is never a `REPLACE` payload's business.
+                computed_clause: false,
+                has_value_or_computed: false,
+                reference: false,
+                path: vec![name.clone()],
+                steps: vec![FieldStep::Field(name.clone())],
+                table: table_name.to_string(),
+                kind: None,
+                partial: vec![PartialReason::Unresolved],
+                source: source.clone(),
+                name_span: name_span.clone(),
+                table_span: name_span,
+                type_span: None,
+            },
+        );
+    }
+    fields
 }
 
 pub(crate) fn field_def_from_ast(
@@ -1091,6 +1191,8 @@ pub(crate) fn field_def_from_ast(
                 .value
                 .as_ref()
                 .is_some_and(|value| !expr_reads_written_value(value)),
+        computed_clause: def.computed.is_some(),
+        has_value_or_computed: def.value.is_some() || def.computed.is_some(),
         reference: def.reference,
         path: idiom_field_path(&def.path.node),
         steps: idiom_field_steps(&def.path.node),
@@ -1648,6 +1750,12 @@ pub(crate) struct ParsedFieldKind {
 
 /// The `Kind::Geometry` for `geometry<point | line | ...>`: every argument
 /// must name a known shape, else `None`.
+///
+/// The grammar now closes `geometry<...>` to exactly these seven names
+/// (`geometry<pointt>` is a parse error on 3.2.3, matched in
+/// `crates/tree-sitter-surrealql/grammar.js`'s `_geometryKind`), so the
+/// `None` fallback below is no longer reachable through anything that
+/// parses — kept as the belt to the grammar's suspenders, not a live path.
 fn geometry_kind(
     args: &[surrealql_analyzer_syntax::ast::Spanned<surrealql_analyzer_syntax::ast::TypeExpr>],
 ) -> Option<Kind> {
@@ -2174,7 +2282,7 @@ mod tests {
         assert_eq!(duplicates.len(), 1);
         assert_eq!(
             duplicates[0].message(),
-            "`person` is already defined; this DEFINE silently replaces the earlier one"
+        "`person` is already defined; SurrealDB rejects this DEFINE with \"The table 'person' already exists\""
         );
     }
 

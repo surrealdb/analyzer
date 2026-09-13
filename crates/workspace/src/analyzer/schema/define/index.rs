@@ -14,6 +14,8 @@ use surrealql_analyzer_syntax::span::{ByteRange, SourceSpan};
 use crate::analyzer::context::AnalysisContext;
 
 pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineIndex) -> Kind {
+    check_count_index_fields(ctx, stmt);
+
     let refs = crate::schema::index_field_refs(stmt, ctx.source());
     let source = ctx.source().clone();
 
@@ -31,10 +33,17 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         return Kind::None;
     };
 
+    // Same gate as every other 1002: only a SCHEMAFULL table has a closed
+    // field set to check against. A schemaless table accepts any field, and a
+    // view's columns are its projection's aliases, which the schema index does
+    // not carry — `DEFINE INDEX itotal ON stats FIELDS total` over
+    // `DEFINE TABLE stats AS SELECT count() AS total …` builds on 3.2.3.
     let mut unknown_fields = Vec::new();
-    for (path, text, span) in &refs {
-        if !crate::schema::index_field_path_exists_on_table(table, path) {
-            unknown_fields.push((text.clone(), span.clone()));
+    if table.schemafull {
+        for (path, text, span) in &refs {
+            if !crate::schema::index_field_path_exists_on_table(table, path) {
+                unknown_fields.push((text.clone(), span.clone()));
+            }
         }
     }
 
@@ -62,17 +71,24 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     let existing = (!stmt.overwrite && !stmt.if_not_exists)
         .then(|| table.indexes.get(&stmt.name.node))
         .flatten()
-        .map(|existing| existing.name_span.clone());
+        .map(|existing| existing.name_span.clone())
+        // Only a genuine predecessor in the canonical, schema-glob-first
+        // order redefines — see `table.rs`'s identical guard.
+        .filter(|existing| ctx.source_precedes(existing.source()));
 
     if let Some(existing) = existing {
         super::emit_duplicate_definition(
             ctx,
             stmt.name.span,
-            &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
-            &format!(
-                "DEFINE INDEX OVERWRITE {} ON {}",
-                stmt.name.node, stmt.table.node
-            ),
+            &super::Redefined {
+                kind: "index",
+                name: &stmt.name.node,
+                subject: &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
+                redefine: &format!(
+                    "DEFINE INDEX OVERWRITE {} ON {}",
+                    stmt.name.node, stmt.table.node
+                ),
+            },
             existing,
         );
     }
@@ -96,6 +112,8 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         );
         ctx.emit(finding);
     }
+
+    check_indexed_fields_are_not_computed(ctx, stmt, table, &refs);
 
     // A full-text index tokenizes with a named analyzer. The engine accepts
     // `FULLTEXT ANALYZER ghost` at definition time (verified on 3.2.3: the
@@ -141,6 +159,74 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     }
 
     Kind::None
+}
+
+/// 1033 — a `COUNT` index takes no `FIELDS`. Verified on 3.2.3: `DEFINE
+/// INDEX icnt ON user FIELDS name COUNT` fails with "Cannot create a count
+/// index with fields", while a bare `DEFINE INDEX icnt ON user COUNT`
+/// defines fine. The grammar takes the combination — `CountClause` and
+/// `FieldsColumnsClause` are independent repeated clauses, and the engine's
+/// own restriction is a statement-level check on its parser, not a
+/// context-free grammar rule — so this is what names the mistake instead of
+/// the file collapsing into "Cannot create a count index with fields" with
+/// no span, or (worse) analysis silently treating it as a normal index.
+fn check_count_index_fields(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineIndex) {
+    if stmt.kind != ast::IndexKind::Count {
+        return;
+    }
+    let (Some(first), Some(last)) = (stmt.fields.first(), stmt.fields.last()) else {
+        return;
+    };
+    let span = ByteRange::new(first.span.start(), last.span.end()).unwrap_or(first.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            SourceSpan::new(ctx.source().clone(), span),
+            1033,
+            format!(
+                "index `{}` is COUNT and also names FIELDS — a count index takes no fields",
+                stmt.name.node
+            ),
+        )
+        .with_help(
+            "SurrealDB fails this definition: \"Cannot create a count index with fields\" — drop FIELDS for an unconditional count, or drop COUNT for a normal index over these fields",
+        ),
+    );
+}
+
+/// 1033 — a `COMPUTED` field is never stored, so an index over one has
+/// nothing to index: verified on 3.2.3, "Computed fields cannot be indexed.
+/// Index: 'idouble' - Field: 'double'". A plain `VALUE` field IS stored and
+/// indexes fine, so this checks the narrow `computed_clause` flag, not the
+/// broader `computed` one 2026 uses.
+fn check_indexed_fields_are_not_computed(
+    ctx: &mut AnalysisContext<'_>,
+    stmt: &ast::DefineIndex,
+    table: &crate::schema::TableDef,
+    refs: &[(Vec<String>, String, SourceSpan)],
+) {
+    for (path, text, span) in refs {
+        let field_key = path.join(".");
+        if table
+            .fields
+            .get(&field_key)
+            .is_some_and(|field| field.computed_clause)
+        {
+            ctx.emit(
+                surrealql_analyzer_diagnostics::catalog::finding(
+                    span.clone(),
+                    1033,
+                    format!(
+                        "index `{}` cannot cover `{text}` — COMPUTED fields are never stored",
+                        stmt.name.node
+                    ),
+                )
+                .with_help(format!(
+                    "SurrealDB fails this definition: \"Computed fields cannot be indexed. Index: '{}' - Field: '{text}'\"",
+                    stmt.name.node
+                )),
+            );
+        }
+    }
 }
 
 /// The `REBUILD`/`REMOVE INDEX` reference contract (1012): the named index
@@ -204,6 +290,55 @@ mod tests {
             !codes(&defined).contains(&"E1012".to_string()),
             "{:?}",
             codes(&defined)
+        );
+    }
+
+    #[test]
+    fn a_count_index_naming_fields_is_1033() {
+        let base = "DEFINE TABLE user SCHEMAFULL; DEFINE FIELD name ON user TYPE string;";
+        let query = format!("{base} DEFINE INDEX icnt ON user FIELDS name COUNT;");
+        assert!(
+            codes(&query).contains(&"E1033".to_string()),
+            "{:?}",
+            codes(&query)
+        );
+        // Silent without FIELDS — an unconditional or `WHERE`-guarded count
+        // index is exactly what COUNT is for.
+        for ok in [
+            format!("{base} DEFINE INDEX icnt ON user COUNT;"),
+            format!("{base} DEFINE INDEX icnt ON user COUNT WHERE name != '';"),
+            format!("{base} DEFINE INDEX ifields ON user FIELDS name;"),
+        ] {
+            assert!(
+                !codes(&ok).contains(&"E1033".to_string()),
+                "{ok}: {:?}",
+                codes(&ok)
+            );
+        }
+    }
+
+    #[test]
+    fn indexing_a_computed_field_is_1033() {
+        let query = "DEFINE TABLE t SCHEMAFULL; \
+             DEFINE FIELD double ON t TYPE int COMPUTED 1 + 1; \
+             DEFINE INDEX idouble ON t FIELDS double;";
+        assert!(
+            codes(query).contains(&"E1033".to_string()),
+            "{:?}",
+            codes(query)
+        );
+    }
+
+    #[test]
+    fn indexing_a_plain_value_field_stays_silent() {
+        // A `VALUE` field is stored — unlike `COMPUTED` — so it indexes fine.
+        let query = "DEFINE TABLE t SCHEMAFULL; \
+             DEFINE FIELD stamp ON t TYPE datetime VALUE time::now(); \
+             DEFINE INDEX istamp ON t FIELDS stamp;";
+        assert!(
+            !codes(query).contains(&"E1033".to_string()),
+            "{:?}",
+            codes(query)
         );
     }
 }

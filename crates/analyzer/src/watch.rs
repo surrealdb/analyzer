@@ -160,7 +160,7 @@ fn is_input(
 /// Neither the file nor its directory need exist yet, so canonicalization
 /// starts at the nearest ancestor that *does* and the remaining components are
 /// re-appended. Canonicalizing only the parent was not enough: with
-/// `out = "src/lib/db.generated.ts"` and no `src/lib` yet, the parent does not
+/// `out = "src/lib/db.d.ts"` and no `src/lib` yet, the parent does not
 /// resolve, the raw path is kept, and under a symlinked ancestor (`/tmp`,
 /// `/var`, a symlinked home) it never matches the `/private/...` spelling the
 /// watcher reports — so `generate` writes, the watcher calls the write an
@@ -536,7 +536,7 @@ mod tests {
         // `generate` writes this file. If a write to it counted as a change the
         // watcher would re-trigger itself forever.
         let root = Path::new("/w");
-        let out = PathBuf::from("/w/surrealql-analyzer.generated.ts");
+        let out = PathBuf::from("/w/surrealql-analyzer.d.ts");
         assert!(!is_input(root, &out, &ignore(), &[], Some(&out)));
         // It is a plain host file to any other command.
         assert!(
@@ -608,11 +608,11 @@ mod tests {
 
         // `link/src/lib/` does not exist: two missing components under a
         // symlinked ancestor.
-        let resolved = resolve_output(&root, &link.join("src/lib/db.generated.ts"));
+        let resolved = resolve_output(&root, &link.join("src/lib/db.d.ts"));
         let expected = real
             .canonicalize()
             .expect("canonical target")
-            .join("src/lib/db.generated.ts");
+            .join("src/lib/db.d.ts");
         assert_eq!(
             resolved, expected,
             "the symlinked ancestor must resolve even though the leaf directories do not exist"
@@ -621,9 +621,9 @@ mod tests {
         // Which is the whole point: the path `generate` will write, once the
         // directories exist, is the path the exclusion already names.
         std::fs::create_dir_all(real.join("src/lib")).expect("create out dir");
-        std::fs::write(real.join("src/lib/db.generated.ts"), "//").expect("write registry");
+        std::fs::write(real.join("src/lib/db.d.ts"), "//").expect("write registry");
         assert_eq!(
-            resolve_output(&root, &link.join("src/lib/db.generated.ts")),
+            resolve_output(&root, &link.join("src/lib/db.d.ts")),
             resolved,
             "resolution must not change once the directories appear"
         );

@@ -27,7 +27,7 @@
  * hook, which is why the whole reactive layer is {@link Json}-shaped.
  */
 
-import type { SurrealQLAnalyzerClient } from "./client.js";
+import type { ClientCore } from "./client.js";
 import type { Bound, Json, ParamsArg } from "./registry.js";
 import type { Rows, SurqlLive, SurqlQuery } from "./query.js";
 
@@ -50,17 +50,17 @@ export interface Preloaded<T> {
  * immediately and (for a live query) upgrade in place.
  */
 export function preload<Row, P extends Record<string, unknown>>(
-  client: SurrealQLAnalyzerClient,
+  client: ClientCore,
   query: SurqlLive<Row, P>,
   ...args: ParamsArg<P>
 ): Promise<Preloaded<Json<Row>[]>>;
 export function preload<R, P extends Record<string, unknown>>(
-  client: SurrealQLAnalyzerClient,
+  client: ClientCore,
   query: SurqlQuery<R, P>,
   ...args: ParamsArg<P>
 ): Promise<Preloaded<Json<Rows<R>>>>;
 export async function preload(
-  client: SurrealQLAnalyzerClient,
+  client: ClientCore,
   query: SurqlLive<unknown, Record<string, unknown>> | SurqlQuery<unknown, Record<string, unknown>>,
   params?: Record<string, unknown>,
 ): Promise<Preloaded<unknown>> {

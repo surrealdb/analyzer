@@ -1,6 +1,6 @@
 {
   "name": "@surrealdb/analyzer-ts-plugin",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "TypeScript language service plugin: SurrealQL diagnostics and highlighting inside db.query(\"\u2026\"), reported as TypeScript's own.",
   "license": "MIT OR Apache-2.0",
   "author": "Drew Ridley",

@@ -35,43 +35,53 @@ for it when you want one of those.
 Three steps, and skipping any of them yields `any` with no error on your own
 code — see [When everything is `any`](#when-everything-is-any).
 
-**1. Install.** All three, including `@surrealdb/analyzer-client`: the generated file
-augments that module *by name*, and if the name does not resolve the whole
-registry is silently dropped.
+**1. Install.** All three, including `@surrealdb/analyzer-client`: it is the
+runtime (the generated file is types only) and the module the generated types
+import their value classes from.
 
 ```sh
 npm install @surrealdb/analyzer-svelte @surrealdb/analyzer-client surrealdb
 cargo install surrealkit    # the command line: check, generate, watch
 ```
 
-**2. Generate into `src/lib`,** so `$lib/surrealql-analyzer.generated` resolves. Bare
+**2. Generate into `src/lib`,** so `$lib/surrealql-analyzer` resolves. Bare
 `generate` writes to the workspace root, which is not where that import points:
 
 ```sh
-surrealkit generate --out src/lib/surrealql-analyzer.generated.ts
+surrealkit generate --out src/lib/surrealql-analyzer.d.ts
 ```
 
 Put it in `package.json` so the path is written once:
 
 ```json
-{ "scripts": { "generate": "surrealkit generate --out src/lib/surrealql-analyzer.generated.ts" } }
+{ "scripts": { "generate": "surrealkit generate --out src/lib/surrealql-analyzer.d.ts" } }
 ```
 
-Commit the generated module — it is what makes a fresh checkout type-check
+Commit the generated file — it is what makes a fresh checkout type-check
 without a build step. Re-run on every schema or query change, or leave
 `--watch` running.
 
-**3. Create the client once.**
+**3. Create the client once — and augment the registry.**
 
 ```ts
 // src/lib/db.ts
-import { createClient } from "$lib/surrealql-analyzer.generated";
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "$lib/surrealql-analyzer";
 
-export const db = createClient({
+// `<Query q="SELECT …">` is a markup attribute: there is no call site to put a
+// type argument on, so the components read the GLOBAL registry. This one line,
+// in your own code, is what fills it.
+declare module "@surrealdb/analyzer-client" {
+  interface SurqlRegistry extends Queries {}
+}
+
+export const db = createClient<Queries>({
   url: "ws://localhost:8000/rpc",
   namespace: "app",
   database: "app",
 });
+
+export const { defineQuery, defineLive } = db;
 ```
 
 Import `createClient` **from the generated file** — that import is what loads the
@@ -122,7 +132,7 @@ query appears in two files, which is exactly the SSR case:
 
 ```ts
 // src/lib/queries.ts
-import { defineQuery, defineLive } from "$lib/surrealql-analyzer.generated";
+import { defineQuery, defineLive } from "$lib/db";
 
 export const allPeople  = defineQuery("SELECT id, name, age, team FROM person");
 export const addPerson  = defineQuery("CREATE person SET name = $name, age = $age, team = $team");
@@ -168,7 +178,7 @@ so the query re-subscribes:
 <script lang="ts">
   import { createLive } from "@surrealdb/analyzer-svelte";
   import { liveTeam } from "$lib/queries";
-  import { RecordId } from "$lib/surrealql-analyzer.generated";
+  import { RecordId } from "@surrealdb/analyzer-client";
 
   let { slug }: { slug: string } = $props();
 
@@ -190,7 +200,7 @@ must be wrapped in a function to preserve reactivity*.
 <script lang="ts">
   import { createLive } from "@surrealdb/analyzer-svelte";
   import { liveTeam } from "$lib/queries";
-  import { RecordId } from "$lib/surrealql-analyzer.generated";
+  import { RecordId } from "@surrealdb/analyzer-client";
 
   let { slug }: { slug: string | undefined } = $props();
 
@@ -358,7 +368,7 @@ Two things this does not do yet, both external:
 <script lang="ts">
   import { createMutation } from "@surrealdb/analyzer-svelte";
   import { addPerson, allPeople, livePeople } from "$lib/queries";
-  import { RecordId } from "$lib/surrealql-analyzer.generated";
+  import { RecordId } from "@surrealdb/analyzer-client";
 
   const add = createMutation(addPerson, { invalidates: [allPeople, livePeople] });
 </script>
@@ -432,7 +442,7 @@ real reader of these docs:
    `people[0].nope.definitely.not.a.field`. Every snippet above says `lang="ts"`
    because people copy the whole block.
 3. **The generated file is somewhere else.** Bare `generate` writes to the
-   workspace root, not `src/lib`. If your import says `$lib/surrealql-analyzer.generated`
+   workspace root, not `src/lib`. If your import says `$lib/surrealql-analyzer`
    and the file is at the root, you now have two of them and they will drift.
 4. **You imported `createClient` / `defineQuery` from `@surrealdb/analyzer-client`**
    rather than from the generated file. The augmentation loads with the import.

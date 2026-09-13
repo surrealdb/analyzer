@@ -260,3 +260,42 @@ fn a_live_select_never_pages() {
     // so the check has nothing to say there.
     assert!(!fires("LIVE SELECT name FROM person;", 7016));
 }
+
+#[test]
+fn an_aggregate_over_the_wrong_kind_of_column_is_4034() {
+    for query in [
+        "SELECT math::sum(name) FROM person GROUP ALL;",
+        "SELECT math::mean(name) FROM person GROUP ALL;",
+        "SELECT math::max(name) FROM person GROUP ALL;",
+        "SELECT math::median(name) FROM person GROUP ALL;",
+        "SELECT time::min(name) FROM person GROUP ALL;",
+        "SELECT time::max(name) FROM person GROUP ALL;",
+    ] {
+        assert!(fires(query, 4034), "4034 must fire for {query}");
+    }
+}
+
+#[test]
+fn an_aggregate_over_the_right_kind_of_column_stays_silent() {
+    for query in [
+        "SELECT math::sum(age) FROM person GROUP ALL;",
+        "SELECT math::mean(age) FROM person GROUP ALL;",
+        "SELECT math::max(age) FROM person GROUP ALL;",
+        "SELECT time::min(joined) FROM person GROUP ALL;",
+        "SELECT time::max(joined) FROM person GROUP ALL;",
+        // option<float>: might be numeric, might be NONE — not a column that
+        // is *always* the wrong kind.
+        "SELECT math::sum(score) FROM person GROUP ALL;",
+        // math::mode is excluded regardless of kind (see the doc comment).
+        "SELECT math::mode(name) FROM person GROUP ALL;",
+        // Already a collection column: the element-wise reading applies,
+        // not this check.
+        "SELECT math::sum(tags) FROM person GROUP ALL;",
+    ] {
+        let codes = codes(query);
+        assert!(
+            !codes.contains(&4034),
+            "4034 must not fire for {query}: {codes:?}"
+        );
+    }
+}

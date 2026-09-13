@@ -12,8 +12,11 @@ categories.workspace = true
 description = "TypeScript type generation from SurrealQL Analyzer analysis results"
 
 [dependencies]
+# The types document is a serializable artifact: `serde` is what makes it one,
+# and `Kind` and the schema index already derive through it upstream.
+serde = { version = "1.0", features = ["derive"] }
 surrealdb-types.workspace = true
-surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
+surrealql-analyzer-workspace = { path = "../workspace", version = "0.6.0" }
 
 [dev-dependencies]
 # `tests/golden.rs` runs the CLI's generation path over a fixture workspace:
@@ -21,9 +24,10 @@ surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
 # host-parameter prefix restated here still matches its definition), and the
 # schema/query partition follows the same globs `surrealql-analyzer.toml` declares.
 glob = "0.3"
-surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.5.3" }
-surrealql-analyzer-embed = { path = "../embed", version = "0.5.3" }
-surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
+serde_json = "1.0"
+surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.6.0" }
+surrealql-analyzer-embed = { path = "../embed", version = "0.6.0" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.6.0" }
 
 [lints]
 workspace = true

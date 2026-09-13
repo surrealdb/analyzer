@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Release helper for SurrealQL Analyzer.
 #
-#   scripts/release.sh check          # verify only — safe, changes nothing
-#   scripts/release.sh bump 0.4.0     # rewrite versions, then re-run `check`
-#   scripts/release.sh publish        # the real thing (prompts once, then irreversible)
+#   scripts/release.sh check              # verify only — safe, changes nothing
+#   scripts/release.sh check --no-oracle  # ... without the real-world corpus gate
+#   scripts/release.sh bump 0.6.0         # rewrite versions, then re-run `check`
+#   scripts/release.sh publish            # the real thing (prompts once, then irreversible)
 #
 # Publishing is irreversible: a crates.io version can be yanked but never
 # replaced, and npm is the same. `check` and `bump` never publish.
@@ -33,6 +34,16 @@ crate_dir() {
 }
 
 cmd_check() {
+  # `--no-oracle` is a flag rather than something inferred from the corpus being
+  # absent. Inferring is the version that fails quietly: a mistyped
+  # SG_ORACLE_CORPUS is indistinguishable from "this machine has no corpus", and
+  # the gate would then report success having checked nothing. Asking for the
+  # skip out loud keeps that impossible, and keeps the skip in the transcript.
+  # (`if`, not `[ … ] && skip=1`: under `set -e` a failing and-list ends the
+  # script, so the no-flag case would exit 1 before printing anything.)
+  local skip_oracle=0
+  if [ "${1:-}" = "--no-oracle" ]; then skip_oracle=1; fi
+
   echo "== workspace version =="
   grep -m1 '^version' Cargo.toml
 
@@ -47,11 +58,18 @@ cmd_check() {
   # so findings may legitimately grow; what must hold is that every finding is
   # accounted for, and that none silently STOPPED firing (a count hides that:
   # one gained plus one lost looks like no change at all).
-  echo "== oracle (triage gate) =="
-  python3 scripts/oracle.py check || {
-    echo "   triage the findings above, then: scripts/oracle.py update"
-    exit 1
-  }
+  if [ "$skip_oracle" = "1" ]; then
+    echo "== oracle (triage gate) — SKIPPED (--no-oracle) =="
+    echo "   !! The real-world corpus gate did NOT run. Nothing here says whether"
+    echo "   !! a diagnostic stopped firing. Before publishing, run this on a"
+    echo "   !! machine with the corpus (SG_ORACLE_CORPUS points at it)."
+  else
+    echo "== oracle (triage gate) =="
+    python3 scripts/oracle.py check || {
+      echo "   triage the findings above, then: scripts/oracle.py update"
+      exit 1
+    }
+  fi
 
   # `--no-verify` on purpose: verification builds the tarball against the
   # *registry*, so any crate using an API added in this same release fails until
@@ -64,10 +82,15 @@ cmd_check() {
     printf '   %-38s ' "$c"
     local out
     out=$(cargo package -p "$c" --allow-dirty --no-verify --quiet 2>&1) && { echo ok; continue; }
-    # A sibling at the new version isn't on the registry yet — unavoidable in a
+    # A sibling isn't on the registry at this version yet — unavoidable in a
     # coordinated bump, and it resolves as `publish` walks dependency order.
-    # Only a failure with some OTHER cause is a real problem.
-    if grep -q "candidate versions found which didn't match" <<<"$out"; then
+    # Only a failure with some OTHER cause is a real problem. cargo has two
+    # spellings for it: "candidate versions found which didn't match" when the
+    # crate is on the registry at some other version, and "no matching package
+    # named `…` found" when it has never been published at all. The second is
+    # what a first release under new names produces for every sibling, so it is
+    # pending in exactly the same sense.
+    if grep -qE "candidate versions found which didn't match|no matching package named" <<<"$out"; then
       echo "pending (a sibling crate isn't published at this version yet)"
       pending=$((pending + 1))
     else
@@ -152,17 +175,20 @@ cmd_publish() {
 
   if ! git rev-parse "v$v" >/dev/null 2>&1; then
     echo
-    echo "No tag v$v yet. The GitHub Release assets (CLI + LSP, 5 targets) are"
-    echo "built by pushing it:"
+    echo "No tag v$v yet. The GitHub Release assets (the language server, 5"
+    echo "targets) are built by pushing it:"
     echo
     echo "    git tag v$v && git push origin v$v"
     echo
     echo "Wait for .github/workflows/release.yml to finish, confirm the assets at"
     echo "    https://github.com/surrealdb/analyzer/releases/tag/v$v"
-    echo "then re-run this. crates.io does not depend on the tag; npm does."
-    read -r -p "Publish crates.io now and do npm later? [y/N] " go
+    echo "then re-run this. Neither registry needs the tag any more — the npm"
+    echo "launcher that downloaded these assets is gone, and what remains on npm"
+    echo "carries its own build output — but the Zed extension still resolves the"
+    echo "language server from the release for its version, so tagging first is"
+    echo "the order that leaves nobody looking at a 404."
+    read -r -p "Publish both registries now and tag afterwards? [y/N] " go
     [ "$go" = "y" ] || exit 1
-    local skip_npm=1
   # Existing is not enough — it must name THIS commit. Tagging before committing
   # the bump produces a v0.5.0 whose Cargo.toml still says 0.4.1, so the release
   # workflow builds binaries that report the previous version. That happened, and
@@ -191,10 +217,6 @@ cmd_publish() {
     sleep 20
   done
 
-  if [ "${skip_npm:-0}" = "1" ]; then
-    echo "== npm skipped — tag v$v first, then: pnpm -r publish --access public =="
-    exit 0
-  fi
   # `pnpm -r` covers whatever pnpm-workspace.yaml lists.
   echo "== npm =="
   pnpm -r publish --access public --no-git-checks
@@ -203,8 +225,8 @@ cmd_publish() {
 }
 
 case "${1:-check}" in
-  check)   cmd_check ;;
+  check)   cmd_check "${2:-}" ;;
   bump)    cmd_bump "${2:-}" ;;
   publish) cmd_publish ;;
-  *) echo "usage: $0 {check|bump <version>|publish}"; exit 1 ;;
+  *) echo "usage: $0 {check [--no-oracle]|bump <version>|publish}"; exit 1 ;;
 esac

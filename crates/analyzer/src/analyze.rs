@@ -13,7 +13,8 @@ use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
-use surrealql_analyzer_diagnostics::{Finding, Severity};
+use surrealql_analyzer_diagnostics::{Finding, FindingCode, Severity};
+use surrealql_analyzer_syntax::span::{ByteRange, SourceSpan};
 use surrealql_analyzer_workspace::{analyze_workspace, Workspace, WorkspaceAnalysis};
 
 use crate::host::{self, HostQueries};
@@ -73,11 +74,30 @@ pub(crate) fn analyze(project: &Project) -> Result<Analyzed, SourceError> {
     let mut workspace = Workspace::new(project.config().clone());
     let mut texts = BTreeMap::new();
 
+    let mut undecodable = Vec::new();
+
     for path in sources.surrealql {
-        let text = fs::read_to_string(&path).map_err(|source| SourceError {
+        let bytes = fs::read(&path).map_err(|source| SourceError {
             path: path.clone(),
             source,
         })?;
+        // A file that is not UTF-8 is reported and skipped, not fatal. One
+        // stray latin-1 or binary file used to abort the whole run with exit
+        // 2 and zero diagnostics, so a hundred good files went unanalyzed
+        // because of a byte in the hundred-and-first. The analyzer cannot
+        // guess an encoding — decoding lossily would move every span after
+        // the bad byte and report findings on text the file does not contain
+        // — so the file contributes nothing but this one finding.
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(error) => {
+                let offset = error.utf8_error().valid_up_to();
+                let source_id = workspace.add_file_source(path, String::new());
+                texts.insert(source_id.to_string(), String::new());
+                undecodable.push(undecodable_finding(&source_id, offset));
+                continue;
+            }
+        };
         let source_id = workspace.add_file_source(path, text.clone());
         texts.insert(source_id.to_string(), text);
     }
@@ -85,11 +105,39 @@ pub(crate) fn analyze(project: &Project) -> Result<Analyzed, SourceError> {
     let mut embedded = host::collect(&mut workspace, &sources.host);
     texts.append(&mut embedded.texts);
 
+    let mut analysis = analyze_workspace(&workspace);
+    analysis.diagnostics.extend(undecodable);
+
     Ok(Analyzed {
-        analysis: analyze_workspace(&workspace),
+        analysis,
         embedded,
         texts,
     })
+}
+
+/// The one finding a file that is not UTF-8 text raises, at the first byte
+/// that is not.
+///
+/// `S0001` rather than a hint: the file names itself a SurrealQL source and
+/// the analyzer could not read a character of it, which is the same class of
+/// breakage as a source it could not parse, and a hint would let a file the
+/// tool is silently ignoring pass CI.
+fn undecodable_finding(
+    source_id: &surrealql_analyzer_syntax::source::SourceId,
+    offset: usize,
+) -> Finding {
+    let at = u32::try_from(offset).unwrap_or(u32::MAX);
+    let span = SourceSpan::new(
+        source_id.clone(),
+        ByteRange::new(0, 0).expect("zero-width byte range is valid"),
+    );
+    Finding::new(
+        span,
+        FindingCode::syntax(1),
+        Severity::Error,
+        format!("not UTF-8 text: byte {at} is not valid UTF-8, so this file was skipped"),
+    )
+    .with_help("save the file as UTF-8, or drop it from the `[sources]` globs")
 }
 
 impl Analyzed {

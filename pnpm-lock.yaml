@@ -74,8 +74,6 @@ importers:
         specifier: ^5.4.21
         version: 5.4.21(@types/node@22.20.1)(lightningcss@1.32.0)
 
-  npm/surrealql-analyzer: {}
-
   packages/client:
     devDependencies:
       surrealdb:
@@ -85,10 +83,10 @@ importers:
   packages/next:
     dependencies:
       '@surrealdb/analyzer-client':
-        specifier: 0.5.3
+        specifier: 0.6.0
         version: link:../client
       '@surrealdb/analyzer-query':
-        specifier: 0.5.3
+        specifier: 0.6.0
         version: link:../query
     devDependencies:
       '@testing-library/react':
@@ -116,7 +114,7 @@ importers:
   packages/query:
     dependencies:
       '@surrealdb/analyzer-client':
-        specifier: 0.5.3
+        specifier: 0.6.0
         version: link:../client
     devDependencies:
       surrealdb:
@@ -126,10 +124,10 @@ importers:
   packages/svelte:
     dependencies:
       '@surrealdb/analyzer-client':
-        specifier: 0.5.3
+        specifier: 0.6.0
         version: link:../client
       '@surrealdb/analyzer-query':
-        specifier: 0.5.3
+        specifier: 0.6.0
         version: link:../query
       '@sveltejs/kit':
         specifier: ^2

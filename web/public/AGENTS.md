@@ -27,10 +27,14 @@ at [`/llms.txt`](https://surrealguard.dev/llms.txt) and
      in `Cargo.toml` — `surrealql-analyzer-rs = { git =
      "https://github.com/surrealdb/analyzer" }` — until the crates.io
      release). They are checked at compile time; a violation fails `cargo check`.
-   - TypeScript: run `surrealql-analyzer generate --out src/surrealql-analyzer.generated.ts`,
-     import `SurrealQLAnalyzerClient` from that file (it extends the `surrealdb` SDK),
-     and pass string literals to `db.query("…")` — destructure the first result,
-     `const [rows] = await db.query("…")`.
+   - TypeScript: run `surrealql-analyzer generate --out src/surrealql-analyzer.d.ts`
+     (the path must end in `.d.ts` — `generate` refuses any other extension).
+     The file is types only — no runtime, no `declare module` augmentation —
+     so import `type { Queries }` from it and parameterise the client:
+     `import { createClient } from "@surrealdb/analyzer-client"; const db =
+     createClient<Queries>({ url })`. Pass string literals to `db.query("…")`
+     and destructure the first result, `const [rows] = await db.query("…")` —
+     a query text not in `Queries` is a type error at the call.
 
 ## Working inside this repository
 

@@ -65,13 +65,11 @@ fn modulo_and_power_have_their_own_operators() {
     assert!(matches!(lhs.node, Expr::Binary { op, .. } if op.node == BinaryOp::Pow));
 }
 
-// ---- 2. prefix `NOT`, `-`, `+` on non-literals ------------------------------
+// ---- 2. prefix `-`, `+` on non-literals; bare prefix `NOT` is a parse error -
 
 #[test]
 fn prefix_operators_apply_to_any_operand() {
     let cases = [
-        ("RETURN NOT true;", PrefixOp::Not),
-        ("RETURN not $x;", PrefixOp::Not),
         ("RETURN -$x;", PrefixOp::Neg),
         ("RETURN -(1 + 2);", PrefixOp::Neg),
         ("RETURN -a.b;", PrefixOp::Neg),
@@ -84,13 +82,6 @@ fn prefix_operators_apply_to_any_operand() {
         assert_eq!(op.node, expected, "`{query}`");
     }
 
-    // `NOT a AND b` is `(NOT a) AND b`, as the engine reads it.
-    let Expr::Binary { lhs, op, .. } = expr("RETURN NOT a AND b;", "BinaryExpression") else {
-        panic!("expected a binary expression");
-    };
-    assert_eq!(op.node, BinaryOp::And);
-    assert!(matches!(lhs.node, Expr::Prefix { .. }));
-
     // A sign directly on a literal is still the literal (`-5` is `Int(-5)`),
     // and a binary minus followed by a prefix minus is two operators.
     assert_eq!(
@@ -102,6 +93,66 @@ fn prefix_operators_apply_to_any_operand() {
     };
     assert_eq!(op.node, BinaryOp::Sub);
     assert!(matches!(rhs.node, Expr::Prefix { .. }));
+}
+
+/// 3.2.3 has no prefix `NOT` at all — only the `not(...)` builtin (see
+/// `not_and_sleep_are_callable_without_a_module` and
+/// `builtin_function_names_fold_to_lowercase_and_custom_ones_keep_their_case`
+/// for that side). `RETURN NOT true;` is `` Unexpected token `true`,
+/// expected Eof `` live, and `RETURN NOT a AND b;` fails the same way at
+/// `a` — there is no "prefix NOT over a bare operand" reading to lower.
+#[test]
+fn bare_prefix_not_is_a_parse_error() {
+    for query in [
+        "RETURN NOT true;",
+        "RETURN not $x;",
+        "RETURN NOT a AND b;",
+        "SELECT * FROM t WHERE NOT deleted;",
+    ] {
+        let parsed =
+            parse_source(SourceId::new("grammar:test"), query).expect("parser returns a tree");
+        assert!(parsed.has_error(), "`{query}` should be a parse error");
+    }
+}
+
+/// Four more places 3.2.3's grammar is stricter than this one used to be —
+/// each verified live, each a genuine parse error on the engine, matched
+/// here as one too rather than an invented semantic code:
+///
+/// - a *record range* (`tb:id..tb:id`, two full record ids) never parses,
+///   including in `FOR`'s iterable position — only a record id's own
+///   embedded range (`tb:id..id`) does;
+/// - every `fn::` parameter needs an explicit `: <kind>`;
+/// - `FLEXIBLE` only ever follows `TYPE <type>`, never precedes it;
+/// - `geometry<...>` is closed to its seven kind names.
+#[test]
+fn four_more_shapes_the_engine_never_parses() {
+    for query in [
+        "FOR $x IN user:1..user:9 { RETURN $x; };",
+        "FOR $x IN (user:1..user:9) { RETURN $x; };",
+        "DEFINE FUNCTION fn::greet($name) { RETURN $name; };",
+        "DEFINE FIELD f ON t FLEXIBLE TYPE object;",
+        "DEFINE FIELD f ON t TYPE geometry<pointt>;",
+    ] {
+        let parsed =
+            parse_source(SourceId::new("grammar:test"), query).expect("parser returns a tree");
+        assert!(parsed.has_error(), "`{query}` should be a parse error");
+    }
+
+    // The shapes each of the above must not collaterally break.
+    for query in [
+        "RETURN user:1..9;",
+        "RETURN 1..user:9;",
+        "FOR $i IN 0..10 { RETURN $i; };",
+        "DEFINE FUNCTION fn::greet($name: string) { RETURN $name; };",
+        "RETURN |$v| $v;",
+        "DEFINE FIELD f ON t TYPE object FLEXIBLE;",
+        "DEFINE FIELD f ON t TYPE geometry<point>;",
+    ] {
+        let parsed =
+            parse_source(SourceId::new("grammar:test"), query).expect("parser returns a tree");
+        assert!(!parsed.has_error(), "`{query}` should parse cleanly");
+    }
 }
 
 // ---- 3. numeric suffixes ---------------------------------------------------------
@@ -829,6 +880,16 @@ fn parameterized_cast_targets_lower_as_type_expressions() {
         Expr::Literal(crate::ast::Literal::Point(x, y)) if x == 1.0 && y == 2.0
     ));
 
+    // `geometry<...>` also takes a pipe-separated set of kinds — 3.2.3 runs
+    // `DEFINE FIELD loc ON t TYPE geometry<point | line | polygon>;` — which
+    // lowers as a `Union` argument, same as any other type union.
+    let (ty, _) = cast("RETURN <geometry<point | line>> (1.0, 2.0);");
+    let TypeExpr::Parameterized { name, args } = &ty else {
+        panic!("expected geometry<point | line>, got {ty:?}");
+    };
+    assert_eq!(name.node, "geometry");
+    assert!(matches!(&args[0].node, TypeExpr::Union(variants) if variants.len() == 2));
+
     let (ty, _) = cast("RETURN <array<string>> [1, 2];");
     assert!(
         matches!(&ty, TypeExpr::Parameterized { name, args } if name.node == "array" && args.len() == 1)
@@ -976,4 +1037,153 @@ fn a_parenthesized_value_followed_by_arguments_is_a_call() {
         expr("SELECT * FROM a WHERE (x) = 1;", "BinaryExpression"),
         Expr::Binary { .. }
     ));
+}
+
+// ---- engine parity: THROW is an expression, not only a statement ----
+
+#[test]
+fn throw_lowers_wherever_a_value_is_wanted() {
+    // 3.2.3 evaluates all of these and raises `An error occurred: …` at run
+    // time, so none of them may be a parse error here. The two that matter
+    // are SurrealKit's own fixture shapes: a `PERMISSIONS … WHERE THROW '…'`
+    // read-only table, and an `ASSERT … OR THROW '…'` field.
+    parses(&[
+        "DEFINE TABLE ro SCHEMAFULL PERMISSIONS FOR select WHERE $auth != NONE, \
+         FOR create, update, delete WHERE THROW \"Read-only customer\";",
+        "DEFINE FIELD f ON t TYPE string ASSERT $value != NONE OR THROW \"y\";",
+        "RETURN false OR THROW 'y';",
+        "LET $x = THROW 'a';",
+        "RETURN [THROW 'a', 2];",
+        "RETURN { a: THROW 'a' };",
+        "SELECT * FROM person WHERE THROW 'a';",
+        // Still a statement in the positions it always held.
+        "THROW 'boom';",
+        "IF $a THEN THROW 'x' ELSE 2 END;",
+        "DEFINE EVENT e ON t WHEN true THEN THROW 'no';",
+    ]);
+    // The operand is the whole expression that follows: 3.2.3 answers
+    // `RETURN THROW 1 + 1` with `An error occurred: 2`, not `: 1`.
+    let Statement::Throw(throw) = statement("RETURN THROW 1 + 1;", "ThrowStatement") else {
+        panic!("expected a THROW");
+    };
+    assert!(matches!(
+        throw.value.as_ref().map(|value| &value.node),
+        Some(Expr::Binary { .. })
+    ));
+    // In a value position it lowers like every other bare statement-as-value:
+    // an `Expr::Subquery`, so the thrown value is still analyzed.
+    let Expr::Subquery(inner) = expr("RETURN false OR THROW 'y';", "ThrowStatement") else {
+        panic!("expected a subquery");
+    };
+    assert!(matches!(inner.node, Statement::Throw(_)));
+}
+
+// ---- engine parity: a SET target reaches into the record with brackets ----
+
+#[test]
+fn a_bracket_segment_in_a_set_target_lowers_to_its_idiom_part() {
+    fn target(query: &str) -> Idiom {
+        let Statement::Update(update) = statement(query, "UpdateStatement") else {
+            panic!("expected UPDATE for `{query}`");
+        };
+        let Some(DataClause::Set(assignments)) = update.data else {
+            panic!("expected SET for `{query}`");
+        };
+        assignments
+            .into_iter()
+            .next()
+            .expect("one assignment")
+            .target
+            .node
+    }
+    // Every one of these writes on 3.2.3.
+    let parts = target("UPDATE user:1 SET tags[0] = 'ok';").parts;
+    assert!(matches!(parts[0].node, IdiomPart::Field(ref name) if name == "tags"));
+    assert!(matches!(
+        parts[1].node,
+        IdiomPart::Index(ref index) if index.node == Expr::Literal(Literal::Int(0))
+    ));
+    let parts = target("UPDATE user:1 SET meta['score'] = 5;").parts;
+    assert!(matches!(
+        parts[1].node,
+        IdiomPart::Index(ref index)
+            if index.node == Expr::Literal(Literal::String("score".into()))
+    ));
+    assert!(matches!(
+        target("UPDATE user:1 SET tags[$] = 'z';").parts[1].node,
+        IdiomPart::Last
+    ));
+    assert!(matches!(
+        target("UPDATE t SET a[*] = 1;").parts[1].node,
+        IdiomPart::All
+    ));
+    assert!(matches!(
+        target("UPDATE t SET a[WHERE b = 1] = 1;").parts[1].node,
+        IdiomPart::Where(_)
+    ));
+    // A subscript in the middle of the path keeps the parts around it.
+    let parts = target("UPDATE user:1 SET meta.deep[0].x = 5;").parts;
+    assert_eq!(parts.len(), 4);
+    assert!(matches!(parts[3].node, IdiomPart::Field(ref name) if name == "x"));
+}
+
+// ---- engine parity: a PATCH payload is any expression ----
+
+#[test]
+fn a_patch_payload_is_any_expression() {
+    // 3.2.3 parses all three and judges the payload when it runs; only the
+    // first applies.
+    parses(&[
+        "UPDATE user:1 PATCH [{ op: 'replace', path: '/age', value: 1 }];",
+        "UPDATE user:1 PATCH { op: 'replace', path: '/age', value: 1 };",
+        "UPDATE user:1 PATCH $ops;",
+    ]);
+    let Statement::Update(update) = statement(
+        "UPDATE user:1 PATCH { op: 'replace', path: '/age', value: 1 };",
+        "UpdateStatement",
+    ) else {
+        panic!("expected UPDATE");
+    };
+    let Some(DataClause::Patch(payload)) = update.data else {
+        panic!("expected PATCH, got {:?}", update.data);
+    };
+    assert!(matches!(payload.node, Expr::Object(_)));
+}
+
+// ---- engine parity: LIMIT / START / TIMEOUT take an expression ----
+
+#[test]
+fn a_row_count_or_timeout_clause_takes_any_expression() {
+    // Every one of these parses on 3.2.3; the first two run, and the last
+    // three fail at run time with the errors 2018 and 2019 quote.
+    parses(&[
+        "SELECT * FROM t LIMIT 1 + 1;",
+        "SELECT * FROM t TIMEOUT 1s + 1s;",
+        "SELECT * FROM t LIMIT '5';",
+        "SELECT * FROM t START '1';",
+        "SELECT * FROM t TIMEOUT 5;",
+    ]);
+    let stmt = select("SELECT * FROM t LIMIT '5' START 1 + 1 TIMEOUT 5;");
+    assert_eq!(
+        stmt.limit.expect("a LIMIT").node,
+        Expr::Literal(Literal::String("5".into()))
+    );
+    assert!(matches!(
+        stmt.start.expect("a START").node,
+        Expr::Binary { .. }
+    ));
+    assert_eq!(
+        stmt.timeout.expect("a TIMEOUT").node,
+        Expr::Literal(Literal::Int(5))
+    );
+    // The spellings that always parsed still lower the same way.
+    let stmt = select("SELECT * FROM t LIMIT 5 START 10 TIMEOUT 1s;");
+    assert_eq!(
+        stmt.limit.expect("a LIMIT").node,
+        Expr::Literal(Literal::Int(5))
+    );
+    assert_eq!(
+        stmt.timeout.expect("a TIMEOUT").node,
+        Expr::Literal(Literal::Duration("1s".into()))
+    );
 }

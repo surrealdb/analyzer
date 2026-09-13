@@ -11,7 +11,7 @@ import {
   preload,
   RecordId,
   type Preloaded,
-  type SurrealQLAnalyzerClient,
+  type ClientCore,
 } from "@surrealdb/analyzer-client";
 import { useLive, useMutation, useQuery } from "../src/index.js";
 
@@ -47,7 +47,7 @@ const addPerson = defineQuery("CREATE person SET name = $name, joined = $joined"
 const livePeople = defineLive("SELECT id, name, age FROM person");
 const liveTeam = defineLive("SELECT id, name FROM person WHERE team = $team");
 
-declare const db: SurrealQLAnalyzerClient;
+declare const db: ClientCore;
 declare const team: RecordId<"team">;
 declare const enabled: boolean;
 

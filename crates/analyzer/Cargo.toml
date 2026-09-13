@@ -17,11 +17,11 @@ description = "Static analysis for SurrealQL — the library a host embeds to ch
 # codes and terminal layout are a host's concerns, so none of them live here.
 
 [dependencies]
-surrealql-analyzer-codegen = { path = "../codegen", version = "0.5.3" }
-surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.5.3" }
-surrealql-analyzer-embed = { path = "../embed", version = "0.5.3" }
-surrealql-analyzer-syntax = { path = "../syntax", version = "0.5.3" }
-surrealql-analyzer-workspace = { path = "../workspace", version = "0.5.3" }
+surrealql-analyzer-codegen = { path = "../codegen", version = "0.6.0" }
+surrealql-analyzer-diagnostics = { path = "../diagnostics", version = "0.6.0" }
+surrealql-analyzer-embed = { path = "../embed", version = "0.6.0" }
+surrealql-analyzer-syntax = { path = "../syntax", version = "0.6.0" }
+surrealql-analyzer-workspace = { path = "../workspace", version = "0.6.0" }
 # The `watch` feature. `notify-debouncer-full` is the `notify` project's own
 # debouncer: it merges the event storm one save produces and tracks renames by
 # file id, so the loop does not hand-roll either. It re-exports `notify`, which

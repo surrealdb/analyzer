@@ -73,16 +73,32 @@ fn check_duplicate_function(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineFun
         return;
     }
     let existing = ctx.schema().function(&stmt.name.node).and_then(|existing| {
-        let earlier = existing.source != *ctx.source()
-            || existing.name_span.range().start() < stmt.name.span.start();
+        // Same-source is a special case the shared `source_precedes` cannot
+        // answer: the within-source `fn::` hoist (`pipeline::hoist_functions`)
+        // populates every function in the file before this walk starts, so
+        // "found in my own source" can mean a *later* same-named definition
+        // won the hoist, not an earlier one. Byte position still disambiguates
+        // that. Across sources, `source_precedes` is the real answer: every
+        // OTHER source looks equally "already there" to the additive
+        // pre-pass, but only a genuine predecessor in the schema-glob-first
+        // registration order is one this statement redefines.
+        let earlier = if existing.source == *ctx.source() {
+            existing.name_span.range().start() < stmt.name.span.start()
+        } else {
+            ctx.source_precedes(&existing.source)
+        };
         earlier.then(|| existing.name_span.clone())
     });
     if let Some(existing) = existing {
         super::emit_duplicate_definition(
             ctx,
             stmt.name.span,
-            &format!("`{}`", stmt.name.node),
-            &format!("DEFINE FUNCTION OVERWRITE {}(...)", stmt.name.node),
+            &super::Redefined {
+                kind: "function",
+                name: &stmt.name.node,
+                subject: &format!("`{}`", stmt.name.node),
+                redefine: &format!("DEFINE FUNCTION OVERWRITE {}(...)", stmt.name.node),
+            },
             existing,
         );
     }

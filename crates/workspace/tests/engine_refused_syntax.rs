@@ -241,3 +241,112 @@ fn insert_in_the_order_the_engine_takes_is_silent() {
         );
     }
 }
+
+/// A live query is a much narrower statement than `SELECT`, and every clause
+/// past `WHERE`/`FETCH` is one 3.2.3 refuses while *parsing* — verified live:
+/// `LIVE SELECT * FROM ticket ORDER BY title` is ``Unexpected token `ORDER`,
+/// expected Eof``, and so are `GROUP`, `LIMIT`, `START`, `SPLIT`, `OMIT`,
+/// `TIMEOUT`, `PARALLEL`, `EXPLAIN` and `FROM ONLY`. The grammar takes them
+/// so 4009 can name each one instead of the statement collapsing into a
+/// token error.
+#[test]
+fn a_live_select_with_a_set_shaping_clause_parses_and_raises_4009() {
+    for (query, fragment) in [
+        ("LIVE SELECT * FROM person ORDER BY name;", "ORDER BY"),
+        ("LIVE SELECT * FROM person GROUP BY name;", "GROUP BY"),
+        ("LIVE SELECT * FROM person LIMIT 1;", "LIMIT"),
+        ("LIVE SELECT * FROM person START 1;", "START"),
+        ("LIVE SELECT * FROM person SPLIT name;", "SPLIT"),
+        ("LIVE SELECT * OMIT name FROM person;", "OMIT"),
+        ("LIVE SELECT * FROM person TIMEOUT 1s;", "TIMEOUT"),
+        ("LIVE SELECT * FROM person PARALLEL;", "PARALLEL"),
+        ("LIVE SELECT * FROM person EXPLAIN;", "EXPLAIN"),
+        ("LIVE SELECT * FROM ONLY person;", "ONLY"),
+    ] {
+        assert_parses(query);
+        let finding = only(query, "E4009");
+        assert!(
+            finding
+                .message()
+                .to_lowercase()
+                .contains(&fragment.to_lowercase()),
+            "`{query}` should name {fragment}: {}",
+            finding.message()
+        );
+    }
+}
+
+/// A live query subscribes to one table: 3.2.3 stops at the comma —
+/// `LIVE SELECT * FROM ticket, person` is ``Unexpected token `,`, expected
+/// Eof``.
+#[test]
+fn a_live_select_over_two_tables_parses_and_raises_4009() {
+    let query = "LIVE SELECT * FROM person, person;";
+    assert_parses(query);
+    only(query, "E4009");
+}
+
+/// The clauses a live query really does take stay silent, so 4009 reports
+/// the unsupported clause and not the statement.
+#[test]
+fn a_live_select_with_only_where_and_fetch_is_silent() {
+    for query in [
+        "LIVE SELECT * FROM person;",
+        "LIVE SELECT * FROM person WHERE name = 'x';",
+        "LIVE SELECT * FROM person FETCH name;",
+        "LIVE SELECT DIFF FROM person;",
+    ] {
+        assert_parses(query);
+        let codes: Vec<String> = findings(query)
+            .iter()
+            .map(|finding| finding.code().to_string())
+            .collect();
+        assert!(
+            !codes.iter().any(|code| code == "E4009"),
+            "`{query}` is a legal live query but raised 4009; got {codes:?}"
+        );
+    }
+}
+
+/// A `COUNT` index takes no `FIELDS` — 3.2.3: `DEFINE INDEX icnt ON person
+/// FIELDS name COUNT` is "Cannot create a count index with fields". The
+/// grammar takes the combination (it is an independent repeated clause, not
+/// a context-free restriction) so 1033 can name the mistake.
+#[test]
+fn a_count_index_naming_fields_parses_and_raises_1033() {
+    let query = "DEFINE INDEX icnt ON person FIELDS name COUNT;";
+    assert_parses(query);
+    let finding = only(query, "E1033");
+    assert!(finding.message().contains("COUNT"), "{}", finding.message());
+    let help: String = finding
+        .help()
+        .iter()
+        .map(|help| help.message.clone())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        help.contains("Cannot create a count index with fields"),
+        "help should quote the engine's own error; got {help:?}"
+    );
+}
+
+/// A bare `COUNT` index, and a plain `FIELDS` index with no `COUNT`, are
+/// exactly what each is for — silent.
+#[test]
+fn a_count_index_without_fields_is_silent() {
+    for query in [
+        "DEFINE INDEX icnt ON person COUNT;",
+        "DEFINE INDEX icnt ON person COUNT WHERE name != '';",
+        "DEFINE INDEX ifields ON person FIELDS name;",
+    ] {
+        assert_parses(query);
+        let codes: Vec<String> = findings(query)
+            .iter()
+            .map(|finding| finding.code().to_string())
+            .collect();
+        assert!(
+            !codes.iter().any(|code| code == "E1033"),
+            "`{query}` is a legal index but raised 1033; got {codes:?}"
+        );
+    }
+}

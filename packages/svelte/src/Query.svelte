@@ -46,7 +46,7 @@
     Preloaded,
     Rows,
     SurqlQuery,
-    SurrealQLAnalyzerClient,
+    ClientCore,
     SurrealQLAnalyzerError,
   } from "@surrealdb/analyzer-client";
   import { sgText } from "./inline.js";
@@ -74,7 +74,7 @@
     /** Bound parameters, when `q` is text that names some. */
     params?: Q extends string ? ParamsOf<Q> : never;
     /** Override the context client (tests, a second connection). */
-    client?: SurrealQLAnalyzerClient;
+    client?: ClientCore;
     /** Rendered with the result once it is available. */
     children: Snippet<[QueryRows<Q>]>;
     /** Rendered while the first result is outstanding. */

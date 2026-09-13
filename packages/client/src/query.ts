@@ -3,12 +3,19 @@
  *
  * ```ts
  * // src/lib/queries.ts — the one place query text lives
- * import { defineQuery, defineLive } from "./surrealql-analyzer.generated";
+ * import { db } from "./db";   // `createClient<Queries>(…)`
  *
- * export const allPeople = defineQuery("SELECT id, name, age FROM person");
- * export const peopleOf  = defineQuery("SELECT id, name FROM person WHERE team = $team");
- * export const livePeople = defineLive("SELECT id, name, age FROM person");
+ * export const allPeople = db.defineQuery("SELECT id, name, age FROM person");
+ * export const peopleOf  = db.defineQuery("SELECT id, name FROM person WHERE team = $team");
+ * export const livePeople = db.defineLive("SELECT id, name, age FROM person");
  * ```
+ *
+ * The free `defineQuery` / `defineLive` exported here resolve against the
+ * *global* {@link SurqlRegistry} instead, which is empty unless the user
+ * augments it. `db.defineQuery` is bound to the client's own registry and
+ * needs no augmentation, so it is the one to reach for; destructure it once
+ * (`export const { defineQuery, defineLive } = db`) and the call sites look
+ * identical.
  *
  * `defineQuery<Q extends string>(text: Q)` is the same inference site as
  * `db.query<Q extends string>(query: Q, …)`: TypeScript infers `Q` as the string
@@ -25,10 +32,11 @@
 import { toSurrealqlString } from "surrealdb";
 import type {
   Bound,
+  GlobalRegistry,
   ParamsOf,
   ResultOf,
   SurqlError,
-  SurqlRegistry,
+  SurqlRegistryShape,
 } from "./registry.js";
 
 /**
@@ -119,12 +127,18 @@ export interface AnyQuery {
  * the reflowed text up on its next run — but in the window before that, the
  * result used to degrade quietly to `unknown[]`. Now it stops the build.
  */
-export type DefinedQuery<Q extends string> = Q extends keyof SurqlRegistry
-  ? SurqlQuery<ResultOf<Q>, ParamsOf<Q>>
+export type DefinedQuery<
+  Q extends string,
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> = Q extends keyof Registry
+  ? SurqlQuery<ResultOf<Q, Registry>, ParamsOf<Q, Registry>>
   : SurqlError<"this query is not in the generated registry - run `surrealkit generate`">;
 
-export type DefinedLive<Q extends string> = Q extends keyof SurqlRegistry
-  ? SurqlLive<RowOf<Rows<ResultOf<Q>>>, ParamsOf<Q>>
+export type DefinedLive<
+  Q extends string,
+  Registry extends SurqlRegistryShape = GlobalRegistry,
+> = Q extends keyof Registry
+  ? SurqlLive<RowOf<Rows<ResultOf<Q, Registry>>>, ParamsOf<Q, Registry>>
   : SurqlError<"this query is not in the generated registry - run `surrealkit generate`">;
 
 /** Prefix `LIVE ` unless the text already begins with it. */
@@ -158,7 +172,8 @@ export function computeKey(text: string, params?: Record<string, unknown>): stri
   return `${text}::${stable}`;
 }
 
-function makeQuery<R>(
+/** @internal The runtime half of {@link defineQuery}, shared with the client's own method. */
+export function makeQuery<R>(
   text: string,
   params: Record<string, unknown> | undefined,
 ): SurqlQuery<R, Record<string, unknown>> {
@@ -171,7 +186,8 @@ function makeQuery<R>(
   };
 }
 
-function makeLive<Row>(
+/** @internal The runtime half of {@link defineLive}, shared with the client's own method. */
+export function makeLive<Row>(
   text: string,
   params: Record<string, unknown> | undefined,
 ): SurqlLive<Row, Record<string, unknown>> {
@@ -186,23 +202,28 @@ function makeLive<Row>(
 }
 
 /**
- * Name a one-shot query. Pass a string literal (an untagged template literal
- * works too — a *tagged* one does not, because TypeScript widens a tagged
- * template's cooked text to `string`; the TS#33304 limit is why gql.tada uses
- * the same call form).
+ * Name a one-shot query, resolved against the **global** registry. Pass a
+ * string literal (an untagged template literal works too — a *tagged* one
+ * does not, because TypeScript widens a tagged template's cooked text to
+ * `string`; the TS#33304 limit is why gql.tada uses the same call form).
  *
  * ```ts
  * const peopleOf = defineQuery("SELECT id, name FROM person WHERE team = $team");
  * const rows = await db.run(peopleOf, { team: new RecordId("team", "red") });
  * ```
+ *
+ * This resolves through the global {@link SurqlRegistry}, so it types
+ * anything only in a project that augments it. `db.defineQuery` reads the
+ * client's own registry and needs no augmentation.
  */
 export function defineQuery<Q extends string>(text: Q): DefinedQuery<Q> {
   return makeQuery(text, undefined) as unknown as DefinedQuery<Q>;
 }
 
 /**
- * Name a live query. Write it **without** the `LIVE` prefix — the same text the
- * analyzer sees — and the prefix is added for the subscription.
+ * Name a live query, resolved against the **global** registry (see
+ * {@link defineQuery}). Write it **without** the `LIVE` prefix — the same
+ * text the analyzer sees — and the prefix is added for the subscription.
  */
 export function defineLive<Q extends string>(text: Q): DefinedLive<Q> {
   return makeLive(text, undefined) as unknown as DefinedLive<Q>;

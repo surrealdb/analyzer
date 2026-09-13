@@ -4088,7 +4088,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "glob",
  "notify-debouncer-full",
@@ -4104,9 +4104,11 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-codegen"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "glob",
+ "serde",
+ "serde_json",
  "surrealdb-types",
  "surrealql-analyzer-diagnostics",
  "surrealql-analyzer-embed",
@@ -4116,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-diagnostics"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "serde",
  "surrealql-analyzer-syntax",
@@ -4124,8 +4126,9 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-embed"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
+ "surrealql-analyzer-tree-sitter-surrealql",
  "tree-sitter",
  "tree-sitter-svelte-ng",
  "tree-sitter-typescript",
@@ -4133,7 +4136,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-lsp"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "futures",
  "glob",
@@ -4151,7 +4154,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-macros"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4163,7 +4166,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-rs"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "rustversion",
@@ -4176,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-syntax"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "proptest",
  "serde",
@@ -4186,7 +4189,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-tree-sitter-surrealql"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "cc",
  "tree-sitter",
@@ -4207,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "surrealql-analyzer-workspace"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",

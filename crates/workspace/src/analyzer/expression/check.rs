@@ -141,9 +141,31 @@ pub fn check_value_expression(ctx: &mut AnalysisContext<'_>, expr: &ast::Spanned
 /// proves nothing, so a body that depends on it stays silent — prove or stay
 /// silent, applied to a position that used to be silent unconditionally.
 fn check_closure(ctx: &mut AnalysisContext<'_>, closure: &ast::Closure) {
+    let declared = crate::analyzer::expression::infer::closure_param_kinds(closure, ctx);
+    check_closure_with_param_kinds(ctx, closure, &declared);
+}
+
+/// [`check_closure`], parametrized over the kinds its parameters are bound
+/// to — the call-site half of the rule. A collection-consuming function
+/// (`array::map`, `.filter()`, `array::fold`, …) knows a concrete element
+/// kind its own signature does not carry (the closure's *declared* kind is
+/// `any` on every closure nobody bothered to annotate, which is nearly all
+/// of them), and passes it here instead of falling back to `check_closure`'s
+/// declared-only binding — the same `arg_kinds` [`closure_return_kind`]
+/// already threads through for typing, now also reaching the checking half
+/// that never ran on a concrete kind before.
+///
+/// Reusing [`check_closure`]'s only caller — the generic per-expression
+/// walk — for the *same* closure with only its declared (usually `any`)
+/// kinds is not a double report: an `any`-bound body proves nothing, so
+/// [`check_value_expression`] stays silent on it either way.
+pub(crate) fn check_closure_with_param_kinds(
+    ctx: &mut AnalysisContext<'_>,
+    closure: &ast::Closure,
+    arg_kinds: &[Kind],
+) {
     ctx.with_child_env(|ctx| {
-        let declared = crate::analyzer::expression::infer::closure_param_kinds(closure, ctx);
-        crate::analyzer::expression::infer::bind_closure_params(closure, &declared, ctx);
+        crate::analyzer::expression::infer::bind_closure_params(closure, arg_kinds, ctx);
         // `expr_fact` is the entry that pairs inference with checking, and it
         // routes a block body through the block analyzer itself.
         crate::analyzer::expression::expr_fact(ctx, &closure.body);
@@ -278,20 +300,7 @@ fn check_cast(
 
     // Value-proven: the constant can be converted right now.
     if let Some(surrealdb_types::Value::String(text)) = &fact.value {
-        use std::str::FromStr;
-        let fails = match target {
-            Kind::Int => text.trim().parse::<i64>().is_err(),
-            Kind::Float => text.trim().parse::<f64>().is_err(),
-            Kind::Number => {
-                text.trim().parse::<i64>().is_err() && text.trim().parse::<f64>().is_err()
-            }
-            Kind::Datetime => surrealdb_types::Datetime::from_str(text).is_err(),
-            Kind::Duration => surrealdb_types::Duration::from_str(text).is_err(),
-            Kind::Uuid => surrealdb_types::Uuid::from_str(text).is_err(),
-            Kind::Bool => !matches!(text.as_str(), "true" | "false"),
-            _ => false,
-        };
-        if fails {
+        if constant_string_cast_fails(text, &target) {
             emit(
                 ctx,
                 whole.span,
@@ -301,8 +310,12 @@ fn check_cast(
                     crate::render_kind(&target)
                 ),
             );
+            return;
         }
-        return;
+        // A constant that the target does not read as a *value* still has a
+        // kind, and `<array> 'abc'` is decided by that — so fall through
+        // rather than returning, which used to make a known-constant operand
+        // the one shape the kind half never saw.
     }
 
     // Kind-proven: no value of the operand's kind converts.
@@ -313,20 +326,7 @@ fn check_cast(
         return;
     }
     let base = crate::kinds::literal_base_kind(&kind).unwrap_or_else(|| kind.clone());
-    let possible = match &target {
-        Kind::String | Kind::Any => true,
-        Kind::Bool => matches!(base, Kind::Bool | Kind::String),
-        Kind::Int | Kind::Float | Kind::Decimal | Kind::Number => {
-            is_numeric(&base) || matches!(base, Kind::String)
-        }
-        Kind::Datetime => matches!(base, Kind::Datetime | Kind::String),
-        Kind::Duration => matches!(base, Kind::Duration | Kind::String),
-        Kind::Uuid => matches!(base, Kind::Uuid | Kind::String),
-        Kind::Bytes => matches!(base, Kind::Bytes | Kind::String | Kind::Array(_, _)),
-        Kind::Record(_) => matches!(base, Kind::Record(_) | Kind::String),
-        _ => true,
-    };
-    if !possible {
+    if !cast_is_possible(&base, &target) {
         emit(
             ctx,
             whole.span,
@@ -337,6 +337,98 @@ fn check_cast(
                 crate::render_kind(&target)
             ),
         );
+    }
+}
+
+/// Whether a known constant string provably fails to convert to `target`
+/// (2008's value-proven half).
+///
+/// Shared with the `type::*` constructors, which are the function spelling of
+/// the same conversion and fail with the same engine message: both
+/// `type::int('abc')` and `<int> 'abc'` answer
+/// "Could not cast into int using input 'abc'".
+pub(crate) fn constant_string_cast_fails(text: &str, target: &Kind) -> bool {
+    use std::str::FromStr;
+    match target {
+        Kind::Int => text.trim().parse::<i64>().is_err(),
+        Kind::Float => text.trim().parse::<f64>().is_err(),
+        Kind::Number => text.trim().parse::<i64>().is_err() && text.trim().parse::<f64>().is_err(),
+        Kind::Datetime => surrealdb_types::Datetime::from_str(text).is_err(),
+        Kind::Duration => surrealdb_types::Duration::from_str(text).is_err(),
+        Kind::Uuid => surrealdb_types::Uuid::from_str(text).is_err(),
+        Kind::Bool => !matches!(text, "true" | "false"),
+        // A record id is `table:id`; a string with no `:` names no record,
+        // and 3.2.3 says so: "Could not cast into record using input 'nope'".
+        Kind::Record(_) => !text.contains(':'),
+        _ => false,
+    }
+}
+
+/// Whether SurrealDB's `Cast` impls admit *any* value of `base` into
+/// `target`. `false` only where the failure is proven — an operand kind the
+/// analyzer cannot pin down (a union, `any`) is always given the benefit of
+/// the doubt.
+///
+/// The collection and record rows were established by probing 3.2.3 rather
+/// than read off the type names:
+///
+/// ```text
+/// <array> { city: 'ldn' }  -> Could not cast into `array` using input `{ city: 'ldn' }`
+/// <array> 'abc' / 5 / 1h / person:1 / <uuid>… / <geometry>…  -> the same, per input
+/// <array> <bytes>'ab'      -> [97, 98]                       (bytes DO convert)
+/// <set>   { a: 1 }         -> Could not cast into `array` …  (set is array's twin)
+/// <object> [1, 2] / 'abc' / 5 / person:1 / <bytes>… / <geometry>… -> Could not cast into `object` …
+/// <record<company>> person:1        -> Could not cast into `record<company>` using input `person:1`
+/// <record<person|company>> person:1 -> person:1              (an overlapping arm is enough)
+/// <record> person:1 / <record<company>> 'company:1' -> fine
+/// ```
+fn cast_is_possible(base: &Kind, target: &Kind) -> bool {
+    // The kinds a collection or object target provably cannot take. Written
+    // as a closed list of *failures* rather than a list of successes so an
+    // operand kind outside it — a union, a literal the analyzer models
+    // loosely, a kind added to a later SurrealDB — stays silent.
+    let scalar_or_record = matches!(
+        base,
+        Kind::String
+            | Kind::Int
+            | Kind::Float
+            | Kind::Decimal
+            | Kind::Number
+            | Kind::Bool
+            | Kind::Datetime
+            | Kind::Duration
+            | Kind::Uuid
+            | Kind::Record(_)
+            | Kind::Geometry(_)
+    );
+    match target {
+        Kind::String | Kind::Any => true,
+        Kind::Bool => matches!(base, Kind::Bool | Kind::String),
+        Kind::Int | Kind::Float | Kind::Decimal | Kind::Number => {
+            is_numeric(base) || matches!(base, Kind::String)
+        }
+        Kind::Datetime => matches!(base, Kind::Datetime | Kind::String),
+        Kind::Duration => matches!(base, Kind::Duration | Kind::String),
+        Kind::Uuid => matches!(base, Kind::Uuid | Kind::String),
+        Kind::Bytes => matches!(base, Kind::Bytes | Kind::String | Kind::Array(_, _)),
+        Kind::Array(_, _) | Kind::Set(_, _) => !(scalar_or_record || matches!(base, Kind::Object)),
+        Kind::Object => {
+            !(scalar_or_record || matches!(base, Kind::Array(_, _) | Kind::Set(_, _) | Kind::Bytes))
+        }
+        // Record tables: the cast keeps the id and re-labels it, so it
+        // succeeds only where the two table sets can overlap. An
+        // unconstrained `record` on either side overlaps everything.
+        Kind::Record(target_tables) => match base {
+            Kind::Record(source_tables) => {
+                target_tables.is_empty()
+                    || source_tables.is_empty()
+                    || source_tables
+                        .iter()
+                        .any(|table| target_tables.contains(table))
+            }
+            _ => matches!(base, Kind::String),
+        },
+        _ => true,
     }
 }
 
@@ -634,6 +726,17 @@ fn check_binary(
     check_index_backed_operator(ctx, whole, lhs, op);
     constrain_comparison_params(ctx, op, lhs, rhs);
 
+    // `AND`/`OR` are truthiness operators: every kind is a legal operand, so
+    // every check below this point either guards on a different operator or
+    // (the 2004 verdict) answers "not violated" for them. Asking for the
+    // operand kinds anyway re-inferred the *whole* left operand, and a chain
+    // `a AND b AND … AND z` is left-nested, so that happened once per link
+    // over an ever-longer operand: a 200-conjunct `WHERE` took 9.7 seconds and
+    // 300 never finished. Generated SQL writes chains that long routinely.
+    if matches!(op, Op::And | Op::Or) {
+        return;
+    }
+
     let (Some(left), Some(right)) = (known_kind(ctx, lhs), known_kind(ctx, rhs)) else {
         return;
     };
@@ -665,7 +768,8 @@ fn check_binary(
             || literal_union_excludes(ctx, &right, lhs)
             || sentinel_mismatch(lhs, rhs, &right)
             || sentinel_mismatch(rhs, lhs, &left)
-            || disjoint_records(&left, &right))
+            || disjoint_records(&left, &right)
+            || disjoint_collections(&left, &right))
     {
         emit(
             ctx,
@@ -1022,6 +1126,35 @@ fn disjoint_records(left: &Kind, right: &Kind) -> bool {
     }
 }
 
+/// C3, the collection twin: `=`/`!=` between two collections that are each
+/// known to hold at least one element, of provably disjoint kinds, is
+/// constant — no `[1, 2]` can equal any `['a']`.
+///
+/// Both bounds are load-bearing and both are deliberately narrow. A length of
+/// `Some(0)` is the empty literal `[]`, which equals another empty collection,
+/// so it proves nothing; an unbounded length is a declared field or a query
+/// result, which may hold nothing and compare equal to anything empty. And an
+/// `Any` element — what `[]` itself carries — is never disjoint from
+/// anything. What is left is two written, non-empty literals whose elements
+/// cannot overlap, which is the same claim [`disjoint_records`] makes about
+/// table sets.
+fn disjoint_collections(left: &Kind, right: &Kind) -> bool {
+    fn bounded(kind: &Kind) -> Option<&Kind> {
+        match kind {
+            Kind::Array(element, Some(length)) | Kind::Set(element, Some(length))
+                if *length > 0 =>
+            {
+                Some(element.as_ref())
+            }
+            _ => None,
+        }
+    }
+    match (bounded(left), bounded(right)) {
+        (Some(left), Some(right)) => crate::lattice::kinds_are_disjoint(left, right),
+        _ => false,
+    }
+}
+
 /// C2/D2: whether a value of kind `a` could ever equal a value of kind `b` —
 /// the membership-element predicate. Same kind, numeric-compatible, records
 /// whose table sets overlap, or any variant of a union. `Any`/`NONE`/`NULL`
@@ -1202,6 +1335,16 @@ fn comparable(left: &Kind, right: &Kind) -> bool {
     // their base kind; unions compare if any variant does.
     match (left, right) {
         (Kind::Record(_), Kind::Record(_)) => true,
+        // Collection comparison is structural and total. The engine answers a
+        // bool for every pair — `[1,2] != []` is `true`, `[1] = ['a']` is
+        // `false`, `[1,2] < [3]` is `true` — so a differing element kind or
+        // length is a *result*, never a kind error. Demanding an identical
+        // element kind and an identical fixed length made
+        // `(SELECT VALUE id FROM t LIMIT 1) != []`, the idiomatic existence
+        // test, a 2004: `[]` infers `array<any, 0>`, so every comparison of a
+        // non-empty array against it failed. The provable-constant half of
+        // that is not lost — it moves to 7005 via `disjoint_collections`.
+        (Kind::Array(..) | Kind::Set(..), Kind::Array(..) | Kind::Set(..)) => true,
         (Kind::Either(variants), other) | (other, Kind::Either(variants)) => {
             variants.iter().any(|variant| comparable(variant, other))
         }
@@ -1480,6 +1623,70 @@ mod tests {
     }
 
     #[test]
+    fn a_cast_no_value_can_survive_is_2008() {
+        const SCHEMA: &str = "DEFINE TABLE person SCHEMAFULL; DEFINE FIELD n ON person TYPE string; \
+             DEFINE TABLE company SCHEMAFULL; DEFINE FIELD n ON company TYPE string; \
+             DEFINE TABLE article SCHEMAFULL; DEFINE FIELD author ON article TYPE record<person>; \
+             DEFINE FIELD addr ON article TYPE object; DEFINE FIELD tags ON article TYPE array<string>;";
+        // Disjoint record tables, and the two collection/object rows — each
+        // one an engine error on 3.2.3, each one silent before.
+        for query in [
+            "SELECT <record<company>> author FROM article;",
+            "SELECT <array<string>> addr FROM article;",
+            "SELECT <object> tags FROM article;",
+            "RETURN <array> 'abc';",
+            "RETURN <object> 5;",
+        ] {
+            let query = format!("{SCHEMA} {query}");
+            assert!(fires(&query, "E2008"), "{query}: {:?}", codes(&query));
+        }
+        // The near misses: an overlapping arm is enough, an unconstrained
+        // `record` takes anything, bytes really do convert to an array, and a
+        // collection into a collection is the ordinary case.
+        for query in [
+            "SELECT <record<person>> author FROM article;",
+            "SELECT <record<person | company>> author FROM article;",
+            "SELECT <record> author FROM article;",
+            "SELECT <array<string>> tags FROM article;",
+            "SELECT <object> addr FROM article;",
+            "RETURN <array> <bytes>'ab';",
+            "RETURN <array> [1, 2];",
+            "RETURN <int> '42';",
+        ] {
+            let query = format!("{SCHEMA} {query}");
+            assert!(!fires(&query, "E2008"), "{query}: {:?}", codes(&query));
+        }
+    }
+
+    #[test]
+    fn a_type_constructor_handed_an_unconvertible_constant_is_2008() {
+        // The function spelling of a cast, and the same engine error.
+        for query in [
+            "RETURN type::int('abc');",
+            "RETURN type::float('abc');",
+            "RETURN type::datetime('not-a-date');",
+            "RETURN type::duration('5 apples');",
+            "RETURN type::record('nope');",
+        ] {
+            assert!(fires(query, "E2008"), "{query}: {:?}", codes(query));
+        }
+        for query in [
+            "RETURN type::int('42');",
+            "RETURN type::float('4.2');",
+            "RETURN type::datetime('2024-01-01T00:00:00Z');",
+            "RETURN type::duration('5h');",
+            "RETURN type::record('user:1');",
+            // Two arguments: the table is named separately, so the id half
+            // needs no `:` of its own.
+            "RETURN type::record('person', 'a');",
+            // A runtime value is never guessed at.
+            "RETURN type::int($n);",
+        ] {
+            assert!(!fires(query, "E2008"), "{query}: {:?}", codes(query));
+        }
+    }
+
+    #[test]
     fn a_scalar_where_a_set_operator_needs_a_collection_is_7006() {
         let schema = "DEFINE TABLE p SCHEMAFULL; DEFINE FIELD tags ON p TYPE array<string>;";
         for op in ["CONTAINSANY", "CONTAINSALL", "CONTAINSNONE"] {
@@ -1708,15 +1915,16 @@ mod tests {
     }
 
     #[test]
-    fn an_undeclared_closure_parameter_proves_nothing() {
-        // The parameters are bound at their DECLARED kinds. The element kind a
-        // `.map()` applies the closure to is a fact about the call site, and
-        // reading it here would be inventing one — so an undeclared parameter
-        // is `any` and a body that depends on it stays silent. Checking a
-        // position that used to be unconditionally silent is exactly where a
-        // false-positive wave would come from.
+    fn an_undeclared_closure_parameter_is_bound_from_the_call_site() {
+        // An undeclared parameter's kind is `any` when the closure is read on
+        // its own — but `array::map`/`array::filter`/`array::fold`/
+        // `array::reduce` (and their `set::` twins) know a concrete element
+        // kind from the receiver they were actually called with, and thread
+        // it into the body the same way `closure_return_kind` always has for
+        // typing: `[1, 2]`'s element is `int`, so `$v + 'a'` is the same
+        // operand mismatch `|$v: int| $v + 'a'` already reported.
         let query = "RETURN array::map([1, 2], |$v| $v + 'a');";
-        assert!(!fires(query, "E2004"), "codes: {:?}", codes(query));
+        assert!(fires(query, "E2004"), "codes: {:?}", codes(query));
 
         // A body that does NOT depend on the parameter is still checked.
         let independent = "RETURN array::map([1, 2], |$v| 'a'.nomethod());";
@@ -1725,6 +1933,10 @@ mod tests {
             "codes: {:?}",
             codes(independent)
         );
+
+        // A closure read on its own (not applied to a receiver) still gets
+        // only its declared kind — `any` here — and proves nothing.
+        assert!(!fires("LET $f = |$v| $v + 'a';", "E2004"));
     }
 
     // ---- a check inside a guarded region reads the guarded kind ----

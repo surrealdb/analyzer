@@ -33,6 +33,11 @@ pub(crate) fn analyze_type_record(
     call: &ast::Call,
     args: &[Kind],
 ) -> Kind {
+    // The one-argument string form is a conversion like any other: a string
+    // with no `:` names no record, and 3.2.3 refuses it.
+    if call.args.len() == 1 {
+        super::check_constant_conversion(ctx, call, &Kind::Record(Vec::new()));
+    }
     let tables = constructed_tables(ctx, call, args);
     let mut signature = signature();
     signature.return_kind = ReturnKind::Fixed(Kind::Record(tables));

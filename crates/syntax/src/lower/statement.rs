@@ -18,7 +18,7 @@
 use tree_sitter::Node;
 
 use super::expr::{lower_expr, lower_idiom_node};
-use super::{is_broken, node_range, partial};
+use super::{is_broken, node_range, over_budget, partial, DepthGuard};
 use crate::ast::{
     AlterStmt, AssignOp, Assignment, BeginStmt, BreakStmt, CancelStmt, CommitStmt, ContinueStmt,
     CreateStmt, DataClause, DefineAnalyzer, DefineEvent, DefineField, DefineFunction, DefineIndex,
@@ -26,7 +26,7 @@ use crate::ast::{
     IfElseStmt, IndexKind, InfoStmt, InsertData, InsertStmt, KillStmt, LetStmt, LiveSelectStmt,
     OptionStmt, OrderClause, OrderKey, Projection, RebuildStmt, RelateStmt, RelationDef,
     RemoveStmt, RemoveTarget, ReturnMode, ReturnStmt, SelectStmt, ShowStmt, SleepStmt, Spanned,
-    Statement, ThrowStmt, UpdateStmt, UpsertStmt, UseStmt,
+    Statement, ThrowStmt, UpdateStmt, UpsertStmt, UseStmt, ViewClause,
 };
 use crate::ast::{Expr, Literal};
 use crate::span::ByteRange;
@@ -98,6 +98,13 @@ pub(crate) fn recover_statement(node: Node<'_>, text: &str, out: &mut Vec<Spanne
 /// salvaged — a stray sub-expression inside the broken statement is left to
 /// its `Partial`.
 fn salvage_statements(node: Node<'_>, text: &str, out: &mut Vec<Spanned<Statement>>) {
+    let Some(_depth) = DepthGuard::enter() else {
+        out.push(Spanned::new(
+            Statement::Partial(over_budget(node)),
+            node_range(node),
+        ));
+        return;
+    };
     if is_statement_node(node) && (!node.has_error() || is_recoverable_container(node)) {
         out.push(lower_statement(node, text));
         return;
@@ -115,6 +122,11 @@ fn salvage_statements(node: Node<'_>, text: &str, out: &mut Vec<Spanned<Statemen
 /// Internal to the crate; consumers reach statements through
 /// [`lower_statements`] or [`crate::lower::lower_first_statement`].
 pub(crate) fn lower_statement(node: Node<'_>, text: &str) -> Spanned<Statement> {
+    // Nesting is unbounded user input (`IF true { IF true { … } }` a thousand
+    // deep is a twelve-kilobyte file), and every arm below recurses.
+    let Some(_depth) = DepthGuard::enter() else {
+        return Spanned::new(Statement::Partial(over_budget(node)), node_range(node));
+    };
     // A broken subtree normally collapses the whole statement to `Partial`, so
     // analyzers never type a half-parsed clause. But a *container* statement —
     // one whose body is an independent statement list (a `DEFINE FUNCTION`
@@ -309,6 +321,16 @@ fn lower_live_select(node: Node<'_>, text: &str) -> LiveSelectStmt {
         from: Vec::new(),
         where_clause: None,
         fetch: Vec::new(),
+        only: false,
+        omit: Vec::new(),
+        split: Vec::new(),
+        group: None,
+        order: None,
+        limit: None,
+        start: None,
+        timeout: None,
+        parallel: None,
+        explain: None,
     };
     let mut saw_from = false;
 
@@ -323,6 +345,8 @@ fn lower_live_select(node: Node<'_>, text: &str) -> LiveSelectStmt {
                     saw_from = true;
                 } else if keyword.eq_ignore_ascii_case("value") {
                     stmt.value = true;
+                } else if saw_from && keyword.eq_ignore_ascii_case("only") {
+                    stmt.only = true;
                 }
             }
             // The grammar aliases the `DIFF` keyword to `Literal`, and only
@@ -338,6 +362,31 @@ fn lower_live_select(node: Node<'_>, text: &str) -> LiveSelectStmt {
             "Predicate" if !saw_from => stmt.projections.push(lower_projection(child, text)),
             "WhereClause" => stmt.where_clause = clause_expr(child, text),
             "FetchClause" => stmt.fetch = clause_idioms(child, text),
+            // The clauses 3.2.3 refuses while parsing. They are kept, not
+            // dropped, because 4009 is what names each of them — see the
+            // grammar's `LiveSelectStatement`.
+            "OmitClause" => stmt.omit = clause_idioms(child, text),
+            "SplitClause" => stmt.split = clause_idioms(child, text),
+            "GroupClause" => {
+                let keys = clause_idioms(child, text);
+                stmt.group = Some(GroupClause {
+                    all: keys.is_empty(),
+                    keys,
+                });
+            }
+            "OrderClause" => stmt.order = Some(lower_order(child, text)),
+            "LimitStartComboClause" => {
+                for clause in named_children(child) {
+                    match clause.kind() {
+                        "LimitClause" => stmt.limit = clause_expr(clause, text),
+                        "StartClause" => stmt.start = clause_expr(clause, text),
+                        _ => {}
+                    }
+                }
+            }
+            "TimeoutClause" => stmt.timeout = clause_expr(child, text),
+            "ParallelClause" => stmt.parallel = Some(node_range(child)),
+            "ExplainClause" => stmt.explain = Some(node_range(child)),
             _ if saw_from && is_source_node(child) => {
                 stmt.from.push(lower_source(child, text));
             }
@@ -452,6 +501,9 @@ fn clause_idioms(clause: Node<'_>, text: &str) -> Vec<Spanned<Idiom>> {
 }
 
 fn collect_clause_idioms(node: Node<'_>, text: &str, out: &mut Vec<Spanned<Idiom>>) {
+    let Some(_depth) = DepthGuard::enter() else {
+        return;
+    };
     for child in named_children(node) {
         match child.kind() {
             "Ident" | "Path" | "Idiom" => {
@@ -1223,6 +1275,7 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
         drop: false,
         changefeed: false,
         permissions: Vec::new(),
+        view: None,
     };
     let mut named = false;
 
@@ -1248,7 +1301,8 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
             "PermissionsBasicClause" | "PermissionsForClause" => {
                 lower_permission_predicates(child, text, &mut def.permissions);
             }
-            "CommentClause" | "TableViewClause" => {
+            "TableViewClause" => def.view = Some(lower_view_clause(child, text)),
+            "CommentClause" => {
                 // Recognized but not modeled for type inference.
             }
             _ if is_broken(child) => {}
@@ -1257,6 +1311,40 @@ fn lower_define_table(node: Node<'_>, text: &str) -> DefineTable {
     }
 
     def
+}
+
+/// `AS SELECT <predicates> FROM <sources>` — a view's projection and body,
+/// with no wrapping `Fields` node: the predicate and source children sit
+/// directly under `TableViewClause`, exactly as [`lower_live_select`] finds
+/// them for `LIVE SELECT`. `WHERE`/`GROUP` are recognized by the grammar
+/// (`TableViewClause` admits them) but not modeled here — see
+/// [`ast::ViewClause`]'s doc.
+fn lower_view_clause(node: Node<'_>, text: &str) -> ViewClause {
+    let mut clause = ViewClause {
+        projections: Vec::new(),
+        from: Vec::new(),
+    };
+    let mut saw_from = false;
+
+    for child in named_children(node) {
+        match child.kind() {
+            "Keyword" => {
+                if text[child.byte_range()].eq_ignore_ascii_case("from") {
+                    saw_from = true;
+                }
+            }
+            "Any" if !saw_from => clause
+                .projections
+                .push(Projection::Wildcard(node_range(child))),
+            "Predicate" if !saw_from => clause.projections.push(lower_projection(child, text)),
+            _ if saw_from && is_source_node(child) => {
+                clause.from.push(lower_source(child, text));
+            }
+            _ => {}
+        }
+    }
+
+    clause
 }
 
 /// `TYPE RELATION IN a OUT b` — idents are assigned to the side whose

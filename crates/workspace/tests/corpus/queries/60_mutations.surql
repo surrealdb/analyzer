@@ -12,7 +12,8 @@ UPDATE organization SET tier = 'pro' WHERE tier = 'free';
 
 UPDATE ONLY organization:acme SET logo = 'logo.png' RETURN AFTER;
 
-UPSERT organization_settings SET organization = organization:acme;
+UPSERT organization_settings SET organization = organization:acme, data_region = 'us',
+	security = { byok: { mode: 'lazy', status: 'not_started', progress: 0 } };
 
 DELETE organization_unit WHERE headcount = 0;
 

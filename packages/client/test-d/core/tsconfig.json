@@ -1,0 +1,18 @@
+{
+  // A SECOND program, deliberately isolated, and the reason it exists is
+  // subtle enough to be worth stating: `test-d/query.test-d.ts` augments the
+  // global `SurqlRegistry`, and an augmentation is program-wide. A non-empty
+  // global is exactly the condition that HIDES the incompatibility
+  // `adapters.test-d.ts` exists to pin — with it, `SurrealQLAnalyzerClient<Queries>`
+  // relates to the defaulted one and the test passes for the wrong reason.
+  //
+  // So this program contains the sources, this directory, and nothing else:
+  // the global registry is empty here, exactly as it is in a user's project
+  // that never opts in. `pnpm typecheck` in this package runs both programs.
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "paths": { "@surrealdb/analyzer-client": ["../../src/index.ts"] }
+  },
+  "include": ["."]
+}

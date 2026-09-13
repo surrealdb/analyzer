@@ -17,13 +17,20 @@ pub(crate) fn analyze_define_analyzer(
         let existing = ctx
             .schema()
             .analyzer(&stmt.name.node)
-            .map(|existing| existing.name_span.clone());
+            .map(|existing| existing.name_span.clone())
+            // Only a genuine predecessor in the canonical, schema-glob-first
+            // order redefines — see `table.rs`'s identical guard.
+            .filter(|existing| ctx.source_precedes(existing.source()));
         if let Some(existing) = existing {
             super::emit_duplicate_definition(
                 ctx,
                 stmt.name.span,
-                &format!("`{}`", stmt.name.node),
-                &format!("DEFINE ANALYZER OVERWRITE {}", stmt.name.node),
+                &super::Redefined {
+                    kind: "analyzer",
+                    name: &stmt.name.node,
+                    subject: &format!("`{}`", stmt.name.node),
+                    redefine: &format!("DEFINE ANALYZER OVERWRITE {}", stmt.name.node),
+                },
                 existing,
             );
         }

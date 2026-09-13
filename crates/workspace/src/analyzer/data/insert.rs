@@ -17,7 +17,7 @@ pub(crate) fn analyze_insert(ctx: &mut AnalysisContext<'_>, stmt: &ast::InsertSt
 
 pub(crate) fn insert_response_kind(stmt: &ast::InsertStmt, ctx: &mut AnalysisContext<'_>) -> Kind {
     check_modifier_order(ctx, stmt);
-    mutation::check_relation_insert(ctx, stmt.target.as_ref(), &stmt.data);
+    mutation::check_relation_insert(ctx, stmt, stmt.target.as_ref());
     let row_table = mutation::source_table_name(stmt.target.as_ref())
         .and_then(|name| ctx.schema().tables.get(&name));
     check_insert_payload(ctx, &stmt.data, row_table);
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn an_array_payload_on_a_relation_table_with_in_and_out_is_silent() {
+    fn plain_insert_into_a_relation_table_is_4019_however_the_payload_is_spelled() {
         let parsed = parse_source(
             SourceId::new("schema"),
             "DEFINE TABLE person SCHEMAFULL;\n\
@@ -478,20 +478,33 @@ mod tests {
         .expect("schema should parse");
         let schema = extract_schema(&[parsed]).schema;
 
-        let diagnostics = diagnostics_for(
-            &schema,
+        // Supplying `in` and `out` does not make the row an edge: 3.2.3
+        // answers "Found record: `works_at:…` which is not a relation, but
+        // expected a RELATION IN person OUT org" either way.
+        for query in [
             "INSERT INTO works_at [{ in: person:ada, out: org:acme }];",
+            "INSERT INTO works_at [{ in: person:ada }];",
+            "INSERT INTO works_at { in: person:ada, out: org:acme };",
+        ] {
+            let diagnostics = diagnostics_for(&schema, query);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|finding| finding.code().number() == 4019),
+                "{query}: {diagnostics:?}"
+            );
+        }
+
+        // `INSERT RELATION` is the spelling that works, and stays silent.
+        let relation = diagnostics_for(
+            &schema,
+            "INSERT RELATION INTO works_at [{ in: person:ada, out: org:acme }];",
         );
-
-        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
-
-        // …and a row that omits them is still the 4019 it always was.
-        let missing = diagnostics_for(&schema, "INSERT INTO works_at [{ in: person:ada }];");
         assert!(
-            missing
+            !relation
                 .iter()
                 .any(|finding| finding.code().number() == 4019),
-            "got: {missing:?}"
+            "got: {relation:?}"
         );
     }
 }

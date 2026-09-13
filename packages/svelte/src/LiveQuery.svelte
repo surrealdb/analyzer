@@ -40,7 +40,7 @@
     ParamsOf,
     Preloaded,
     SurqlLive,
-    SurrealQLAnalyzerClient,
+    ClientCore,
     SurrealQLAnalyzerError,
   } from "@surrealdb/analyzer-client";
   import { sgTextLive } from "./inline.js";
@@ -69,7 +69,7 @@
     /** Bound parameters, when `q` is text that names some. */
     params?: Q extends string ? ParamsOf<Q> : never;
     /** Override the context client (tests, a second connection). */
-    client?: SurrealQLAnalyzerClient;
+    client?: ClientCore;
     /** Rendered with the reconciled rows. Always an array, so no `?? []`. */
     children: Snippet<[LiveRows<Q>]>;
     /** Rendered until the seeding `SELECT` resolves. */

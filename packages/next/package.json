@@ -1,6 +1,6 @@
 {
   "name": "@surrealdb/analyzer-next",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Next.js / React bindings for SurrealQL Analyzer: typed live queries as hooks, App Router SSR seeding.",
   "type": "module",
   "license": "MIT OR Apache-2.0",
@@ -39,8 +39,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@surrealdb/analyzer-client": "0.5.3",
-    "@surrealdb/analyzer-query": "0.5.3"
+    "@surrealdb/analyzer-client": "0.6.0",
+    "@surrealdb/analyzer-query": "0.6.0"
   },
   "peerDependencies": {
     "react": ">=18",

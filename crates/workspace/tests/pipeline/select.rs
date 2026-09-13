@@ -336,7 +336,7 @@ fn analyze_workspace_reports_unknown_select_projection_fields() {
     let mut workspace = Workspace::default();
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nSELECT nickname, profile.phone FROM person;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nSELECT nickname, profile.phone FROM person;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -352,14 +352,14 @@ fn analyze_workspace_reports_unknown_select_projection_fields() {
         "`person` has no field `nickname`"
     );
     assert_eq!(unknown_fields[0].span().source(), &source);
-    assert_eq!(unknown_fields[0].span().range().start(), 69);
-    assert_eq!(unknown_fields[0].span().range().end(), 77);
+    assert_eq!(unknown_fields[0].span().range().start(), 80);
+    assert_eq!(unknown_fields[0].span().range().end(), 88);
     assert_eq!(
         unknown_fields[1].message(),
         "`person` has no field `profile.phone`"
     );
-    assert_eq!(unknown_fields[1].span().range().start(), 79);
-    assert_eq!(unknown_fields[1].span().range().end(), 92);
+    assert_eq!(unknown_fields[1].span().range().start(), 90);
+    assert_eq!(unknown_fields[1].span().range().end(), 103);
     // The two unknown fields (1002) plus the whole-table read lint (7014,
     // allow-by-default): this SELECT has no WHERE/LIMIT.
     assert_eq!(output.sources[&source].diagnostics.len(), 3);
@@ -370,7 +370,7 @@ fn analyze_workspace_reports_unknown_select_order_fields() {
     let mut workspace = Workspace::default();
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nSELECT * FROM person ORDER BY missing;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nSELECT * FROM person ORDER BY missing;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -392,25 +392,37 @@ fn analyze_workspace_reports_unknown_select_group_and_split_fields() {
     let mut workspace = Workspace::default();
     let source = workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nSELECT name FROM person GROUP BY missing_group SPLIT missing_split;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nSELECT name FROM person GROUP BY missing_group SPLIT missing_split;".into(),
     );
 
     let output = analyze_workspace(&workspace);
     let unknown_fields: Vec<_> = output.sources[&source]
         .diagnostics
         .iter()
-        .filter(|finding| matches!(finding.code(), code if code == FindingCode::schema(1002) || code == FindingCode::schema(1002)))
+        .filter(|finding| finding.code() == FindingCode::schema(1002))
         .map(|finding| finding.message().to_string())
         .collect();
     let mut unknown_fields = unknown_fields;
     unknown_fields.sort();
 
+    // SPLIT reads the source row, so an unknown field there is 1002. The
+    // GROUP key is the selection's business — the engine refuses to parse
+    // `GROUP BY missing_group` against a projection that does not carry it —
+    // so that one is 4013, which names the absent field in its help.
     assert_eq!(
         unknown_fields,
-        vec![
-            "`person` has no field `missing_group`".to_string(),
-            "`person` has no field `missing_split`".to_string(),
-        ]
+        vec!["`person` has no field `missing_split`".to_string()]
+    );
+    let group_keys: Vec<_> = output.sources[&source]
+        .diagnostics
+        .iter()
+        .filter(|finding| finding.code().number() == 4013)
+        .map(|finding| finding.message().to_string())
+        .collect();
+    assert_eq!(group_keys.len(), 1, "{group_keys:?}");
+    assert!(
+        group_keys[0].contains("missing_group") && group_keys[0].contains("Missing group idiom"),
+        "{group_keys:?}"
     );
 }
 
@@ -419,7 +431,7 @@ fn analyze_workspace_reports_unknown_select_where_fields() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nSELECT * FROM person WHERE missing = true AND name = 'Ada';".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nSELECT * FROM person WHERE missing = true AND name = 'Ada';".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -438,7 +450,7 @@ fn analyze_workspace_validates_aliased_select_projection_source_field() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nSELECT nickname AS display_name FROM person;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nSELECT nickname AS display_name FROM person;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -634,7 +646,7 @@ fn analyze_workspace_validates_omit_and_fetch_field_paths() {
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "query".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD name ON person TYPE string;\nSELECT * OMIT password FROM person FETCH friend;".into(),
+        "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;\nSELECT * OMIT password FROM person FETCH friend;".into(),
     );
 
     let output = analyze_workspace(&workspace);

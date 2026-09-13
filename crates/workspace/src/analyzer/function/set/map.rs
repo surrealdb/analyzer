@@ -31,12 +31,23 @@ pub(crate) fn analyze_set_map(
     let Some((Kind::Set(element, max_len), closure)) =
         args.first().cloned().zip(closure_arg(call, 1))
     else {
+        if let Some(kind) = args.first() {
+            crate::analyzer::function::check_argument_could_be(
+                ctx,
+                call,
+                0,
+                kind,
+                |kind| matches!(kind, Kind::Array(_, _) | Kind::Set(_, _)),
+                "an array or set",
+            );
+        }
         return Kind::Any;
     };
     check_closure_arity(ctx, call, closure, 2);
 
-    let mapped =
-        closure_return_kind(closure, &[(*element).clone(), Kind::Int], ctx).unwrap_or(Kind::Any);
+    let param_kinds = [(*element).clone(), Kind::Int];
+    let mapped = closure_return_kind(closure, &param_kinds, ctx).unwrap_or(Kind::Any);
+    crate::analyzer::expression::check::check_closure_with_param_kinds(ctx, closure, &param_kinds);
     Kind::Set(Box::new(mapped), max_len)
 }
 
@@ -56,5 +67,40 @@ mod tests {
                 Kind::Any
             );
         });
+    }
+
+    fn codes(query: &str) -> Vec<u16> {
+        use surrealql_analyzer_diagnostics::Finding;
+        use surrealql_analyzer_syntax::parse::parse_source;
+        use surrealql_analyzer_syntax::source::SourceId;
+
+        let parsed = parse_source(SourceId::new("fn:test"), query).expect("query parses");
+        let lowered = surrealql_analyzer_syntax::lower::lower_first_expr(&parsed, "FunctionCall")
+            .expect("function call node");
+        let schema = crate::schema::SchemaIndex::default();
+        let mut diagnostics: Vec<Finding> = Vec::new();
+        let mut ctx = AnalysisContext::new(
+            &schema,
+            parsed.source_id().clone(),
+            parsed.text(),
+            &mut diagnostics,
+        );
+        crate::analyzer::expression::analyze_expr(&mut ctx, &lowered);
+        diagnostics.iter().map(|f| f.code().number()).collect()
+    }
+
+    #[test]
+    fn the_closures_body_is_checked_against_the_element_it_receives() {
+        assert!(
+            codes("RETURN set::map(<set> [1, 2], |$v| $v + 'a');").contains(&2004),
+            "{:?}",
+            codes("RETURN set::map(<set> [1, 2], |$v| $v + 'a');")
+        );
+        assert!(!codes("RETURN set::map(<set> [1, 2], |$v| $v + 1);").contains(&2004));
+    }
+
+    #[test]
+    fn a_non_collection_receiver_is_5002() {
+        assert!(codes("RETURN set::map(30, |$v| $v);").contains(&5002));
     }
 }

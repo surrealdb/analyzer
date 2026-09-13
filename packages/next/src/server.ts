@@ -13,10 +13,11 @@
  * ```ts
  * // lib/db.server.ts
  * import { cache } from "react";
- * import { createClient } from "@/surrealql-analyzer.generated";
+ * import { createClient } from "@surrealdb/analyzer-client";
+ * import type { Queries } from "@/surrealql-analyzer";
  *
  * export const getDb = cache(() =>
- *   createClient({
+ *   createClient<Queries>({
  *     url: process.env.SURREAL_URL!,
  *     namespace: "app",
  *     database: "app",
@@ -66,18 +67,18 @@
  * ```
  */
 
-import { preload, type SurrealQLAnalyzerClient } from "@surrealdb/analyzer-client";
+import { preload, type ClientCore } from "@surrealdb/analyzer-client";
 import { getQueryClient, type DehydratedState } from "@surrealdb/analyzer-query";
 
 export { preload };
 export type { Preloaded, Json } from "@surrealdb/analyzer-client";
 
 /** Snapshot a client's cached results for transport to the browser. */
-export function dehydrate(client: SurrealQLAnalyzerClient): DehydratedState {
+export function dehydrate(client: ClientCore): DehydratedState {
   return getQueryClient(client).dehydrate();
 }
 
 /** Seed a client's cache from a server snapshot so the browser avoids a refetch. */
-export function hydrate(client: SurrealQLAnalyzerClient, state: DehydratedState): void {
+export function hydrate(client: ClientCore, state: DehydratedState): void {
   getQueryClient(client).hydrate(state);
 }

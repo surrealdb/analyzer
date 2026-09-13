@@ -6,11 +6,19 @@ Real, type-checked demos of the round-trip:
 
 `surrealkit generate` scans your host files (`.ts`, `.tsx`, `.svelte`, …) for
 query text — `db.query("…")`, `defineQuery("…")`, `defineLive("…")` — analyzes
-each against your `schema/*.surql`, and writes a module augmentation that keys
-every query by its exact text with its `{ result; params }` types. You import
-the entry points **from that generated file**, so the augmentation loads with
-them and everything is typed: the result rows, and the params argument (required
-exactly when the query reads params).
+each against your `schema/*.surql`, and writes a `.d.ts`: an interface per
+table, and a `Queries` type keying every query by its exact text with its
+`{ result; params }` types. Nothing in that file exists at runtime. You hand
+`Queries` to `createClient`, and everything is typed: the result rows, and the
+params argument (required exactly when the query reads params).
+
+```ts
+// src/db.ts — the three lines that wire it up
+import { createClient } from "@surrealdb/analyzer-client";
+import type { Queries } from "./surrealql-analyzer";
+
+export const db = createClient<Queries>({ url: "ws://localhost:8000/rpc" });
+```
 
 ## Examples
 
@@ -32,12 +40,13 @@ const [people] = await db.query("SELECT id, name, age, team FROM person");
 
 ## Then `defineQuery`, when a name earns its keep
 
-`defineQuery` reads the same registry through the same conditional generic, so
-it adds no type safety. It adds a *value*, written in one file:
+`db.defineQuery` reads the same registry through the same conditional generic,
+so it adds no type safety. It adds a *value*, written in one file:
 
 ```ts
-// src/queries.ts
-import { defineQuery, defineLive } from "./surrealql-analyzer.generated";
+// src/queries.ts — `defineQuery` is destructured off `db`, so it is bound to
+// the same `Queries` and needs no module augmentation
+import { defineQuery, defineLive } from "./db";
 
 export const allPeople  = defineQuery("SELECT id, name, age, team FROM person");
 export const peopleOf   = defineQuery("SELECT id, name FROM person WHERE team = $team");
@@ -57,10 +66,23 @@ also what `db.run` (which unwraps a single-statement result), `db.watch` and
 either example imports it from. Each project pins the path in `package.json`, so
 there is one command and one location:
 
-| Example | `--out` | Imported as |
+| Example | `--out` | Types imported from |
 | --- | --- | --- |
-| `basic/` | `src/surrealql-analyzer.generated.ts` | `./surrealql-analyzer.generated` |
-| `sveltekit/` | `src/lib/surrealql-analyzer.generated.ts` | `$lib/surrealql-analyzer.generated` |
+| `basic/` | `src/surrealql-analyzer.d.ts` | `./surrealql-analyzer` |
+| `sveltekit/` | `src/lib/surrealql-analyzer.d.ts` | `$lib/surrealql-analyzer` |
+
+`examples/sveltekit` also carries the one line that turns the generated queries
+into the *global* registry, in `src/lib/db.ts`:
+
+```ts
+declare module "@surrealdb/analyzer-client" {
+  interface SurqlRegistry extends Queries {}
+}
+```
+
+It needs it because `<Query q="SELECT …">` is a markup attribute with no call
+site to put a type argument on. `examples/basic` never needs it — the type
+argument on `createClient` covers everything it does.
 
 ## Run the round-trip
 
@@ -72,16 +94,18 @@ pnpm install
 # 1. Install the command line. The analyzer itself is a library SurrealKit embeds.
 cargo install surrealkit
 
-# 2. Generate the typed registry from the schema + the project's queries.
+# 2. Generate the types from the schema + the project's queries.
 cd examples/basic
-surrealkit generate --out src/surrealql-analyzer.generated.ts
+surrealkit generate --out src/surrealql-analyzer.d.ts
 
 # 3. Type-check — the generated types make everything typed.
 cd ../..
 pnpm --filter @surrealql-analyzer-example/basic run typecheck
 ```
 
-(For `examples/sveltekit` the flag is `--out src/lib/surrealql-analyzer.generated.ts`.)
+(For `examples/sveltekit` the flag is `--out src/lib/surrealql-analyzer.d.ts`.
+Without SurrealKit installed, this repository can regenerate both with
+`cargo run -p surrealql-analyzer --example generate_types -- <DIR> <OUT>`.)
 
 Both examples' committed generated files are byte-identical to
 what step 2 produces, so you can verify the round-trip by running it and
@@ -112,7 +136,7 @@ nothing — and the compiler was happy. Both examples now construct the paramete
 properly:
 
 ```ts
-import { RecordId } from "./surrealql-analyzer.generated";
+import { RecordId } from "@surrealdb/analyzer-client";
 await db.run(peopleOf, { team: new RecordId("team", "red") });
 ```
 

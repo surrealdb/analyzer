@@ -1,11 +1,12 @@
-//! `rand::duration` function analysis: `rand::duration(min?, max?) -> duration`.
+//! `rand::duration` function analysis: `rand::duration(min, max) -> duration`.
 //!
 //! Upstream's bounds are **durations**, not numbers
 //! (`fn duration((dur1, dur2): (Duration, Duration))`), so
 //! `rand::duration(1s, 2s)` is the valid call and `rand::duration(1, 2)` is
-//! not. The arity stays lenient (upstream requires both bounds in 3.x, but
-//! the range is optional in the documented surface) — a missed arity
-//! violation costs nothing next to rejecting a valid call.
+//! not. The arity was left lenient on the reading that the documented surface
+//! makes the range optional; 3.2.3 disagrees, and both `rand::duration()` and
+//! `rand::duration(1s)` answer "Incorrect arguments for function
+//! `rand::duration()`. Expected 2 arguments". Both bounds are required.
 
 use surrealdb_types::Kind;
 use surrealql_analyzer_syntax::ast;
@@ -16,7 +17,7 @@ use crate::analyzer::function::signature::{apply, ParamKind, ReturnKind, Signatu
 /// The signature calls are checked against.
 pub(crate) fn signature() -> Signature {
     Signature {
-        min_args: 0,
+        min_args: 2,
         max_args: Some(2),
         arg_kinds: vec![ParamKind::Exact(Kind::Duration)],
         return_kind: ReturnKind::Fixed(Kind::Duration),

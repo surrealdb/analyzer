@@ -3,6 +3,10 @@
 -- 4003: ONLY over a whole table without LIMIT 1.
 SELECT title FROM ONLY article;
 
+-- 4003: ONLY over an inline subquery with no LIMIT 1/ONLY of its own — the
+-- same "no static single-row proof" contract as the whole-table case above.
+SELECT * FROM ONLY (SELECT * FROM article);
+
 -- 4004: INSERT tuple with mismatched column and value counts.
 INSERT INTO ticket (subject, reporter) VALUES ('one value');
 
@@ -36,6 +40,15 @@ SELECT (DELETE ticket_log) AS gone FROM article WHERE id = article:hello;
 -- 4019: CREATE on a relation table without in / out.
 CREATE likes SET weight = 1.0;
 
+-- 4019: …and supplying them by hand does not help. An edge is a different
+-- kind of record, so the engine rejects this one too ("Found record:
+-- `likes:…` which is not a relation, but expected a RELATION IN account OUT
+-- article"). Only RELATE / INSERT RELATION make edges.
+CREATE likes SET in = account:ada, out = article:hello, weight = 1.0;
+
+-- 4019: the bulk-load spelling of the same mistake.
+INSERT INTO likes { in: account:ada, out: article:hello, weight: 1.0 };
+
 -- 4020: a RETURN mode that is meaningless for the statement.
 CREATE ticket SET subject = 'x', reporter = account:ada RETURN BEFORE;
 
@@ -63,3 +76,13 @@ SELECT author, title FROM article GROUP BY author;
 
 -- 4028: an aggregate over a column with no GROUP clause.
 SELECT math::sum(views) AS total FROM article WHERE views > 0;
+
+-- 4033: FOR iterating an inline SELECT subquery directly — the subquery
+-- collapses to a bare row, not a one-element array, whenever it matches
+-- exactly one, and FOR cannot iterate that.
+FOR $a IN (SELECT * FROM article) { RETURN $a; };
+
+-- 4034: an aggregate over a column whose kind it cannot meaningfully
+-- aggregate — `title` is a string, and SurrealDB does not error: it silently
+-- answers `0`.
+SELECT math::sum(title) FROM article GROUP ALL;

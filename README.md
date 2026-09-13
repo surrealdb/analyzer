@@ -71,9 +71,10 @@ the string in:
 
 ```ts
 // src/main.ts
-import { createClient, RecordId } from "./surrealql-analyzer.generated";
+import { createClient, RecordId } from "@surrealdb/analyzer-client";
+import type { Queries } from "./surrealql-analyzer"; // generated: types only
 
-const db = createClient({
+const db = createClient<Queries>({
   url: "ws://localhost:8000/rpc",
   namespace: "app",
   database: "app",
@@ -89,11 +90,11 @@ for (const person of people) {
 ```
 
 ```sh
-surrealkit generate --out src/surrealql-analyzer.generated.ts
+surrealkit generate --out src/surrealql-analyzer.d.ts
 ```
 
 ```
-generated src/surrealql-analyzer.generated.ts (1 query, 8ms)
+generated src/surrealql-analyzer.d.ts (1 query, 8ms)
 ```
 
 While you are developing, run it as a loop instead — `watch` checks the whole
@@ -101,50 +102,57 @@ workspace on every save and regenerates when the check passes, so the types
 never go stale behind you:
 
 ```sh
-surrealkit watch --out src/surrealql-analyzer.generated.ts
+surrealkit watch --out src/surrealql-analyzer.d.ts
 ```
 
 `generate` scanned `src/main.ts`, analyzed the query against the schema, and
-wrote a module that re-exports the client together with a registry keyed by the
+wrote a declaration file — an interface per table, and a registry keyed by each
 query's exact text:
 
 ```ts
-declare module "@surrealdb/analyzer-client" {
-  interface SurqlRegistry {
-    "SELECT name, age FROM person WHERE team = $team": {
-      result: [Array<{ age: number; name: string }>];
-      params: { team: RecordId<"team"> };
-    };
-  }
-}
+// src/surrealql-analyzer.d.ts — types only; nothing here exists at runtime
+import type { RecordId } from "@surrealdb/analyzer-client";
+
+export interface Person { id: RecordId<"person">; name: string; age: number }
+
+export type Queries = {
+  "SELECT name, age FROM person WHERE team = $team": {
+    result: [Array<{ age: number; name: string }>];
+    params: { team: RecordId<"team"> };
+  };
+};
 ```
 
-Importing `createClient` **from that generated file** is what loads the
-registry. `people` is now `Array<{ name: string; age: number }>`, the `team`
-param is required and must be a `RecordId<"team">`, and `person.nope` is a
-compile error. `tsc --noEmit` proves it.
+Handing `Queries` to `createClient` is what types the client. `people` is now
+`Array<{ name: string; age: number }>`, the `team` param is required and must be
+a `RecordId<"team">`, and `person.nope` is a compile error. `tsc --noEmit`
+proves it. `Person` is yours to use too — a table type you did not hand-write.
 
 A query built at runtime is not in the registry and resolves to `unknown[]` — it
 still runs; there is no `any` in the API. The client composes the official
 `surrealdb` SDK rather than extending it, so the raw `Surreal` instance stays
 reachable at `db.surreal`.
 
-Three things are worth stating because each one produces `any` **with no error
-on your own code**:
+Three things are worth stating because each one costs you the types **with no
+error on your own code**:
 
-- `@surrealdb/analyzer-client` must actually be installed. The generated file says
-  `declare module "@surrealdb/analyzer-client"`; if that specifier does not resolve,
-  TypeScript reports `TS2664` *inside the generated file* and silently drops the
-  whole registry.
+- `createClient` needs the type argument. Without it the client reads the
+  global `SurqlRegistry`, which is empty unless you augment it yourself (one
+  line, in your code: `interface SurqlRegistry extends Queries {}`) — and every
+  literal resolves to `unknown[]`.
+- `@surrealdb/analyzer-client` must actually be installed. The generated file
+  imports `RecordId`, `Uuid`, `Duration` and `Decimal` from it, and
+  `skipLibCheck` suppresses errors inside a `.d.ts`, so an unresolved import is
+  never reported and all four silently become `any`. `generate` warns about it.
 - `--out` must match how you import it. Bare `generate` writes to the workspace
-  root, which is usually not where `./surrealql-analyzer.generated`,
-  `$lib/surrealql-analyzer.generated` or `@/surrealql-analyzer.generated` points. Pin it in
+  root, which is usually not where `./surrealql-analyzer`,
+  `$lib/surrealql-analyzer` or `@/surrealql-analyzer` points. Pin it in
   `package.json` once.
 - A `.svelte` `<script>` needs `lang="ts"`. Without it Svelte does not typecheck
   the block at all.
 
 See [`@surrealdb/analyzer-client`](packages/client) for the full contract — including
-[when everything is `any`](packages/client/README.md#when-everything-is-any) —
+[when everything is `unknown`](packages/client/README.md#when-everything-is-unknown-or-any) —
 and [`examples/`](examples) for a vanilla-TS and a SvelteKit project you can run.
 
 ## Check in CI
@@ -181,8 +189,8 @@ or a CI log it is the same text with no escape sequences, and `--no-color` /
 The exit code reflects the post-policy error count, so it drops straight into
 CI. `--json` emits `{ summary, diagnostics[] }` with byte-offset ranges for
 tooling — one document, one exit code, never decorated. `generate` runs the same
-analysis and refuses to write a registry when an embedded query has an error, so
-a broken build can never overwrite good types.
+analysis and refuses to write when an embedded query has an error, so a broken
+build can never overwrite good types.
 
 ## Live queries, typed
 
@@ -190,9 +198,7 @@ a broken build can never overwrite good types.
 query once and subscribe to it. Vanilla TypeScript needs no extra package:
 
 ```ts
-import { defineLive } from "./surrealql-analyzer.generated";
-
-const livePeople = defineLive("SELECT id, name, age FROM person");
+const livePeople = db.defineLive("SELECT id, name, age FROM person");
 const stop = db.watch(livePeople, (rows) => render(rows));
 //    ^? rows: Array<{ id: RecordId<"person">; name: string; age: number }>
 ```

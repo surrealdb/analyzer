@@ -144,44 +144,71 @@ pub fn parse_source(
     })
 }
 
+/// One step of the explicit-stack CST walk: descend into a node, or report
+/// one whose subtree has been visited without reporting anything.
+enum DiagnosticStep<'tree> {
+    /// Queue this node's children.
+    Visit(Node<'tree>),
+    /// The subtree of this node is done; the count is the diagnostic total as
+    /// it stood when the node was first reached.
+    Fallback(Node<'tree>, usize),
+}
+
+/// Walks the CST with an explicit stack rather than the call stack: a CST is
+/// as deep as its input nests, and `RETURN ((((…1…))))` nested twenty
+/// thousand deep is a four-line file. Recursion here aborted the process with
+/// `stack overflow` and no diagnostic at all.
 fn collect_syntax_diagnostics(
     node: Node<'_>,
     source_id: &SourceId,
     diagnostics: &mut Vec<SyntaxDiagnostic>,
 ) {
-    // Captured before this node emits anything so the `has_error` fallback
-    // below fires only when neither this node nor any descendant produced a
-    // diagnostic — otherwise an `ERROR` node would be reported twice (once
-    // here, once by the fallback, since `has_error()` is true for it).
-    let diagnostics_before = diagnostics.len();
+    let mut stack = vec![DiagnosticStep::Visit(node)];
+    while let Some(step) = stack.pop() {
+        match step {
+            DiagnosticStep::Visit(node) => {
+                // Captured before this node's subtree emits anything, so the
+                // post-order arm below reports a node only when nothing
+                // *inside* it did.
+                let diagnostics_before = diagnostics.len();
 
-    if node.is_error() {
-        diagnostics.push(SyntaxDiagnostic::new(
-            SyntaxDiagnosticKind::ErrorNode,
-            node_source_span(node, source_id.clone()),
-            "SurrealQL syntax error",
-        ));
-    }
+                if is_missing(node) {
+                    diagnostics.push(SyntaxDiagnostic::new(
+                        SyntaxDiagnosticKind::MissingNode,
+                        node_source_span(node, source_id.clone()),
+                        format!("missing SurrealQL syntax node `{}`", node.kind()),
+                    ));
+                }
 
-    if is_missing(node) {
-        diagnostics.push(SyntaxDiagnostic::new(
-            SyntaxDiagnosticKind::MissingNode,
-            node_source_span(node, source_id.clone()),
-            format!("missing SurrealQL syntax node `{}`", node.kind()),
-        ));
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_syntax_diagnostics(child, source_id, diagnostics);
-    }
-
-    if node.has_error() && diagnostics.len() == diagnostics_before {
-        diagnostics.push(SyntaxDiagnostic::new(
-            SyntaxDiagnosticKind::ErrorNode,
-            node_source_span(node, source_id.clone()),
-            "SurrealQL syntax error",
-        ));
+                stack.push(DiagnosticStep::Fallback(node, diagnostics_before));
+                // Children are pushed last-first so they pop in source order,
+                // reproducing the recursive walk's diagnostic ordering.
+                let mut cursor = node.walk();
+                let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+                stack.extend(children.into_iter().rev().map(DiagnosticStep::Visit));
+            }
+            // One failure, one finding: a node carrying an error reports it
+            // only when nothing inside it already did. tree-sitter nests
+            // `ERROR` nodes, so `RELATE 'user:1' -> wrote -> post:1;` raised
+            // one `S0001` for the whole statement *and* another for the
+            // operand inside it — two findings for one parse failure, the
+            // outer one naming a span the reader can do nothing with. The
+            // innermost report is the one that names the token.
+            //
+            // Both flags are read: `has_error` is false on a *leaf* `ERROR`
+            // node (it asks whether anything is wrong further down), so
+            // neither alone covers both the container and the token.
+            DiagnosticStep::Fallback(node, diagnostics_before) => {
+                if (node.is_error() || node.has_error()) && diagnostics.len() == diagnostics_before
+                {
+                    diagnostics.push(SyntaxDiagnostic::new(
+                        SyntaxDiagnosticKind::ErrorNode,
+                        node_source_span(node, source_id.clone()),
+                        "SurrealQL syntax error",
+                    ));
+                }
+            }
+        }
     }
 }
 

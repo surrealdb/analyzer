@@ -1,6 +1,8 @@
--- Organization side of the corpus: a nested object field, a refined
--- `array<object>` (exercises `[*]` projection), `array<record<…>>` links, and
--- `COMPUTED <~relation` reverse-reference fields.
+-- Organization side of the corpus: a nested object field, an untyped `array`
+-- refined per-element via `[*]` (exercises `[*]` projection — 3.2.3 rejects
+-- the same refinement under a parent typed `array<object>`, see `contacts`
+-- below), `array<record<…>>` links, and `COMPUTED <~relation`
+-- reverse-reference fields.
 
 DEFINE TABLE sector SCHEMAFULL;
 
@@ -22,7 +24,12 @@ DEFINE FIELD owner ON organization TYPE record<account>;
 
 DEFINE FIELD sectors ON organization TYPE array<record<sector>> DEFAULT [];
 
-DEFINE FIELD contacts ON organization TYPE array<object> DEFAULT [];
+-- Untyped `array`, not `array<object>`: 3.2.3 refuses the combination —
+-- `Cannot set field `contacts.*` with type `{ email: string, label: string,
+-- primary: bool }` as it mismatched with field `contacts` with type
+-- `array<object>`` — so the per-element shape below is the only place the
+-- element type is declared.
+DEFINE FIELD contacts ON organization TYPE array DEFAULT [];
 
 DEFINE FIELD contacts[*] ON organization TYPE {
 	label: string,

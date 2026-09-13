@@ -188,16 +188,23 @@ fn check_event_references(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineEvent
         let existing = ctx.schema().tables[&stmt.table.node]
             .events
             .get(&stmt.name.node)
-            .map(|existing| existing.name_span.clone());
+            .map(|existing| existing.name_span.clone())
+            // Only a genuine predecessor in the canonical, schema-glob-first
+            // order redefines — see `table.rs`'s identical guard.
+            .filter(|existing| ctx.source_precedes(existing.source()));
         if let Some(existing) = existing {
             super::emit_duplicate_definition(
                 ctx,
                 stmt.name.span,
-                &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
-                &format!(
-                    "DEFINE EVENT OVERWRITE {} ON {}",
-                    stmt.name.node, stmt.table.node
-                ),
+                &super::Redefined {
+                    kind: "event",
+                    name: &stmt.name.node,
+                    subject: &format!("`{}` on `{}`", stmt.name.node, stmt.table.node),
+                    redefine: &format!(
+                        "DEFINE EVENT OVERWRITE {} ON {}",
+                        stmt.name.node, stmt.table.node
+                    ),
+                },
                 existing,
             );
         }
