@@ -641,6 +641,47 @@ fn check_clause_values(stmt: &ast::SelectStmt, ctx: &mut AnalysisContext<'_>) {
     }
 }
 
+/// 4003 — `ONLY` over an inline subquery target with no static single-row
+/// proof of its own: `SELECT * FROM ONLY (SELECT * FROM user)`.
+///
+/// Verified on 3.2.3: with two matches this fails with "Expected a single
+/// result output when using the ONLY keyword", identically to the unfiltered
+/// whole-table case 4003 already owns — and, like that case, it can
+/// coincidentally succeed when the subquery happens to match one row. Same
+/// contract as the table form: the author supplied no proof at all (no
+/// `LIMIT 1`, no `ONLY` on the inner query), which is why this joins 4003
+/// rather than 4026's filtered-and-nearly-proved sibling — there is no filter
+/// here to be a near miss.
+///
+/// Silent whenever the inner query itself proves single-row: an inner
+/// `ONLY` or a literal `LIMIT` of at most 1.
+fn check_only_subquery_target(ctx: &mut AnalysisContext<'_>, stmt: &ast::SelectStmt) {
+    let Some(from) = stmt.from.first() else {
+        return;
+    };
+    let ast::Expr::Subquery(inner) = &from.node else {
+        return;
+    };
+    let ast::Statement::Select(inner_select) = &inner.node else {
+        return;
+    };
+    let proven_single_row =
+        inner_select.only || literal_limit(inner_select).is_some_and(|limit| limit <= 1);
+    if proven_single_row {
+        return;
+    }
+    let span = SourceSpan::new(ctx.source().clone(), from.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            4003,
+            "ONLY needs a single-row target, but this subquery has no LIMIT 1 or ONLY of its own"
+                .to_string(),
+        )
+        .with_help("add `LIMIT 1` (or `ONLY`) to the inner SELECT"),
+    );
+}
+
 /// 4026 — a **filtered** `FROM ONLY` whose target is not provably single-row.
 ///
 /// Verified on a live 3.0.5: `SELECT * FROM ONLY t WHERE <2 matches>` fails
@@ -904,6 +945,7 @@ fn check_select_statement_shape(
                 );
             }
         }
+        check_only_subquery_target(ctx, stmt);
     }
 
     let mut seen = std::collections::BTreeMap::new();
@@ -3937,6 +3979,35 @@ mod tests {
         ));
         // LIMIT 1 still exempts it.
         assert!(!fires_4003(&schema, "SELECT * FROM ONLY person LIMIT 1;"));
+    }
+
+    #[test]
+    fn only_over_an_unproven_subquery_target_is_4003() {
+        let schema = schema_from(
+            "DEFINE TABLE person SCHEMAFULL;\nDEFINE FIELD name ON person TYPE string;",
+        );
+
+        // No LIMIT/ONLY inside the subquery: no static proof it is one row.
+        assert!(fires_4003(
+            &schema,
+            "SELECT * FROM ONLY (SELECT * FROM person);"
+        ));
+        // A WHERE inside the subquery is not a proof either — 4026's cardinality
+        // reasoning is about the *outer* ONLY's own filter, which this has none of.
+        assert!(fires_4003(
+            &schema,
+            "SELECT * FROM ONLY (SELECT * FROM person WHERE name = 'A');"
+        ));
+        // An inner LIMIT 1 proves it.
+        assert!(!fires_4003(
+            &schema,
+            "SELECT * FROM ONLY (SELECT * FROM person LIMIT 1);"
+        ));
+        // An inner ONLY proves it too (redundant, but not wrong).
+        assert!(!fires_4003(
+            &schema,
+            "SELECT * FROM ONLY (SELECT * FROM ONLY person LIMIT 1);"
+        ));
     }
 
     /// A schema whose `person` table carries a single-field UNIQUE index, a

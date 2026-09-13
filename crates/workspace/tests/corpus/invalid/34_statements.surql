@@ -3,6 +3,10 @@
 -- 4003: ONLY over a whole table without LIMIT 1.
 SELECT title FROM ONLY article;
 
+-- 4003: ONLY over an inline subquery with no LIMIT 1/ONLY of its own — the
+-- same "no static single-row proof" contract as the whole-table case above.
+SELECT * FROM ONLY (SELECT * FROM article);
+
 -- 4004: INSERT tuple with mismatched column and value counts.
 INSERT INTO ticket (subject, reporter) VALUES ('one value');
 

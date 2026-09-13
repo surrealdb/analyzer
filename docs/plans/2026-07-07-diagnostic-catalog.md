@@ -153,7 +153,7 @@ contract violation.
 
 | Code | Finding | Example | Sev | Status |
 |---|---|---|---|---|
-| 4003 | ONLY on a table-wide target without LIMIT 1 | `SELECT * FROM ONLY person`, `UPDATE ONLY person` — deterministic runtime error (`SingleOnlyOutput`); CREATE is exempt (always one row) | E | ✅ |
+| 4003 | ONLY on a table-wide target without LIMIT 1 | `SELECT * FROM ONLY person`, `UPDATE ONLY person` — deterministic runtime error (`SingleOnlyOutput`); CREATE is exempt (always one row). Also `SELECT * FROM ONLY (SELECT * FROM user)` — an inline subquery target with no `LIMIT 1`/`ONLY` of its own is the same "no static single-row proof" contract, silent whenever the inner query proves it (an inner `ONLY`, or `LIMIT` of at most 1) | E | ✅ |
 | 4004 | INSERT tuple column/value count mismatch | `(a, b) VALUES (1)` | E | ✅ lowering counts |
 | 4005 | BREAK/CONTINUE outside a loop | top-level `BREAK` | E | ✅ loop depth on ctx |
 | 4006 | unreachable statements after RETURN/BREAK/THROW | `RETURN 1; SELECT ...` in a block | W | ✅ |

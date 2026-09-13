@@ -146,6 +146,15 @@ message quotes the engine text it predicts.
   scan, run once after the per-source walk, catches the pairing that neither
   side can, and reports it at the `DEFINE TABLE`.
 
+- **4003 follows ONLY into an inline subquery target.** `SELECT * FROM ONLY
+  (SELECT * FROM user)` fails on 3.2.3 with "Expected a single result output
+  when using the ONLY keyword" whenever the subquery matches more than one
+  row — the identical contract 4003 already enforces for a bare whole-table
+  `FROM ONLY`, extended rather than given a new code, since the two share the
+  same shape: no static proof of singularity was supplied at all (not a
+  near-miss filter, which stays 4026's territory). Silent whenever the inner
+  query proves it itself (an inner `ONLY`, or a literal `LIMIT` of at most 1).
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the
