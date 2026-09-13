@@ -101,18 +101,23 @@ pub fn tokens(parsed: &ParsedSource) -> Vec<Token> {
 
 /// Walks the tree, emitting the outermost node that *is* a token. Descending
 /// past one would emit overlapping tokens, which every consumer forbids.
+///
+/// The walk keeps its own stack: CST depth is unbounded user input, and the
+/// LSP runs this on every keystroke.
 fn collect(node: Node<'_>, tokens: &mut Vec<Token>) {
-    if let Some(kind) = token_kind(node) {
-        tokens.push(Token {
-            range: node.byte_range(),
-            kind,
-        });
-        return;
-    }
-    let mut cursor = node.walk();
-    let children: Vec<_> = node.children(&mut cursor).collect();
-    for child in children {
-        collect(child, tokens);
+    let mut stack = vec![node];
+    while let Some(node) = stack.pop() {
+        if let Some(kind) = token_kind(node) {
+            tokens.push(Token {
+                range: node.byte_range(),
+                kind,
+            });
+            continue;
+        }
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        // Last-first, so children pop in source order and tokens stay sorted.
+        stack.extend(children.into_iter().rev());
     }
 }
 

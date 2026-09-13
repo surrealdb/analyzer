@@ -399,12 +399,13 @@ fn unclosed_angle_quoted_record_id_is_an_error_after_the_table() {
     let text = "SELECT * FROM person:⟨abc";
     let (parsed, statements) = front_end(text);
 
-    // `⟨` is three bytes; every diagnostic must still land on a boundary,
-    // and the outermost one starts at the colon.
+    // `⟨` is three bytes; every diagnostic must still land on a boundary.
+    // One parse failure is one finding, and it is the innermost ERROR — the
+    // unclosed quote itself — rather than the `:⟨abc` region around it.
     let errors = error_diagnostics(&parsed);
-    assert!(!errors.is_empty(), "{:#?}", parsed.syntax_diagnostics());
+    assert_eq!(errors.len(), 1, "{:#?}", parsed.syntax_diagnostics());
     let (colon, _) = at(text, ":");
-    assert_eq!(diagnostic_span(errors[0]), (colon, text.len() as u32));
+    assert_eq!(diagnostic_span(errors[0]), at(text, "⟨abc"));
     for diagnostic in &errors {
         let (start, end) = diagnostic_span(diagnostic);
         assert!(text.is_char_boundary(start as usize) && text.is_char_boundary(end as usize));
