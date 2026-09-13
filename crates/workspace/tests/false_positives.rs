@@ -203,6 +203,26 @@ const CASES: &[Case] = &[
         accepted: "SELECT *, <~comment AS cs FROM post;",
         rejected: "SELECT ->comment AS cs FROM post;",
     },
+    // ---- a READONLY field's identity write is never a changed value --------
+    Case {
+        code: 2025,
+        engine: "`UPDATE user:1 SET created = created;` round-trips on 3.2.3; \
+                 `SET created = time::now();` answers \"Found changed value \
+                 for field `created` … but field is readonly\"",
+        schema: "DEFINE TABLE user SCHEMALESS;\n\
+                 DEFINE FIELD created ON user TYPE datetime DEFAULT time::now() READONLY;\n",
+        accepted: "UPDATE user:1 SET created = created;",
+        rejected: "UPDATE user:1 SET created = time::now();",
+    },
+    // ---- `session::db` ignores extra arguments ------------------------------
+    Case {
+        code: 5002,
+        engine: "`RETURN session::db(1);` and `RETURN session::db(1, 2, 3);` \
+                 both answer `'t'`, same as the bare call",
+        schema: "DEFINE TABLE t SCHEMAFULL;\n",
+        accepted: "RETURN session::db(1, 2, 3);",
+        rejected: "RETURN session::ns(1);",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
