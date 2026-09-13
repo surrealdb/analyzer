@@ -88,6 +88,24 @@ message quotes the engine text it predicts.
     `type::table(true)` are now 5002; a plain-string signature would have
     made the record form a false positive.
 
+- **1033 covers three more ways a DEFINE FIELD/INDEX clause is one the
+  engine refuses**, all verified on 3.2.3:
+  - `COMPUTED` excludes `DEFAULT`/`VALUE`/`READONLY`/`ASSERT` — a `COMPUTED`
+    field is never stored, so a clause that would also decide its value or
+    govern its writes has nothing to act on ("Cannot use the `VALUE`
+    keyword with `COMPUTED`", and likewise for the other three).
+  - Redefining `in`/`out` on a `TYPE RELATION` table without
+    `OVERWRITE`/`IF NOT EXISTS` is reported as 1022, not silence: they are
+    already fields of the table, implicitly, from the relation clause
+    itself ("The field 'in' already exists"), which the ordinary duplicate
+    check cannot see on its own since `in`/`out` are resolved through the
+    relation's tables, never stored in the field map.
+  - An index cannot cover a `COMPUTED` field ("Computed fields cannot be
+    indexed. Index: 'idouble' - Field: 'double'") — a plain `VALUE` field IS
+    stored and indexes fine, so the check reads a new, narrower
+    `computed_clause` flag rather than the existing `computed` one (which
+    2026 also sets for a `VALUE` that ignores `$value`/`$input`).
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

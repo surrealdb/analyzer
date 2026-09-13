@@ -267,6 +267,14 @@
     44  E5001
     46  E5001
 
+== invalid/75_computed_field_clauses.surql ==
+     6  E1033
+     8  E1033
+    10  E1033
+    12  E1033
+    20  E1022
+    27  E1033
+
 == invalid/80_live_select.surql ==
      9  E4009
     13  E4009

@@ -210,6 +210,14 @@ pub struct FieldDef {
     /// string::slug($value)`): that clause transforms the written value, so
     /// the field is hand-written by design.
     pub computed: bool,
+    /// `COMPUTED <expr>` specifically — narrower than [`FieldDef::computed`],
+    /// which a plain `VALUE` clause also sets. A `COMPUTED` field is never
+    /// stored at all, which is the reason 1033 rejects an index over one
+    /// ("Computed fields cannot be indexed"); a `VALUE`-derived field IS
+    /// stored (verified on 3.2.3: `DEFINE INDEX` over a `VALUE time::now()`
+    /// field succeeds), so that broader flag would have flagged a legal
+    /// index as a false positive.
+    pub computed_clause: bool,
     /// `REFERENCE` — the field's `record<...>` link is a reference, so a
     /// `<~` back-traversal on the target table can resolve through it.
     pub reference: bool,
@@ -1091,6 +1099,7 @@ pub(crate) fn field_def_from_ast(
                 .value
                 .as_ref()
                 .is_some_and(|value| !expr_reads_written_value(value)),
+        computed_clause: def.computed.is_some(),
         reference: def.reference,
         path: idiom_field_path(&def.path.node),
         steps: idiom_field_steps(&def.path.node),

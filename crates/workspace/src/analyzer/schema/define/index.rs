@@ -101,6 +101,8 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         ctx.emit(finding);
     }
 
+    check_indexed_fields_are_not_computed(ctx, stmt, table, &refs);
+
     // A full-text index tokenizes with a named analyzer. The engine accepts
     // `FULLTEXT ANALYZER ghost` at definition time (verified on 3.2.3: the
     // DEFINE returns NONE) and fails only when the index is first searched,
@@ -145,6 +147,42 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     }
 
     Kind::None
+}
+
+/// 1033 — a `COMPUTED` field is never stored, so an index over one has
+/// nothing to index: verified on 3.2.3, "Computed fields cannot be indexed.
+/// Index: 'idouble' - Field: 'double'". A plain `VALUE` field IS stored and
+/// indexes fine, so this checks the narrow `computed_clause` flag, not the
+/// broader `computed` one 2026 uses.
+fn check_indexed_fields_are_not_computed(
+    ctx: &mut AnalysisContext<'_>,
+    stmt: &ast::DefineIndex,
+    table: &crate::schema::TableDef,
+    refs: &[(Vec<String>, String, SourceSpan)],
+) {
+    for (path, text, span) in refs {
+        let field_key = path.join(".");
+        if table
+            .fields
+            .get(&field_key)
+            .is_some_and(|field| field.computed_clause)
+        {
+            ctx.emit(
+                surrealql_analyzer_diagnostics::catalog::finding(
+                    span.clone(),
+                    1033,
+                    format!(
+                        "index `{}` cannot cover `{text}` — COMPUTED fields are never stored",
+                        stmt.name.node
+                    ),
+                )
+                .with_help(format!(
+                    "SurrealDB fails this definition: \"Computed fields cannot be indexed. Index: '{}' - Field: '{text}'\"",
+                    stmt.name.node
+                )),
+            );
+        }
+    }
 }
 
 /// The `REBUILD`/`REMOVE INDEX` reference contract (1012): the named index
@@ -208,6 +246,31 @@ mod tests {
             !codes(&defined).contains(&"E1012".to_string()),
             "{:?}",
             codes(&defined)
+        );
+    }
+
+    #[test]
+    fn indexing_a_computed_field_is_1033() {
+        let query = "DEFINE TABLE t SCHEMAFULL; \
+             DEFINE FIELD double ON t TYPE int COMPUTED 1 + 1; \
+             DEFINE INDEX idouble ON t FIELDS double;";
+        assert!(
+            codes(query).contains(&"E1033".to_string()),
+            "{:?}",
+            codes(query)
+        );
+    }
+
+    #[test]
+    fn indexing_a_plain_value_field_stays_silent() {
+        // A `VALUE` field is stored — unlike `COMPUTED` — so it indexes fine.
+        let query = "DEFINE TABLE t SCHEMAFULL; \
+             DEFINE FIELD stamp ON t TYPE datetime VALUE time::now(); \
+             DEFINE INDEX istamp ON t FIELDS stamp;";
+        assert!(
+            !codes(query).contains(&"E1033".to_string()),
+            "{:?}",
+            codes(query)
         );
     }
 }
