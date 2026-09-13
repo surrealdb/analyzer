@@ -45,7 +45,7 @@ const ENTRIES: &[(u16, &str, Severity, LintLevel)] = &[
     (1027, "an index-backed operator has its supporting index", Severity::Error, Deny),
     (1029, "each index covers a distinct field set", Severity::Warning, Warn),
     (1032, "DEFINE ANALYZER components name known tokenizers/filters/languages", Severity::Error, Deny),
-    (1033, "a DEFINE FIELD clause is one the field it targets accepts (`id` rejects VALUE/READONLY/COMPUTED/DEFAULT ALWAYS; REFERENCE needs a record type)", Severity::Error, Deny),
+    (1033, "a DEFINE FIELD/DEFINE INDEX clause is one its statement accepts (`id` rejects VALUE/READONLY/COMPUTED/DEFAULT ALWAYS; REFERENCE needs a record type; a COUNT index takes no FIELDS)", Severity::Error, Deny),
     (2001, "a value written to a field inhabits the field's declared type", Severity::Error, Deny),
     (2004, "the operands make sense together for the operator", Severity::Error, Deny),
     (2005, "a condition position expects a boolean", Severity::Warning, Warn),

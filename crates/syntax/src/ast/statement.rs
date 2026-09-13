@@ -616,6 +616,27 @@ pub struct LiveSelectStmt {
     pub where_clause: Option<Spanned<Expr>>,
     /// `FETCH <fields>` — record links to expand in the notification.
     pub fetch: Vec<Spanned<Idiom>>,
+    /// `FROM ONLY` — a subscription reduced to a single row, which is not a
+    /// thing a subscription is.
+    pub only: bool,
+    /// `OMIT <fields>`.
+    pub omit: Vec<Spanned<Idiom>>,
+    /// `SPLIT <fields>`.
+    pub split: Vec<Spanned<Idiom>>,
+    /// `GROUP BY <keys>` / `GROUP ALL`.
+    pub group: Option<GroupClause>,
+    /// `ORDER BY <keys>`.
+    pub order: Option<OrderClause>,
+    /// `LIMIT <expr>`.
+    pub limit: Option<Spanned<Expr>>,
+    /// `START <expr>`.
+    pub start: Option<Spanned<Expr>>,
+    /// `TIMEOUT <expr>`.
+    pub timeout: Option<Spanned<Expr>>,
+    /// `PARALLEL` — the span of the keyword.
+    pub parallel: Option<ByteRange>,
+    /// `EXPLAIN` — the span of the clause.
+    pub explain: Option<ByteRange>,
 }
 
 impl LiveSelectStmt {
@@ -624,6 +645,33 @@ impl LiveSelectStmt {
         match self.from.first().map(|source| &source.node) {
             Some(Expr::Table(name)) => Some(name),
             _ => None,
+        }
+    }
+
+    /// The `SELECT` this subscription is, clause for clause.
+    ///
+    /// Every position a `LIVE SELECT` has, a `SELECT` has, and both ends of
+    /// the live contract — the statement itself, and the `SELECT` string a
+    /// host's `defineLive` turns into one — have to be checked by the same
+    /// code or they drift. This is the one conversion between them, so the
+    /// answer to "what does a live query refuse" is written down once.
+    pub fn as_select(&self) -> SelectStmt {
+        SelectStmt {
+            only: self.only,
+            value: self.value,
+            projections: self.projections.clone(),
+            from: self.from.clone(),
+            omit: self.omit.clone(),
+            fetch: self.fetch.clone(),
+            split: self.split.clone(),
+            where_clause: self.where_clause.clone(),
+            group: self.group.clone(),
+            order: self.order.clone(),
+            limit: self.limit.clone(),
+            start: self.start.clone(),
+            explain: self.explain,
+            timeout: self.timeout.clone(),
+            parallel: self.parallel,
         }
     }
 }

@@ -309,6 +309,16 @@ fn lower_live_select(node: Node<'_>, text: &str) -> LiveSelectStmt {
         from: Vec::new(),
         where_clause: None,
         fetch: Vec::new(),
+        only: false,
+        omit: Vec::new(),
+        split: Vec::new(),
+        group: None,
+        order: None,
+        limit: None,
+        start: None,
+        timeout: None,
+        parallel: None,
+        explain: None,
     };
     let mut saw_from = false;
 
@@ -323,6 +333,8 @@ fn lower_live_select(node: Node<'_>, text: &str) -> LiveSelectStmt {
                     saw_from = true;
                 } else if keyword.eq_ignore_ascii_case("value") {
                     stmt.value = true;
+                } else if saw_from && keyword.eq_ignore_ascii_case("only") {
+                    stmt.only = true;
                 }
             }
             // The grammar aliases the `DIFF` keyword to `Literal`, and only
@@ -338,6 +350,31 @@ fn lower_live_select(node: Node<'_>, text: &str) -> LiveSelectStmt {
             "Predicate" if !saw_from => stmt.projections.push(lower_projection(child, text)),
             "WhereClause" => stmt.where_clause = clause_expr(child, text),
             "FetchClause" => stmt.fetch = clause_idioms(child, text),
+            // The clauses 3.2.3 refuses while parsing. They are kept, not
+            // dropped, because 4009 is what names each of them — see the
+            // grammar's `LiveSelectStatement`.
+            "OmitClause" => stmt.omit = clause_idioms(child, text),
+            "SplitClause" => stmt.split = clause_idioms(child, text),
+            "GroupClause" => {
+                let keys = clause_idioms(child, text);
+                stmt.group = Some(GroupClause {
+                    all: keys.is_empty(),
+                    keys,
+                });
+            }
+            "OrderClause" => stmt.order = Some(lower_order(child, text)),
+            "LimitStartComboClause" => {
+                for clause in named_children(child) {
+                    match clause.kind() {
+                        "LimitClause" => stmt.limit = clause_expr(clause, text),
+                        "StartClause" => stmt.start = clause_expr(clause, text),
+                        _ => {}
+                    }
+                }
+            }
+            "TimeoutClause" => stmt.timeout = clause_expr(child, text),
+            "ParallelClause" => stmt.parallel = Some(node_range(child)),
+            "ExplainClause" => stmt.explain = Some(node_range(child)),
             _ if saw_from && is_source_node(child) => {
                 stmt.from.push(lower_source(child, text));
             }

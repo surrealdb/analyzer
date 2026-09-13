@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+### Fixed — grammar parity with the engine
+
+Eight more places checked against a live SurrealDB 3.2.3, continuing the
+RATELIMIT/PARALLEL/INSERT-order work: three the grammar accepted and the
+engine does not, one the grammar refused where the engine (mostly) does not,
+and this section's namesake — `THROW`, a bracketed `SET` target, `PATCH`,
+and `LIMIT`/`START`/`TIMEOUT` as expressions were the other four, already on
+this branch.
+
+- **`LIVE SELECT` takes every clause `SELECT` does, and 4009 owns the
+  contract.** The grammar previously admitted only `WHERE`/`FETCH` after a
+  live query's `FROM`; 3.2.3 refuses `ORDER BY`, `GROUP`, `LIMIT`, `START`,
+  `SPLIT`, `OMIT`, `TIMEOUT`, `PARALLEL`, `EXPLAIN` and `FROM ONLY` while
+  *parsing* — one token error per clause, verified live — and a second
+  `FROM` table stops at the comma. All of them parse now, and `LiveSelectStmt`
+  converts to the same `SelectStmt` shape the `defineLive`-string path
+  already checked, so one function judges both spellings and E4009 fires on
+  a real `LIVE SELECT`, not only a string.
+- **Prefix `NOT` never existed.** 3.2.3 has no `NOT` prefix operator at
+  all — only the `not(...)` builtin, itself a function call — so `RETURN
+  NOT true;` is a parse error live. The grammar's `PrefixExpression` listed
+  `NOT` as a general operator beside `!`/`-`/`+`; it is gone, and `NOT
+  (true)`/`not(true)` still parse as the call they always were.
+- **A bare `$x = 1;` is 1.x/2.x syntax, and E8002 names its removal.**
+  3.2.3: `` Parameter declarations without `let` are deprecated. `` — a hard
+  parse error. The grammar still parses the shape (it is an ordinary
+  equality expression syntactically); E8002 fires when that expression *is*
+  the whole statement and the target is 3.0+, leaving `RETURN $x = 1;` and
+  `WHERE $x = 1` — genuine comparisons — untouched.
+- **A record range (`tb:id..tb:id`) never parses, in `FOR` or anywhere
+  else.** `FOR $x IN user:1..user:9 { … }` is a parse error live, and so is
+  the same shape in `RETURN`/`SELECT FROM`/`LET` — not a `FOR`-specific
+  rule. A record id's own embedded range (`user:1..9`) is unaffected
+  everywhere, including as a `FOR` target (where it still fails only at run
+  time, as an unmodeled 2022 case).
+- **`FLEXIBLE` only ever follows `TYPE`.** `FLEXIBLE TYPE object` — the
+  clause order the published docs show — is a parse error on 3.2.3; only
+  `TYPE object FLEXIBLE` runs. The grammar now takes only that order.
+- **Every `fn::` parameter needs an explicit type.** `DEFINE FUNCTION
+  fn::greet($name) { … }` is a parse error live; a closure's parameter
+  stays untyped.
+- **A `COUNT` index takes no `FIELDS`, and E1033 names the mistake.**
+  `DEFINE INDEX i ON t FIELDS a COUNT` is `Cannot create a count index with
+  fields` on 3.2.3 — a statement-level engine check, not a context-free
+  grammar rule, so the grammar still parses it.
+- **`geometry<...>` is closed to its seven kind names** (`point`, `line`,
+  `polygon`, `multipoint`, `multiline`, `multipolygon`, `collection`, and
+  pipe-separated unions of them) — `geometry<pointt>` is a parse error live.
+
+Measured, not guessed: a wholesale swap to the separately-developed
+standalone `tree-sitter-surrealql` grammar was tried in a scratch build this
+round and broke 31% of the then-current valid conformance corpus (KILL, NOT,
+optional chaining, PARALLEL, THROW/IF-as-expression, DEFINE ACCESS/USER and
+more), so it is not adopted; see `docs/grammar-conformance.md` for the full
+comparison and rule-by-rule cost.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

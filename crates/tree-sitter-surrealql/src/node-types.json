@@ -5928,7 +5928,15 @@
           "named": true
         },
         {
+          "type": "ExplainClause",
+          "named": true
+        },
+        {
           "type": "FetchClause",
+          "named": true
+        },
+        {
+          "type": "GroupClause",
           "named": true
         },
         {
@@ -5940,7 +5948,23 @@
           "named": true
         },
         {
+          "type": "LimitStartComboClause",
+          "named": true
+        },
+        {
           "type": "Literal",
+          "named": true
+        },
+        {
+          "type": "OmitClause",
+          "named": true
+        },
+        {
+          "type": "OrderClause",
+          "named": true
+        },
+        {
+          "type": "ParallelClause",
           "named": true
         },
         {
@@ -5949,6 +5973,14 @@
         },
         {
           "type": "RecordId",
+          "named": true
+        },
+        {
+          "type": "SplitClause",
+          "named": true
+        },
+        {
+          "type": "TimeoutClause",
           "named": true
         },
         {

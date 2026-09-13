@@ -379,6 +379,45 @@ fn parallel_on_every_statement_that_took_it_is_8002() {
     }
 }
 
+/// `$x = 1;` with no `LET` — 1.x/2.x read this as declaring the parameter;
+/// 3.2.3 makes it a hard parse error: ``Parameter declarations without `let`
+/// are deprecated. Replace with `let $x = ...` to keep the previous
+/// behavior.`` The grammar still parses it as a bare equality expression (so
+/// the file does not collapse into a token error), and 8002 names the
+/// removal on a 3.x target.
+#[test]
+fn a_bare_param_assignment_without_let_is_8002() {
+    for query in ["$x = 1;", "LET $x = 1; $x = 2; RETURN $x;"] {
+        let on_three = findings(Some("3.0"), query);
+        assert!(
+            on_three.iter().any(|(code, _)| *code == 8002),
+            "{query} should be 8002 on 3.0: {on_three:?}"
+        );
+        let message = message_of(Some("3.0"), query, 8002);
+        assert!(message.contains("parameter assignment"), "{message}");
+        assert!(message.contains("removed in SurrealDB 3.0"), "{message}");
+        // 2.x still had the old form — silent there.
+        assert!(
+            !codes(Some("2.3"), query).contains(&8002),
+            "{query} on 2.3: {:?}",
+            findings(Some("2.3"), query)
+        );
+    }
+    // The equality is genuinely ordinary once it is not the whole statement:
+    // nested under RETURN or WHERE, this is a comparison on every version.
+    for query in [
+        "RETURN $x = 1;",
+        "LET $x = 1; RETURN $x = 1;",
+        "SELECT * FROM person WHERE $x = 1;",
+    ] {
+        assert!(
+            !codes(Some("3.0"), query).contains(&8002),
+            "{query} on 3.0: {:?}",
+            findings(Some("3.0"), query)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 4012 — OMIT without a wildcard projection
 // ---------------------------------------------------------------------------

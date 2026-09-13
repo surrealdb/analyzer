@@ -932,8 +932,12 @@ pub fn walk_for<V: Visitor>(visitor: &mut V, for_stmt: &ForStmt) {
     visitor.visit_block(body);
 }
 
-/// Visits a LIVE SELECT: its sources, then projections, `WHERE` and `FETCH`
-/// in the row scope of the single source table.
+/// Visits a LIVE SELECT: its sources, then every clause in the row scope of
+/// the single source table, exactly as [`walk_select`] does — including the
+/// clauses the engine refuses (`ORDER BY`, `GROUP`, `LIMIT`, `START`,
+/// `SPLIT`, `OMIT`, `TIMEOUT`), which the grammar parses so 4009 can name
+/// them and which therefore carry spans that have to be walked like any
+/// other.
 pub fn walk_live_select<V: Visitor>(visitor: &mut V, live: &LiveSelectStmt) {
     let LiveSelectStmt {
         diff: _,
@@ -942,6 +946,16 @@ pub fn walk_live_select<V: Visitor>(visitor: &mut V, live: &LiveSelectStmt) {
         from,
         where_clause,
         fetch,
+        only: _,
+        omit,
+        split,
+        group,
+        order,
+        limit,
+        start,
+        timeout,
+        parallel: _,
+        explain: _,
     } = live;
     for source in from {
         visitor.visit_expr(source);
@@ -950,13 +964,28 @@ pub fn walk_live_select<V: Visitor>(visitor: &mut V, live: &LiveSelectStmt) {
         for projection in projections {
             visitor.visit_projection(projection);
         }
+        for idiom in omit {
+            visitor.visit_idiom(&idiom.node);
+        }
         if let Some(where_clause) = where_clause {
             visitor.visit_expr(where_clause);
+        }
+        for idiom in split {
+            visitor.visit_idiom(&idiom.node);
+        }
+        if let Some(group) = group {
+            visitor.visit_group_clause(group);
+        }
+        if let Some(order) = order {
+            visitor.visit_order_clause(order);
         }
         for idiom in fetch {
             visitor.visit_idiom(&idiom.node);
         }
     });
+    for extra in [limit, start, timeout].into_iter().flatten() {
+        visitor.visit_expr(extra);
+    }
 }
 
 /// Visits a KILL's live-query id.

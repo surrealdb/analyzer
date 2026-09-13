@@ -612,6 +612,37 @@ impl SyntaxVersions<'_, '_> {
         );
     }
 
+    /// `$x = 1;` with no `LET` — a whole statement that is nothing but a
+    /// bare `<param> = <value>`. SurrealQL 1.x/2.x read this as declaring or
+    /// reassigning the parameter; 3.0 made it a hard parse error. Verified
+    /// live on 3.2.3: `` Parameter declarations without `let` are
+    /// deprecated. Replace with `let $x = ...` to keep the previous
+    /// behavior. ``, pointing at the whole statement, and it kills the rest
+    /// of the query the same way any parse error does (`LET $x = 1; $x = 2;
+    /// RETURN $x;` fails at the second statement, not just a warning on it).
+    ///
+    /// This only fires when the equality *is* the statement — `RETURN $x =
+    /// 1;` and `WHERE $x = 1` reach here as an expression nested under a
+    /// different statement, not as `Statement::Expr` itself, so both stay
+    /// silent, as they must: both are ordinary comparisons on every version.
+    fn bare_param_assignment(&mut self, stmt_span: ByteRange, expr: &ast::Spanned<ast::Expr>) {
+        let ast::Expr::Binary { lhs, op, .. } = &expr.node else {
+            return;
+        };
+        if op.node != ast::BinaryOp::Eq {
+            return;
+        }
+        if !matches!(&lhs.node, ast::Expr::Param(_)) {
+            return;
+        }
+        self.removed(
+            stmt_span,
+            "a parameter assignment without `let`",
+            Version::new(3, 0, 0),
+            "write `let $x = ...` instead — SurrealDB 3.0 turned the old form into a hard parse error",
+        );
+    }
+
     /// An unmodeled `DEFINE <kind>`: the kind is the second word.
     fn define_other(&mut self, partial: &ast::PartialNode) {
         let Some(keyword_span) = self.word_span(partial.span, 1) else {
@@ -749,6 +780,7 @@ impl Visitor for SyntaxVersions<'_, '_> {
             ast::Statement::Define(ast::DefineStmt::Index(index)) => {
                 self.define_index(statement.span, index);
             }
+            ast::Statement::Expr(expr) => self.bare_param_assignment(statement.span, expr),
             _ => {}
         }
         visit::walk_statement(self, statement);

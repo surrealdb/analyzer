@@ -6155,7 +6155,7 @@ mod tests {
         let schema = schema_from(
             "DEFINE TABLE team SCHEMAFULL;\n\
              DEFINE FIELD name ON team TYPE string;\n\
-             DEFINE FIELD settings ON team FLEXIBLE TYPE object;",
+             DEFINE FIELD settings ON team TYPE object FLEXIBLE;",
         );
 
         let (_, diagnostics) = analyze_diagnostics(

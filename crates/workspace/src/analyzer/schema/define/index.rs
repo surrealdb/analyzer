@@ -14,6 +14,8 @@ use surrealql_analyzer_syntax::span::{ByteRange, SourceSpan};
 use crate::analyzer::context::AnalysisContext;
 
 pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineIndex) -> Kind {
+    check_count_index_fields(ctx, stmt);
+
     let refs = crate::schema::index_field_refs(stmt, ctx.source());
     let source = ctx.source().clone();
 
@@ -143,6 +145,38 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     Kind::None
 }
 
+/// 1033 — a `COUNT` index takes no `FIELDS`. Verified on 3.2.3: `DEFINE
+/// INDEX icnt ON user FIELDS name COUNT` fails with "Cannot create a count
+/// index with fields", while a bare `DEFINE INDEX icnt ON user COUNT`
+/// defines fine. The grammar takes the combination — `CountClause` and
+/// `FieldsColumnsClause` are independent repeated clauses, and the engine's
+/// own restriction is a statement-level check on its parser, not a
+/// context-free grammar rule — so this is what names the mistake instead of
+/// the file collapsing into "Cannot create a count index with fields" with
+/// no span, or (worse) analysis silently treating it as a normal index.
+fn check_count_index_fields(ctx: &mut AnalysisContext<'_>, stmt: &ast::DefineIndex) {
+    if stmt.kind != ast::IndexKind::Count {
+        return;
+    }
+    let (Some(first), Some(last)) = (stmt.fields.first(), stmt.fields.last()) else {
+        return;
+    };
+    let span = ByteRange::new(first.span.start(), last.span.end()).unwrap_or(first.span);
+    ctx.emit(
+        surrealql_analyzer_diagnostics::catalog::finding(
+            SourceSpan::new(ctx.source().clone(), span),
+            1033,
+            format!(
+                "index `{}` is COUNT and also names FIELDS — a count index takes no fields",
+                stmt.name.node
+            ),
+        )
+        .with_help(
+            "SurrealDB fails this definition: \"Cannot create a count index with fields\" — drop FIELDS for an unconditional count, or drop COUNT for a normal index over these fields",
+        ),
+    );
+}
+
 /// The `REBUILD`/`REMOVE INDEX` reference contract (1012): the named index
 /// must exist on the named table.
 pub(crate) fn check_index_target(
@@ -205,5 +239,29 @@ mod tests {
             "{:?}",
             codes(&defined)
         );
+    }
+
+    #[test]
+    fn a_count_index_naming_fields_is_1033() {
+        let base = "DEFINE TABLE user SCHEMAFULL; DEFINE FIELD name ON user TYPE string;";
+        let query = format!("{base} DEFINE INDEX icnt ON user FIELDS name COUNT;");
+        assert!(
+            codes(&query).contains(&"E1033".to_string()),
+            "{:?}",
+            codes(&query)
+        );
+        // Silent without FIELDS — an unconditional or `WHERE`-guarded count
+        // index is exactly what COUNT is for.
+        for ok in [
+            format!("{base} DEFINE INDEX icnt ON user COUNT;"),
+            format!("{base} DEFINE INDEX icnt ON user COUNT WHERE name != '';"),
+            format!("{base} DEFINE INDEX ifields ON user FIELDS name;"),
+        ] {
+            assert!(
+                !codes(&ok).contains(&"E1033".to_string()),
+                "{ok}: {:?}",
+                codes(&ok)
+            );
+        }
     }
 }

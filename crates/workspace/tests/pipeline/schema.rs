@@ -336,7 +336,7 @@ fn a_subfield_under_an_object_shaped_or_undeclared_parent_never_fires_1025() {
          DEFINE FIELD undeclared.name ON t TYPE string;\n\
          DEFINE FIELD open ON t TYPE object;\n\
          DEFINE FIELD open.name ON t TYPE string;\n\
-         DEFINE FIELD flex ON t FLEXIBLE TYPE object;\n\
+         DEFINE FIELD flex ON t TYPE object FLEXIBLE;\n\
          DEFINE FIELD flex.name ON t TYPE string;\n\
          DEFINE FIELD maybe ON t TYPE option<object>;\n\
          DEFINE FIELD maybe.name ON t TYPE string;\n\
@@ -842,10 +842,17 @@ fn analyze_workspace_resolves_structured_field_types() {
 
 #[test]
 fn analyze_workspace_marks_unsupported_field_type_syntax_as_partial_analysis() {
+    // `geometry<...>` no longer works for this: the grammar now closes the
+    // kind to the seven names 3.2.3 accepts (`geometry<blob>` is a parse
+    // error live — see the grammar-parity work), so every geometry that
+    // still parses is one `geometry_kind` fully models. A parameterized
+    // type name the grammar happily takes generically (it validates no type
+    // name but this one) and `kind_from_type_expr` does not recognize is
+    // what still exercises the fallback.
     let mut workspace = Workspace::default();
     workspace.add_virtual_source(
         "schema".into(),
-        "DEFINE TABLE person;\nDEFINE FIELD shape ON person TYPE geometry<blob>;".into(),
+        "DEFINE TABLE person;\nDEFINE FIELD shape ON person TYPE unknownkind<blob>;".into(),
     );
 
     let output = analyze_workspace(&workspace);
@@ -854,7 +861,7 @@ fn analyze_workspace_marks_unsupported_field_type_syntax_as_partial_analysis() {
     assert!(field.kind.is_none());
     assert_eq!(
         field.partial,
-        vec![PartialReason::UnsupportedSyntax("geometry<...>".into())]
+        vec![PartialReason::UnsupportedSyntax("unknownkind<...>".into())]
     );
     let partial: Vec<_> = output
         .diagnostics

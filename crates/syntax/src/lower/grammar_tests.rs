@@ -65,13 +65,11 @@ fn modulo_and_power_have_their_own_operators() {
     assert!(matches!(lhs.node, Expr::Binary { op, .. } if op.node == BinaryOp::Pow));
 }
 
-// ---- 2. prefix `NOT`, `-`, `+` on non-literals ------------------------------
+// ---- 2. prefix `-`, `+` on non-literals; bare prefix `NOT` is a parse error -
 
 #[test]
 fn prefix_operators_apply_to_any_operand() {
     let cases = [
-        ("RETURN NOT true;", PrefixOp::Not),
-        ("RETURN not $x;", PrefixOp::Not),
         ("RETURN -$x;", PrefixOp::Neg),
         ("RETURN -(1 + 2);", PrefixOp::Neg),
         ("RETURN -a.b;", PrefixOp::Neg),
@@ -84,13 +82,6 @@ fn prefix_operators_apply_to_any_operand() {
         assert_eq!(op.node, expected, "`{query}`");
     }
 
-    // `NOT a AND b` is `(NOT a) AND b`, as the engine reads it.
-    let Expr::Binary { lhs, op, .. } = expr("RETURN NOT a AND b;", "BinaryExpression") else {
-        panic!("expected a binary expression");
-    };
-    assert_eq!(op.node, BinaryOp::And);
-    assert!(matches!(lhs.node, Expr::Prefix { .. }));
-
     // A sign directly on a literal is still the literal (`-5` is `Int(-5)`),
     // and a binary minus followed by a prefix minus is two operators.
     assert_eq!(
@@ -102,6 +93,66 @@ fn prefix_operators_apply_to_any_operand() {
     };
     assert_eq!(op.node, BinaryOp::Sub);
     assert!(matches!(rhs.node, Expr::Prefix { .. }));
+}
+
+/// 3.2.3 has no prefix `NOT` at all — only the `not(...)` builtin (see
+/// `not_and_sleep_are_callable_without_a_module` and
+/// `builtin_function_names_fold_to_lowercase_and_custom_ones_keep_their_case`
+/// for that side). `RETURN NOT true;` is `` Unexpected token `true`,
+/// expected Eof `` live, and `RETURN NOT a AND b;` fails the same way at
+/// `a` — there is no "prefix NOT over a bare operand" reading to lower.
+#[test]
+fn bare_prefix_not_is_a_parse_error() {
+    for query in [
+        "RETURN NOT true;",
+        "RETURN not $x;",
+        "RETURN NOT a AND b;",
+        "SELECT * FROM t WHERE NOT deleted;",
+    ] {
+        let parsed =
+            parse_source(SourceId::new("grammar:test"), query).expect("parser returns a tree");
+        assert!(parsed.has_error(), "`{query}` should be a parse error");
+    }
+}
+
+/// Four more places 3.2.3's grammar is stricter than this one used to be —
+/// each verified live, each a genuine parse error on the engine, matched
+/// here as one too rather than an invented semantic code:
+///
+/// - a *record range* (`tb:id..tb:id`, two full record ids) never parses,
+///   including in `FOR`'s iterable position — only a record id's own
+///   embedded range (`tb:id..id`) does;
+/// - every `fn::` parameter needs an explicit `: <kind>`;
+/// - `FLEXIBLE` only ever follows `TYPE <type>`, never precedes it;
+/// - `geometry<...>` is closed to its seven kind names.
+#[test]
+fn four_more_shapes_the_engine_never_parses() {
+    for query in [
+        "FOR $x IN user:1..user:9 { RETURN $x; };",
+        "FOR $x IN (user:1..user:9) { RETURN $x; };",
+        "DEFINE FUNCTION fn::greet($name) { RETURN $name; };",
+        "DEFINE FIELD f ON t FLEXIBLE TYPE object;",
+        "DEFINE FIELD f ON t TYPE geometry<pointt>;",
+    ] {
+        let parsed =
+            parse_source(SourceId::new("grammar:test"), query).expect("parser returns a tree");
+        assert!(parsed.has_error(), "`{query}` should be a parse error");
+    }
+
+    // The shapes each of the above must not collaterally break.
+    for query in [
+        "RETURN user:1..9;",
+        "RETURN 1..user:9;",
+        "FOR $i IN 0..10 { RETURN $i; };",
+        "DEFINE FUNCTION fn::greet($name: string) { RETURN $name; };",
+        "RETURN |$v| $v;",
+        "DEFINE FIELD f ON t TYPE object FLEXIBLE;",
+        "DEFINE FIELD f ON t TYPE geometry<point>;",
+    ] {
+        let parsed =
+            parse_source(SourceId::new("grammar:test"), query).expect("parser returns a tree");
+        assert!(!parsed.has_error(), "`{query}` should parse cleanly");
+    }
 }
 
 // ---- 3. numeric suffixes ---------------------------------------------------------
@@ -828,6 +879,16 @@ fn parameterized_cast_targets_lower_as_type_expressions() {
         value,
         Expr::Literal(crate::ast::Literal::Point(x, y)) if x == 1.0 && y == 2.0
     ));
+
+    // `geometry<...>` also takes a pipe-separated set of kinds — 3.2.3 runs
+    // `DEFINE FIELD loc ON t TYPE geometry<point | line | polygon>;` — which
+    // lowers as a `Union` argument, same as any other type union.
+    let (ty, _) = cast("RETURN <geometry<point | line>> (1.0, 2.0);");
+    let TypeExpr::Parameterized { name, args } = &ty else {
+        panic!("expected geometry<point | line>, got {ty:?}");
+    };
+    assert_eq!(name.node, "geometry");
+    assert!(matches!(&args[0].node, TypeExpr::Union(variants) if variants.len() == 2));
 
     let (ty, _) = cast("RETURN <array<string>> [1, 2];");
     assert!(
