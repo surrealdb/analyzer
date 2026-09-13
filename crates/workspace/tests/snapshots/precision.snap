@@ -1204,15 +1204,15 @@ table webhook_event  [schemafull]
   stmt     11:1 update           : array<{ address: { city: string, country: string, line1: string, line2: option<string> }, contacts: array<{ email: string, label: string, primary: bool }>, created_at: datetime, employees: array<record<employee_of>>, id: record<organization>, legal_name: string, logo: option<string>, name: string, owner: record<account>, parent: option<record<organization>>, sectors: array<record<sector>>, subsidiaries: array<record<organization>>, tier: 'free' | 'pro' | 'enterprise' }>
   stmt     13:1 update           : { address: { city: string, country: string, line1: string, line2: option<string> }, contacts: array<{ email: string, label: string, primary: bool }>, created_at: datetime, employees: array<record<employee_of>>, id: record<organization>, legal_name: string, logo: option<string>, name: string, owner: record<account>, parent: option<record<organization>>, sectors: array<record<sector>>, subsidiaries: array<record<organization>>, tier: 'free' | 'pro' | 'enterprise' }
   stmt     15:1 upsert           : array<{ data_region: 'us' | 'eu', id: record<organization_settings>, organization: record<organization>, retention_days: 30 | 90 | 365, security: { byok: { kms_provider: option<string>, mode: 'lazy' | 'immediate', progress: int, status: 'not_started' | 'running' | 'completed' | 'failed' } }, updated_at: datetime }>
-  stmt     17:1 delete           : array<{ headcount: int, id: record<organization_unit>, name: string, organization: record<organization>, parent: option<record<organization_unit>> }>
-  stmt     19:1 delete           : array<{ id: record<organization_role>, name: string, organization: record<organization>, permissions: array<record<organization_permission>> }>
-  stmt     21:1 relate           : array<{ id: record<employee_of>, in: record<account>, joined_at: datetime, out: record<organization>, role: record<organization_role>, status: 'invited' | 'active' | 'suspended', title: option<string>, unit: record<organization_unit> }>
-  stmt     23:1 insert           : array<{ id: record<sector>, name: string }>
-  stmt     25:1 insert           : array<{ id: record<sector>, name: string }>
-  stmt     27:1 update           : array<{ name: string, tier: 'free' | 'pro' | 'enterprise' }>
-  stmt     31:1 update           : array<{ address: { city: string, country: string, line1: string, line2: option<string> }, contacts: array<{ email: string, label: string, primary: bool }>, created_at: datetime, employees: array<record<employee_of>>, id: record<organization>, legal_name: string, logo: option<string>, name: string, owner: record<account>, parent: option<record<organization>>, plan: 'free' | 'pro' | 'enterprise', sectors: array<record<sector>>, subsidiaries: array<record<organization>>, tier: 'free' | 'pro' | 'enterprise' }>
-  diag     27:8 W7009     Warning
-  diag     31:8 W7009     Warning
+  stmt     18:1 delete           : array<{ headcount: int, id: record<organization_unit>, name: string, organization: record<organization>, parent: option<record<organization_unit>> }>
+  stmt     20:1 delete           : array<{ id: record<organization_role>, name: string, organization: record<organization>, permissions: array<record<organization_permission>> }>
+  stmt     22:1 relate           : array<{ id: record<employee_of>, in: record<account>, joined_at: datetime, out: record<organization>, role: record<organization_role>, status: 'invited' | 'active' | 'suspended', title: option<string>, unit: record<organization_unit> }>
+  stmt     24:1 insert           : array<{ id: record<sector>, name: string }>
+  stmt     26:1 insert           : array<{ id: record<sector>, name: string }>
+  stmt     28:1 update           : array<{ name: string, tier: 'free' | 'pro' | 'enterprise' }>
+  stmt     32:1 update           : array<{ address: { city: string, country: string, line1: string, line2: option<string> }, contacts: array<{ email: string, label: string, primary: bool }>, created_at: datetime, employees: array<record<employee_of>>, id: record<organization>, legal_name: string, logo: option<string>, name: string, owner: record<account>, parent: option<record<organization>>, plan: 'free' | 'pro' | 'enterprise', sectors: array<record<sector>>, subsidiaries: array<record<organization>>, tier: 'free' | 'pro' | 'enterprise' }>
+  diag     28:8 W7009     Warning
+  diag     32:8 W7009     Warning
 
 == source: queries/70_params.surql ==
   stmt      4:1 select           : array<{ name: string, tier: 'free' | 'pro' | 'enterprise' }>

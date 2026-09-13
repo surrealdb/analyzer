@@ -114,6 +114,21 @@ pub(crate) fn analyze_expression_positions_for(
                         _ => Position::MutationContent,
                     };
                     check_payload_object_keys(ctx, position, table, expr);
+                    // REPLACE provides the whole document, and DEFAULT is not
+                    // re-applied — so every non-optional field must be named,
+                    // DEFAULT or not (2034). A payload of unknown shape (an
+                    // unbound `$payload`) is not evidence a field is missing.
+                    if matches!(clause, ast::DataClause::Replace(_)) {
+                        if let Some(keys) = payload_field_names(ctx, expr) {
+                            check_required_fields_for(
+                                ctx,
+                                table,
+                                &keys,
+                                expr.span,
+                                RequiredFieldsMode::Replace,
+                            );
+                        }
+                    }
                 }
             }
             Some(ast::DataClause::Patch(expr)) => {
@@ -136,10 +151,44 @@ pub fn check_required_fields(
     provided: &[String],
     anchor: surrealql_analyzer_syntax::span::ByteRange,
 ) {
+    check_required_fields_for(ctx, table, provided, anchor, RequiredFieldsMode::Create);
+}
+
+/// Which write is being checked — the two differ in exactly one thing: a
+/// `DEFAULT` excuses an omitted field from a create, but a `REPLACE` never
+/// re-applies one, so the same field is required there too.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RequiredFieldsMode {
+    /// `CREATE`/`INSERT` (and a `SET`/`CONTENT`/`MERGE` write that creates):
+    /// a field with a `DEFAULT` is satisfied even when the payload omits it.
+    Create,
+    /// `REPLACE`: verified on 3.2.3, a field declared `TYPE bool DEFAULT
+    /// true` and omitted from a `REPLACE` payload fails with "Expected
+    /// `bool` but found `NONE`" — the DEFAULT is a create-time fallback for
+    /// a missing key, and `REPLACE` provides the whole document, so there is
+    /// no missing key for it to fill.
+    Replace,
+}
+
+/// [`check_required_fields`], parametrized over which write is being made —
+/// see [`RequiredFieldsMode`].
+pub(crate) fn check_required_fields_for(
+    ctx: &mut AnalysisContext<'_>,
+    table: &TableDef,
+    provided: &[String],
+    anchor: surrealql_analyzer_syntax::span::ByteRange,
+    mode: RequiredFieldsMode,
+) {
     for (path, field) in &table.fields {
         // Only top-level fields are directly required; nested paths are
-        // satisfied through their parent object.
-        if field.path.len() != 1 || path == "id" || field.has_default {
+        // satisfied through their parent object. A plain `DEFAULT` excuses a
+        // create but not a REPLACE; `VALUE`/`COMPUTED` excuse both, since
+        // either recomputes unconditionally regardless of the write.
+        let excused = match mode {
+            RequiredFieldsMode::Create => field.has_default,
+            RequiredFieldsMode::Replace => field.has_value_or_computed,
+        };
+        if field.path.len() != 1 || path == "id" || excused {
             continue;
         }
         let Some(kind) = &field.kind else {
@@ -156,17 +205,27 @@ pub fn check_required_fields(
             continue;
         }
         let span = surrealql_analyzer_syntax::span::SourceSpan::new(ctx.source().clone(), anchor);
-        ctx.emit(
-            surrealql_analyzer_diagnostics::catalog::finding(
-                span,
-                2034,
-                format!("`{path}` must be set when creating a `{}`", table.name),
-            )
-            .with_help(format!(
+        let verb = match mode {
+            RequiredFieldsMode::Create => "creating",
+            RequiredFieldsMode::Replace => "REPLACE-ing",
+        };
+        let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
+            span,
+            2034,
+            format!("`{path}` must be set when {verb} a `{}`", table.name),
+        );
+        finding = match mode {
+            RequiredFieldsMode::Create => finding.with_help(format!(
                 "`{path}` is `{}` with no `DEFAULT`, so every create must provide it",
                 crate::render_kind(kind)
-            ))
-            .with_related(field.name_span.clone(), format!("`{path}` is defined here")),
+            )),
+            RequiredFieldsMode::Replace => finding.with_help(format!(
+                "REPLACE does not re-apply DEFAULT — `{path}` is `{}`, so every REPLACE must provide it, DEFAULT or not",
+                crate::render_kind(kind)
+            )),
+        };
+        ctx.emit(
+            finding.with_related(field.name_span.clone(), format!("`{path}` is defined here")),
         );
     }
 }

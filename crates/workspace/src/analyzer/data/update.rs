@@ -50,6 +50,13 @@ mod tests {
     use crate::schema::extract_schema;
 
     fn analyze(schema: &SchemaIndex, query: &str) -> Kind {
+        analyze_with_diagnostics(schema, query).0
+    }
+
+    fn analyze_with_diagnostics(
+        schema: &SchemaIndex,
+        query: &str,
+    ) -> (Kind, Vec<surrealql_analyzer_diagnostics::Finding>) {
         let parsed = parse_source(SourceId::new("query"), query).expect("query should parse");
         let ast::Statement::Update(stmt) =
             surrealql_analyzer_syntax::lower::lower_first_statement(&parsed, "UpdateStatement")
@@ -60,15 +67,86 @@ mod tests {
         };
         let env = StatementEnv::default();
         let mut diagnostics: Vec<surrealql_analyzer_diagnostics::Finding> = Vec::new();
-        let mut ctx = AnalysisContext::scoped(
-            schema,
-            parsed.source_id().clone(),
-            parsed.text(),
-            &mut diagnostics,
-            env,
-            None,
+        let kind = {
+            let mut ctx = AnalysisContext::scoped(
+                schema,
+                parsed.source_id().clone(),
+                parsed.text(),
+                &mut diagnostics,
+                env,
+                None,
+            );
+            update_response_kind(&stmt, &mut ctx)
+        };
+        (kind, diagnostics)
+    }
+
+    fn person_schema() -> SchemaIndex {
+        let parsed = parse_source(
+            SourceId::new("schema"),
+            "DEFINE TABLE person SCHEMAFULL;\n\
+             DEFINE FIELD name ON person TYPE string;\n\
+             DEFINE FIELD active ON person TYPE bool DEFAULT true;",
+        )
+        .expect("schema should parse");
+        extract_schema(&[parsed]).schema
+    }
+
+    fn missing_fields(diagnostics: &[surrealql_analyzer_diagnostics::Finding]) -> usize {
+        diagnostics
+            .iter()
+            .filter(|finding| finding.code().number() == 2034)
+            .count()
+    }
+
+    #[test]
+    fn replace_omitting_a_defaulted_field_is_2034() {
+        // REPLACE never re-applies DEFAULT, so `active` (DEFAULT true) is
+        // still required here even though a CREATE could omit it.
+        let schema = person_schema();
+        let (_, diagnostics) =
+            analyze_with_diagnostics(&schema, "UPDATE person:1 REPLACE { name: 'A' };");
+        assert_eq!(missing_fields(&diagnostics), 1, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn replace_providing_every_field_stays_silent() {
+        let schema = person_schema();
+        let (_, diagnostics) = analyze_with_diagnostics(
+            &schema,
+            "UPDATE person:1 REPLACE { name: 'A', active: false };",
         );
-        update_response_kind(&stmt, &mut ctx)
+        assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn replace_omitting_a_value_or_computed_field_stays_silent() {
+        // Unlike a plain DEFAULT, VALUE/COMPUTED recompute unconditionally
+        // on every write — verified on 3.2.3 for both a COMPUTED field and a
+        // VALUE field that ignores $value, omitted from a REPLACE payload.
+        let schema_parsed = parse_source(
+            SourceId::new("schema"),
+            "DEFINE TABLE person SCHEMAFULL;\n\
+             DEFINE FIELD name ON person TYPE string;\n\
+             DEFINE FIELD stamp ON person TYPE datetime VALUE time::now();\n\
+             DEFINE FIELD tot ON person COMPUTED 1 + 1;",
+        )
+        .expect("schema should parse");
+        let schema = extract_schema(&[schema_parsed]).schema;
+        let (_, diagnostics) =
+            analyze_with_diagnostics(&schema, "UPDATE person:1 REPLACE { name: 'A' };");
+        assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn content_omitting_a_defaulted_field_stays_silent() {
+        // Unlike REPLACE, CONTENT's DEFAULT still applies at creation — this
+        // is UPDATE (not CREATE) so 2034 does not run there at all, but the
+        // point stands: CONTENT is not REPLACE and must not be checked as one.
+        let schema = person_schema();
+        let (_, diagnostics) =
+            analyze_with_diagnostics(&schema, "UPDATE person:1 CONTENT { name: 'A' };");
+        assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
     }
 
     #[test]

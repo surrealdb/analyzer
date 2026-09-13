@@ -121,7 +121,7 @@ removed table unknown); 1028 → 1027.
 | 2031 | a regex literal compiles | `name ~ 'unclosed('` | E | ✅ emitting |
 | 2032 | literal content is valid for its kind | `d'2024-13-45'`, `u'not-a-uuid'` | E | ✅ emitting |
 | 2033 | PATCH operations are well-formed | unknown op, path without `/`, and an operation missing the key its op needs — every op takes `path`, `add`/`replace`/`test`/`change` take `value`, `move`/`copy` take `from` (each verified on 3.2.3). The engine answers all but the missing-`path` case with `Key 'from' missing`, including an `add` that is in fact missing `value`, so the finding names the key that is really absent and quotes what the engine will print beside it | E | ✅ |
-| 2034 | required fields are provided at creation | `CREATE person;` with non-optional, no-DEFAULT `name` | E | ✅ emitting |
+| 2034 | required fields are provided at creation | `CREATE person;` with non-optional, no-DEFAULT `name`; a `REPLACE` payload (verified on 3.2.3: a field `TYPE bool DEFAULT true`, omitted from `REPLACE`, fails "Expected `bool` but found `NONE`" — `REPLACE` never re-applies `DEFAULT`, only `VALUE`/`COMPUTED` recompute unconditionally); a bare-table `UPSERT <table> SET …` with no `WHERE`, which always creates a fresh record the same way `CREATE` does (a record-id `UPSERT person:1 SET …` is not checked — it may be updating a row that already has the field) | E | ✅ emitting |
 | 2035 | DEFINE ANALYZER filter arguments are valid | `edgengram(5, 2)` | E | ✅ emitting |
 | 2036 | GeoJSON literals have their declared shape | `{type: 'Pointt', ...}` | E | ✅ emitting |
 | 2037 | a field's DEFAULT satisfies its own ASSERT | `DEFAULT 'activ' ASSERT $value IN ['active','inactive']` | E | ✅ emitting |

@@ -106,6 +106,20 @@ message quotes the engine text it predicts.
     `computed_clause` flag rather than the existing `computed` one (which
     2026 also sets for a `VALUE` that ignores `$value`/`$input`).
 
+- **2034 follows required fields into REPLACE and bare-table UPSERT.**
+  `REPLACE` provides the whole document and never re-applies `DEFAULT`
+  (verified on 3.2.3: a field `TYPE bool DEFAULT true`, omitted from a
+  `REPLACE` payload, fails "Expected `bool` but found `NONE`"), so it is
+  checked against every non-optional field regardless of `DEFAULT` — only a
+  `VALUE`/`COMPUTED` clause stays exempt, since either recomputes
+  unconditionally on write. `UPSERT <table> SET …` with a bare table target
+  and no `WHERE` always creates a fresh record (same as `CREATE`), so it is
+  checked the same way; `UPSERT person:1 SET …` (a record-id target) is not,
+  since it may be updating a row that already carries the field, and
+  flagging it would conflate "might not exist yet" with "always wrong". One
+  pre-existing corpus query relied on the gap this closes and is fixed
+  alongside it.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

@@ -218,6 +218,19 @@ pub struct FieldDef {
     /// field succeeds), so that broader flag would have flagged a legal
     /// index as a false positive.
     pub computed_clause: bool,
+    /// Whether the field carries a `VALUE` or `COMPUTED` clause — either way,
+    /// its stored value is recomputed on every write regardless of what (if
+    /// anything) the write provides, unlike a plain `DEFAULT`.
+    ///
+    /// This is 2034's REPLACE exemption, and it is deliberately not
+    /// [`FieldDef::has_default`]: a `REPLACE` never re-applies a bare
+    /// `DEFAULT` (verified on 3.2.3: a field `TYPE bool DEFAULT true`,
+    /// omitted from a `REPLACE` payload, fails with "Expected `bool` but
+    /// found `NONE`"), so that field is still required there even though a
+    /// `CREATE` could omit it. `VALUE`/`COMPUTED` are exempt regardless,
+    /// because they recompute unconditionally — verified for both a
+    /// `COMPUTED` field and a `VALUE` field that does not read `$value`.
+    pub has_value_or_computed: bool,
     /// `REFERENCE` — the field's `record<...>` link is a reference, so a
     /// `<~` back-traversal on the target table can resolve through it.
     pub reference: bool,
@@ -1100,6 +1113,7 @@ pub(crate) fn field_def_from_ast(
                 .as_ref()
                 .is_some_and(|value| !expr_reads_written_value(value)),
         computed_clause: def.computed.is_some(),
+        has_value_or_computed: def.value.is_some() || def.computed.is_some(),
         reference: def.reference,
         path: idiom_field_path(&def.path.node),
         steps: idiom_field_steps(&def.path.node),

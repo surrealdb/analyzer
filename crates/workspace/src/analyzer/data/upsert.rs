@@ -38,6 +38,24 @@ pub(crate) fn upsert_response_kind(stmt: &ast::UpsertStmt, ctx: &mut AnalysisCon
         return Kind::Any;
     };
 
+    // `UPSERT <table> SET ...` — a bare table target with no WHERE — always
+    // generates a fresh record (see the note above), so a required field it
+    // omits fails exactly as an equivalent CREATE would (2034). A record-id
+    // target (`UPSERT person:1 SET ...`) is not checked here: it may equally
+    // be updating a row that already carries the field, and flagging it would
+    // conflate "might not exist yet" with "always wrong". REPLACE is checked
+    // unconditionally elsewhere, since it never re-applies DEFAULT regardless
+    // of whether the row already exists.
+    if stmt.where_clause.is_none() && !matches!(stmt.data, Some(ast::DataClause::Replace(_))) {
+        if let Some(target) = stmt.targets.first() {
+            if matches!(target.node, ast::Expr::Table(_)) {
+                if let Some(provided) = mutation::provided_field_names(ctx, stmt.data.as_ref()) {
+                    mutation::check_required_fields(ctx, table, &provided, target.span);
+                }
+            }
+        }
+    }
+
     mutation::response_kind_for_target(stmt.only, stmt.ret.as_ref(), table, ctx)
 }
 
@@ -130,5 +148,57 @@ mod tests {
         let kind = analyze(&schema, "UPSERT ghost SET name = 'A';");
 
         assert_eq!(kind, Kind::Any);
+    }
+
+    fn person_schema() -> SchemaIndex {
+        let parsed = parse_source(
+            SourceId::new("schema"),
+            "DEFINE TABLE person SCHEMAFULL;\n\
+             DEFINE FIELD name ON person TYPE string;\n\
+             DEFINE FIELD age ON person TYPE int;",
+        )
+        .expect("schema should parse");
+        extract_schema(&[parsed]).schema
+    }
+
+    fn missing_fields(diagnostics: &[surrealql_analyzer_diagnostics::Finding]) -> usize {
+        diagnostics
+            .iter()
+            .filter(|finding| finding.code().number() == 2034)
+            .count()
+    }
+
+    #[test]
+    fn a_bare_table_upsert_omitting_a_required_field_is_2034() {
+        let schema = person_schema();
+        let (_, diagnostics) = analyze_with_diagnostics(&schema, "UPSERT person SET name = 'A';");
+        assert_eq!(missing_fields(&diagnostics), 1, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn a_record_id_upsert_omitting_a_field_stays_silent() {
+        // `UPSERT person:1 SET ...` may be updating a row that already has
+        // `age` — flagging it would conflate "might not exist yet" with
+        // "always wrong".
+        let schema = person_schema();
+        let (_, diagnostics) = analyze_with_diagnostics(&schema, "UPSERT person:1 SET name = 'A';");
+        assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn a_bare_table_upsert_with_where_stays_silent() {
+        // A WHERE clause targets existing rows, not a fresh create.
+        let schema = person_schema();
+        let (_, diagnostics) =
+            analyze_with_diagnostics(&schema, "UPSERT person SET name = 'A' WHERE age > 0;");
+        assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn a_bare_table_upsert_providing_every_field_stays_silent() {
+        let schema = person_schema();
+        let (_, diagnostics) =
+            analyze_with_diagnostics(&schema, "UPSERT person SET name = 'A', age = 1;");
+        assert_eq!(missing_fields(&diagnostics), 0, "{diagnostics:?}");
     }
 }

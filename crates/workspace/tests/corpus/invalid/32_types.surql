@@ -86,6 +86,14 @@ UPDATE article:hello PATCH [{ op: 'remove' }];
 -- 2034: a creation that omits required fields.
 CREATE article SET title = 'only a title';
 
+-- 2034: a bare-table UPSERT (no id, no WHERE) always creates a fresh record,
+-- so it is checked the same as a CREATE.
+UPSERT article SET title = 'only a title';
+
+-- 2034: REPLACE does not re-apply DEFAULT, so a field that a CREATE could
+-- omit (`views`/`tags`/`created_at`, all DEFAULT'd) is still required here.
+UPDATE article:hello REPLACE { title: 't', slug: 's', body: 'b', author: account:ada, embedding: [0.1, 0.2, 0.3] };
+
 -- 2035: analyzer filter arguments out of order.
 DEFINE ANALYZER bad_ngram TOKENIZERS blank FILTERS edgengram(5, 2);
 
