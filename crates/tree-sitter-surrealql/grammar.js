@@ -327,6 +327,11 @@ export default grammar({
 			'binary_conjunction',
 			'binary_disjunction',
 			'binary_nullish',
+			// THROW's operand is the whole expression that follows it: 3.2.3
+			// evaluates `THROW 1 + 1` as `THROW (1 + 1)` (`An error occurred:
+			// 2`), so the keyword binds looser than every binary tier and
+			// stops only at a `,` or a closing bracket.
+			'throw',
 			'closure',
 			'union',
 			'filter',
@@ -341,6 +346,7 @@ export default grammar({
 		[$.Path, $.Destructure],
 		[$.WhereClause],
 		[$._baseValue, $.Closure],
+		[$._baseValue, $._baseValueNoRecordId, $.Closure],
 		[$._idName, $._singleType],
 		// The dangling ELSE of the THEN…END form. A branch body is a value and
 		// a value can be another IF, so `ELSE IF` either continues this chain
@@ -361,9 +367,18 @@ export default grammar({
 		// same way, and a signed literal is preferred (dynamic precedence on
 		// `Number`) whenever the operand is a bare number.
 		[$.Number],
-		// `not(1, 2)` is a call with two arguments, not `NOT` applied to the
-		// point `(1, 2)`; the call carries dynamic precedence.
-		[$._computedValue, $.Point],
+		// `_computedValueNoRecordId`/`_baseValueNoRecordId` (a range's left
+		// operand — see `Range`) are `_computedValue`/`_baseValue` minus
+		// `RecordId`; every other member derives identically either way, so
+		// the two families are only ever ambiguous about which hidden rule
+		// produced the same tree, never about the tree itself. Left to GLR.
+		[$._computedValue, $._computedValueNoRecordId],
+		[$._baseValue, $._baseValueNoRecordId],
+		// Same story one level up: `_rangeStart` is `_value` minus the
+		// `Range`/record-id-bearing shapes, so every other alternative
+		// (`Path`, `BinaryExpression`, `PrefixExpression`, `TypeCast`,
+		// `IfElseStatement`, `ThrowStatement`) derives identically either way.
+		[$._value, $._rangeStart],
 	],
 
 	rules: {
@@ -388,9 +403,10 @@ export default grammar({
 		// Statements
 		// ================================================================
 
-		// IfElseStatement is deliberately absent: IF is a value (see `_value`),
-		// so listing it here as well would make every `IF …` in an expression
-		// position reachable two ways for the same tree.
+		// IfElseStatement and ThrowStatement are deliberately absent: IF and
+		// THROW are values (see `_value`), so listing either here as well would
+		// make every `IF …` / `THROW …` in an expression position reachable two
+		// ways for the same tree.
 		_subqueryStatement: ($) =>
 			choice(
 				$.LetStatement,
@@ -424,7 +440,6 @@ export default grammar({
 				$.BreakStatement,
 				$.ContinueStatement,
 				$.ForStatement,
-				$.ThrowStatement,
 				$._subqueryStatement,
 			),
 
@@ -457,7 +472,8 @@ export default grammar({
 		BreakStatement: ($) => alias($._kw_break, $.Keyword),
 		ContinueStatement: ($) => alias($._kw_continue, $.Keyword),
 		SleepStatement: ($) => seq(alias($._kw_sleep, $.Keyword), $.Duration),
-		ThrowStatement: ($) => seq(alias($._kw_throw, $.Keyword), $._value),
+		ThrowStatement: ($) =>
+			prec.right('throw', seq(alias($._kw_throw, $.Keyword), $._value)),
 		// RETURN carries its own FETCH clause. It is spelled against `_value`
 		// rather than `_expression` so that `RETURN SELECT … FETCH a` gives the
 		// FETCH to the SELECT, which already has one, instead of leaving the
@@ -655,7 +671,7 @@ export default grammar({
 			seq(
 				$._value,
 				alias($._kw_then, $.Keyword),
-				choice($._value, $.ThrowStatement, $.ReturnStatement),
+				choice($._value, $.ReturnStatement),
 				optional(';'),
 				repeat(
 					seq(
@@ -663,14 +679,14 @@ export default grammar({
 						alias($._kw_if, $.Keyword),
 						$._value,
 						alias($._kw_then, $.Keyword),
-						choice($._value, $.ThrowStatement, $.ReturnStatement),
+						choice($._value, $.ReturnStatement),
 						optional(';'),
 					),
 				),
 				optional(
 					seq(
 						alias($._kw_else, $.Keyword),
-						choice($._value, $.ThrowStatement, $.ReturnStatement),
+						choice($._value, $.ReturnStatement),
 						optional(';'),
 					),
 				),
@@ -692,6 +708,20 @@ export default grammar({
 			),
 
 		// LIVE SELECT
+		// A live query is a much narrower statement than SELECT, and every
+		// clause below `WHERE`/`FETCH` is one 3.2.3 refuses while *parsing*:
+		// `LIVE SELECT * FROM ticket ORDER BY title` is ``Unexpected token
+		// `ORDER`, expected Eof``, and so are GROUP, LIMIT, START, SPLIT,
+		// OMIT, TIMEOUT, PARALLEL, EXPLAIN and `FROM ONLY`.
+		//
+		// They are admitted here for the reason the comma-separated `FROM`
+		// list already is: 4009 owns the contract — "a live query can't ORDER
+		// BY … order the rows on the client" — and a token error that
+		// collapses the file says none of that. Only the clauses 4009 has
+		// words for are listed; taking `_modifierClause` wholesale would also
+		// parse WITH, VERSION, RETURN and TEMPFILES, which nothing here would
+		// then report, and a form we parse and say nothing about is one we
+		// pass as valid.
 		LiveSelectStatement: ($) =>
 			seq(
 				alias($._kw_live, $.Keyword),
@@ -701,10 +731,23 @@ export default grammar({
 					seq(alias($._kw_value, $.Keyword), $.Predicate),
 					csep($._inclusivePredicate),
 				),
+				optional($.OmitClause),
 				alias($._kw_from, $.Keyword),
+				optional(alias($._kw_only, $.Keyword)),
 				csep(choice($.Ident, $.RecordId, $.VariableName)),
-				optional($.WhereClause),
-				optional($.FetchClause),
+				repeat(
+					choice(
+						$.WhereClause,
+						$.FetchClause,
+						$.SplitClause,
+						$.GroupClause,
+						$.OrderClause,
+						$.LimitStartComboClause,
+						$.TimeoutClause,
+						$.ParallelClause,
+						$.ExplainClause,
+					),
+				),
 			),
 
 		// ALTER
@@ -991,11 +1034,24 @@ export default grammar({
 			seq(
 				optional(choice($.IfNotExistsClause, $.OverwriteClause)),
 				$.FunctionName, // customFunctionName aliased to FunctionName
-				seq('(', optional(csepTrail($.ParamDefinition)), ')'),
+				seq(
+					'(',
+					optional(csepTrail(alias($._typedParamDefinition, $.ParamDefinition))),
+					')',
+				),
 				optional(seq($.LookupRight, $._type)),
 				$.Block,
 				repeat(choice($.PermissionsBasicClause, $.CommentClause)),
 			),
+		// Every `fn::` parameter needs an explicit `: <kind>` — 3.2.3 answers a
+		// missing one with `` Unexpected token `)`, expected : `` live. A
+		// closure's parameter (plain `ParamDefinition`, below) keeps the type
+		// optional — `|$v| $v` is valid — so only `DEFINE FUNCTION`'s own
+		// parameter list requires it. Aliased to the same `ParamDefinition`
+		// node rather than a new one, so lowering does not need to learn a
+		// second shape for the same thing.
+		_typedParamDefinition: ($) =>
+			seq($.VariableName, $.Colon, alias($._safeType, $.Type)),
 
 		_defineIndexOptions: ($) =>
 			seq(
@@ -1431,7 +1487,15 @@ export default grammar({
 		SetClause: ($) =>
 			seq(alias($._kw_set, $.Keyword), csep($.FieldAssignment)),
 		MergeClause: ($) => seq(alias($._kw_merge, $.Keyword), $._value),
-		PatchClause: ($) => seq(alias($._kw_patch, $.Keyword), $.Array),
+		// Any expression, not only an array literal. 3.2.3 parses whatever
+		// follows `PATCH` and complains at run time if it is not a list of
+		// operations — "The JSON Patch contains invalid operations. Failed to
+		// parse JSON patch structure: Patch operations should be an array of
+		// objects" — so the array literal was never the grammar's rule to
+		// enforce. Requiring it made `PATCH $ops`, which the engine applies,
+		// a syntax error, and turned the single-object slip into a collapsed
+		// file instead of the 2033 that names it.
+		PatchClause: ($) => seq(alias($._kw_patch, $.Keyword), $._value),
 		ReplaceClause: ($) => seq(alias($._kw_replace, $.Keyword), $.Object),
 		// UNSET removes fields by name (`UNSET a, b`), so it takes a field
 		// list — the same shape as OMIT — rather than assignments.
@@ -1504,13 +1568,21 @@ export default grammar({
 			seq(
 				alias($._kw_start, $.Keyword),
 				optional(alias($._kw_at, $.Keyword)),
-				choice($.Number, $.VariableName),
+				$._value,
 			),
+		// LIMIT and START take an expression, not a literal or a param:
+		// 3.2.3 runs `LIMIT 1 + 1` and `LIMIT (SELECT VALUE 1 FROM t)[0]`,
+		// and answers `LIMIT '5'` with `LIMIT/START must be an integer, got
+		// String("5")` — a *run-time* error, which is the proof that it
+		// parsed. Narrowing the rule to `Number | VariableName` made that
+		// query a syntax error here, so 2018 (which already owns the
+		// contract, and reports it when the value arrives through a `LET`)
+		// could never fire on the literal spelling.
 		LimitClause: ($) =>
 			seq(
 				alias($._kw_limit, $.Keyword),
 				optional(alias($._kw_by, $.Keyword)),
-				choice($.Number, $.VariableName),
+				$._value,
 			),
 
 		// FETCH takes a filtered idiom (`FETCH a[WHERE …]`) where SPLIT, GROUP
@@ -1559,7 +1631,11 @@ export default grammar({
 				),
 				']',
 			),
-		TimeoutClause: ($) => seq(alias($._kw_timeout, $.Keyword), $.Duration),
+		// As LIMIT/START: an expression, not a duration literal. 3.2.3 runs
+		// `TIMEOUT $d` and `TIMEOUT 1s + 1s`, and answers `TIMEOUT 5` with
+		// `Invalid timeout value` when it executes — so 2019 is the one that
+		// should be speaking, not the parser.
+		TimeoutClause: ($) => seq(alias($._kw_timeout, $.Keyword), $._value),
 		ParallelClause: ($) => alias($._kw_parallel, $.Keyword),
 		TempfilesClause: ($) => alias($._kw_tempfiles, $.Keyword),
 		ExplainClause: ($) =>
@@ -1984,11 +2060,9 @@ export default grammar({
 				choice(
 					csep($._value),
 					alias($._thenReturn, $.ReturnStatement),
-					alias($._thenThrow, $.ThrowStatement),
 				),
 			),
 		_thenReturn: ($) => seq(alias($._kw_return, $.Keyword), $._value),
-		_thenThrow: ($) => seq(alias($._kw_throw, $.Keyword), $._value),
 		// RETRY and MAXDEPTH only exist behind ASYNC — the engine says so by
 		// name — but they may follow it in either order.
 		AsyncClause: ($) =>
@@ -2007,14 +2081,13 @@ export default grammar({
 		FunctionClause: ($) =>
 			seq(alias($._kw_function, $.Keyword), $.FunctionName),
 
+		// `FLEXIBLE` only ever follows `TYPE <type>` on 3.2.3 — `FLEXIBLE TYPE
+		// object` is `` Parse error: FLEXIBLE must be specified after TYPE ``
+		// live, even though it is the clause order the published docs show.
+		// `TYPE object FLEXIBLE` is the only order the engine takes.
 		TypeClause: ($) =>
 			prec.right(
 				choice(
-					seq(
-						alias($._kw_flexible, $.Keyword),
-						alias($._kw_type, $.Keyword),
-						$._type,
-					),
 					seq(
 						alias($._kw_type, $.Keyword),
 						$._type,
@@ -2131,11 +2204,16 @@ export default grammar({
 		// Values
 		// ================================================================
 
-		// IF is an expression in SurrealQL, not only a statement: it is legal
-		// unparenthesised in a projection, a WHERE, an array element, an
-		// object value, a SET right-hand side. It sits here rather than in
-		// `_baseValue` so it does not also become a path or lookup base,
-		// which the engine does not accept.
+		// IF and THROW are expressions in SurrealQL, not only statements: both
+		// are legal unparenthesised in a projection, a WHERE, an array element,
+		// an object value, a SET right-hand side. 3.2.3 evaluates
+		// `RETURN false OR THROW 'y'`, `RETURN [THROW 'a']`,
+		// `RETURN { a: THROW 'a' }` and `LET $x = THROW 'a'` — every one of
+		// them raises `An error occurred: …` at run time rather than at parse
+		// time — which is why a `PERMISSIONS FOR create WHERE THROW '…'` and an
+		// `ASSERT … OR THROW '…'` have to parse here too. They sit in `_value`
+		// rather than in `_baseValue` so neither also becomes a path or lookup
+		// base, which the engine does not accept.
 		_value: ($) =>
 			choice(
 				$.Path,
@@ -2145,8 +2223,17 @@ export default grammar({
 				$.TypeCast,
 				$._baseValue,
 				$.IfElseStatement,
+				$.ThrowStatement,
 			),
 
+		// `NOT` is deliberately absent from the operator choice below: 3.2.3
+		// has no prefix `NOT` at all — only the `not(...)` builtin, which is
+		// `FunctionCall` (see the comment on `ArgumentList`). `RETURN NOT
+		// true;` is `` Unexpected token `true`, expected Eof `` live, and
+		// `RETURN NOT deleted;` is `` Unexpected token 'an identifier',
+		// expected Eof `` — both because 3.2.3's grammar never had a prefix
+		// `NOT` for this to be one, not because it needs parentheses. Only
+		// `NOT (expr)` / `NOT(expr)` parse, and both do so as the call.
 		PrefixExpression: ($) =>
 			prec(
 				'prefix',
@@ -2155,7 +2242,6 @@ export default grammar({
 						alias('!', $.Operator),
 						alias('-', $.Operator),
 						alias('+', $.Operator),
-						alias($._kw_not, $.Operator),
 					),
 					$._prefixOperand,
 				),
@@ -2500,15 +2586,66 @@ export default grammar({
 		_binop_power: ($) => '**',
 
 		// Range
+		// A range's *left* operand can never be a bare record id: 3.2.3 always
+		// reads `tb:id..` as the start of that same record id's own embedded
+		// range (`RecordIdRange`, below), which only takes a plain id value on
+		// the far side — so `user:1..user:9` reads as far as `user:1..user`
+		// and then chokes on the stray `:9`. Verified identically in RETURN,
+		// SELECT FROM, LET and FOR: `` Unexpected token `:`, expected Eof ``
+		// (or `expected {` inside a FOR body). The record id is fine on the
+		// *right*: `RETURN 1..user:9;` and `RETURN $a..user:9;` both run live,
+		// so only the left position is narrowed here.
 		Range: ($) =>
 			prec.left(
 				'range',
 				choice(
 					$.RangeOp,
-					seq($._value, $.RangeOp),
+					seq($._rangeStart, $.RangeOp),
 					seq($.RangeOp, $._value),
-					seq($._value, $.RangeOp, $._value),
+					seq($._rangeStart, $.RangeOp, $._value),
 				),
+			),
+		_rangeStart: ($) =>
+			choice(
+				$.Path,
+				$.BinaryExpression,
+				$.PrefixExpression,
+				$.TypeCast,
+				$._baseValueNoRecordId,
+				$.IfElseStatement,
+				$.ThrowStatement,
+			),
+		_baseValueNoRecordId: ($) =>
+			choice(
+				$._computedValueNoRecordId,
+				$.FormatString,
+				$.Regex,
+				$.VariableName,
+				$.FunctionJs,
+				$.FunctionCall,
+				$.SubQuery,
+				$.Block,
+				$.Closure,
+				$.Ident,
+				alias($._nonReservedIdent, $.Ident),
+			),
+		// `_computedValue` minus `RecordId` — everything else in it is fine as
+		// a range's left endpoint.
+		_computedValueNoRecordId: ($) =>
+			choice(
+				$.String,
+				$.Number,
+				alias($._kw_true, $.Bool),
+				alias($._kw_false, $.Bool),
+				alias($._kw_null, $.None),
+				alias($._kw_none, $.None),
+				$.Array,
+				$.Set,
+				$.Object,
+				$.Duration,
+				$.Point,
+				$.Constant,
+				$.RangeRecordId,
 			),
 
 		// Type cast. The operand is a whole value, and the 'cast' precedence
@@ -2655,9 +2792,9 @@ export default grammar({
 				// run time as "'int' is not a function").
 				seq($.SubQuery, $.ArgumentList),
 			),
-		// `not(x)` is the function, never `NOT (x)` the prefix operator over a
-		// parenthesized value — the two mean the same thing, so the call form
-		// wins statically.
+		// `not(x)` and `NOT (x)` lex identically — `_kw_not` followed by `(` —
+		// and both are this call; there is no separate prefix-operator
+		// reading to compete with it (see `PrefixExpression`).
 		ArgumentList: ($) =>
 			prec(
 				1,
@@ -2726,15 +2863,21 @@ export default grammar({
 				alias($._assignmentOp, $.Operator),
 				$._value,
 			),
+		// The bracket segment is `_pathFilter`, the same rule a path in a read
+		// position uses, because 3.2.3 accepts the same set in a SET target —
+		// verified on a live server: `SET tags[0] = 'ok'`, `SET
+		// meta['score'] = 5`, `SET tags[$] = 'z'`, `SET tags[$i] = 'z'` and
+		// `SET tags[WHERE $this = 'a'] = 'z'` all write. `[*]` comes with it
+		// rather than being a separate alternative, which is why it is not
+		// listed twice.
 		_nestedAssignTarget: ($) =>
 			seq(
 				$.Ident,
 				repeat1(
 					choice(
 						seq('.', choice($.Ident, alias('*', $.Any))),
-						seq('[', alias('*', $.Any), ']'),
 						alias('...', $.Flatten),
-						alias($._idiomFilter, $.Filter),
+						alias($._pathFilter, $.Filter),
 					),
 				),
 			),
@@ -2770,13 +2913,57 @@ export default grammar({
 			),
 		// `array<int, 3>` and `set<int, 5>` carry a size after the element
 		// type; nothing else takes a second argument.
+		//
+		// `geometry<...>` is its own alternative, closed to the seven kind
+		// names: 3.2.3 answers anything else with `` Unexpected token 'an
+		// identifier', expected a geometry kind name `` (verified live against
+		// `geometry<pointt>`), which the generic branch below — any identifier
+		// as the parameter — would silently accept. `_kw_geometry` outranks
+		// `_rawident` by lexical precedence (see `kw()`), so `geometry<...>`
+		// is always routed here rather than through the generic form.
 		ParameterizedType: ($) =>
-			seq(
-				$._singleType,
-				'<',
-				$._type,
-				optional(seq(',', $.Number)),
-				'>',
+			choice(
+				seq(
+					alias($._kw_geometry, $.TypeName),
+					'<',
+					// A single kind, or a pipe-separated set of them
+					// (`geometry<point | line | polygon>` runs on 3.2.3). Each
+					// kind is its own `TypeName` (aliased inside `_geometryKind`
+					// itself, so a union's members are named the same way a
+					// single kind is), joined into a `UnionType` when there is
+					// more than one — the same shape any other type union has.
+					choice(
+						$._geometryKind,
+						alias($._geometryKindUnion, $.UnionType),
+					),
+					optional(seq(',', $.Number)),
+					'>',
+				),
+				seq(
+					$._singleType,
+					'<',
+					$._type,
+					optional(seq(',', $.Number)),
+					'>',
+				),
+			),
+		_geometryKindUnion: ($) =>
+			prec.right(
+				'union',
+				seq($._geometryKind, repeat1(seq($.Pipe, $._geometryKind))),
+			),
+		_geometryKind: ($) =>
+			alias(
+				choice(
+					$._kw_point,
+					$._kw_line,
+					$._kw_polygon,
+					$._kw_multipoint,
+					$._kw_multiline,
+					$._kw_multipolygon,
+					$._kw_collection,
+				),
+				$.TypeName,
 			),
 		_type: ($) => choice($._singleType, $.UnionType),
 		UnionType: ($) =>
@@ -3202,6 +3389,18 @@ export default grammar({
 		_kw_from: ($) => kw('from'),
 		_kw_function: ($) => kw('function'),
 		_kw_functions: ($) => kw('functions'),
+		_kw_geometry: ($) => kw('geometry'),
+		// The seven kind names `geometry<...>` accepts — grouped here rather
+		// than at their own letters because nothing else in the grammar
+		// references them; see `ParameterizedType`'s geometry-specific
+		// alternative.
+		_kw_point: ($) => kw('point'),
+		_kw_line: ($) => kw('line'),
+		_kw_polygon: ($) => kw('polygon'),
+		_kw_multipoint: ($) => kw('multipoint'),
+		_kw_multiline: ($) => kw('multiline'),
+		_kw_multipolygon: ($) => kw('multipolygon'),
+		_kw_collection: ($) => kw('collection'),
 		_kw_get: ($) => kw('get'),
 		_kw_graphql: ($) => kw('graphql'),
 		_kw_group: ($) => kw('group'),

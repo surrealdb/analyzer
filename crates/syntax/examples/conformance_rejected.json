@@ -25,22 +25,50 @@
  ],
  [
   "}",
-  "unbalanced `}` from SurrealDB's parser error-handling tests — meant not to parse"
+  "unbalanced `}` from SurrealDB's parser error-handling tests \u2014 meant not to parse"
  ],
  [
   "a:[",
-  "unterminated `a:[` from SurrealDB's parser error-handling tests — meant not to parse"
+  "unterminated `a:[` from SurrealDB's parser error-handling tests \u2014 meant not to parse"
  ],
  [
   "]",
-  "unbalanced `]` from SurrealDB's parser error-handling tests — meant not to parse"
+  "unbalanced `]` from SurrealDB's parser error-handling tests \u2014 meant not to parse"
  ],
  [
   "SELECT * FROM",
-  "`SELECT * FROM` with no target, from SurrealDB's parser error-handling tests — meant not to parse"
+  "`SELECT * FROM` with no target, from SurrealDB's parser error-handling tests \u2014 meant not to parse"
  ],
  [
   "SELECT * FROM t ORDER BY rand DESC;",
-  "3.2.3 reserves `rand` in order position, answering `ORDER BY rand` with \"Unexpected token `;`, expected (\" — only the `ORDER BY RAND()` call form is accepted, so a bare `rand` here must stay refused"
+  "3.2.3 reserves `rand` in order position, answering `ORDER BY rand` with \"Unexpected token `;`, expected (\" \u2014 only the `ORDER BY RAND()` call form is accepted, so a bare `rand` here must stay refused"
+ ],
+ [
+  "SELECT * FROM person WHERE NOT deleted;",
+  "3.2.3 has no prefix `NOT` at all, only the `not(...)` builtin: `Unexpected token 'an identifier', expected Eof` pointing at `deleted`. `NOT (deleted)` and `not(deleted)` are unaffected \u2014 both lex as the call."
+ ],
+ [
+  "RETURN NOT true;",
+  "Same as the idiom case, on a bare literal: `Unexpected token `true`, expected Eof`. Only `NOT (...)`/`not(...)` parse."
+ ],
+ [
+  "FOR $x IN user:1..user:9 { RETURN $x; };",
+  "A *record range* \u2014 two full record ids joined by `..` \u2014 never parses on 3.2.3, in FOR or anywhere else: `Unexpected token `:`, expected {` (verified identically in RETURN, SELECT FROM and LET). `user:1..` is always the start of that record id's own embedded id range, which takes a plain id value, not another whole `tb:id`."
+ ],
+ [
+  "FOR $x IN (user:1..user:9) { RETURN $x; };",
+  "Parentheses do not help \u2014 same construct, `Unexpected token `:` expected delimiter `)``."
+ ],
+ [
+  "DEFINE FIELD f ON t FLEXIBLE TYPE object;",
+  "3.2.3: `Parse error: FLEXIBLE must be specified after TYPE`. This is the clause order the published docs show, so it is the one every FLEXIBLE user reaches for; the engine takes only `TYPE object FLEXIBLE`."
+ ],
+ [
+  "DEFINE FUNCTION fn::greet($name) { RETURN $name; };",
+  "3.2.3: `Unexpected token ')', expected :` \u2014 every `fn::` parameter needs an explicit `: <kind>`. A closure's parameter (`|$v| $v`) is unaffected; only `DEFINE FUNCTION`'s own list requires the type."
+ ],
+ [
+  "DEFINE FIELD f ON t TYPE geometry<pointt>;",
+  "3.2.3: `Unexpected token 'an identifier', expected a geometry kind name`. The seven names (`point`, `line`, `polygon`, `multipoint`, `multiline`, `multipolygon`, `collection`) are a closed set; anything else is a parse error, not a semantic one."
  ]
 ]

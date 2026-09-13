@@ -259,19 +259,25 @@ pub(crate) fn check_live_select(
 
 /// Checks a real `LIVE SELECT` statement.
 ///
-/// Everything the engine cannot parse — `ORDER BY`, `GROUP`, `LIMIT`,
-/// `START`, `SPLIT`, `OMIT`, `TIMEOUT`, `PARALLEL`, `EXPLAIN`, `ONLY`, an
-/// array or subquery source — the grammar cannot parse here either, so those
-/// arrive as syntax errors and are not this function's business. What is left
-/// is the two kinds of mistake that survive parsing: a source the engine
-/// refuses once it runs the statement, and a clause it accepts and then does
-/// not put in the notification.
+/// The 4009 contract is [`check_live_select`]'s, and it is asked here over
+/// the same statement: `LiveSelectStmt::as_select` is the one conversion
+/// between the two spellings, so "what does a live query refuse" is written
+/// down once and the `defineLive` string path and the statement path cannot
+/// answer it differently. That covers the clauses the engine rejects while
+/// parsing — `ORDER BY`, `GROUP`, `LIMIT`, `START`, `SPLIT`, `OMIT`,
+/// `TIMEOUT`, `PARALLEL`, `EXPLAIN`, `ONLY` — which the grammar now parses
+/// precisely so this can name them, and the sources it rejects while
+/// executing.
+///
+/// What is left here is 4027: the clauses the engine *accepts* and then does
+/// not put in the notification, which only a real `LIVE SELECT` can carry.
 pub(crate) fn check_live_select_statement(
     ctx: &mut crate::analyzer::context::AnalysisContext<'_>,
     stmt: &ast::LiveSelectStmt,
 ) {
     let source = ctx.source().clone();
     let mut findings = Vec::new();
+    check_live_select(&stmt.as_select(), &source, &mut findings);
     let mut emit = |span: surrealql_analyzer_syntax::span::ByteRange,
                     code: u16,
                     message: String,
@@ -285,33 +291,6 @@ pub(crate) fn check_live_select_statement(
             .with_help(help.to_string()),
         );
     };
-
-    // One subscription, one table — the engine stops at the comma while
-    // parsing, so this never registers at all.
-    if stmt.from.len() > 1 {
-        for from in &stmt.from[1..] {
-            emit(
-                from.span,
-                4009,
-                "a live query subscribes to one table".to_string(),
-                "register a separate live query per table",
-            );
-        }
-    }
-
-    // A record id registers, answers with a uuid, and then never fires: the
-    // engine refuses it while executing, not while parsing, so there is no
-    // error for the author to see anywhere.
-    for from in &stmt.from {
-        if matches!(from.node, ast::Expr::RecordId { .. }) {
-            emit(
-                from.span,
-                4009,
-                "a live query can't subscribe to a record id".to_string(),
-                "subscribe to the table and filter with WHERE — SurrealDB registers this and then never fires it",
-            );
-        }
-    }
 
     // `DIFF` and `FETCH` together: the engine takes both and the diff it
     // sends has the link unresolved, exactly as if the FETCH were not there.

@@ -1648,6 +1648,12 @@ pub(crate) struct ParsedFieldKind {
 
 /// The `Kind::Geometry` for `geometry<point | line | ...>`: every argument
 /// must name a known shape, else `None`.
+///
+/// The grammar now closes `geometry<...>` to exactly these seven names
+/// (`geometry<pointt>` is a parse error on 3.2.3, matched in
+/// `crates/tree-sitter-surrealql/grammar.js`'s `_geometryKind`), so the
+/// `None` fallback below is no longer reachable through anything that
+/// parses — kept as the belt to the grammar's suspenders, not a live path.
 fn geometry_kind(
     args: &[surrealql_analyzer_syntax::ast::Spanned<surrealql_analyzer_syntax::ast::TypeExpr>],
 ) -> Option<Kind> {

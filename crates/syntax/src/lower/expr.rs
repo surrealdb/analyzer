@@ -149,8 +149,15 @@ impl Lowerer<'_> {
             // subquery without the parentheses: lower it to the same
             // `Expr::Subquery` so its response shape types the surrounding
             // expression (an IF-as-value unions its branch values).
+            //
+            // `THROW` is here for the same reason and with the same shape: it
+            // is an expression in SurrealQL (`PERMISSIONS … WHERE THROW '…'`,
+            // `ASSERT … OR THROW '…'`), and routing it through
+            // `lower_statement` is what gets the thrown value analyzed — it
+            // is the one operand a `THROW` has, and it can be wrong.
             "SelectStatement" | "CreateStatement" | "UpdateStatement" | "UpsertStatement"
-            | "DeleteStatement" | "InsertStatement" | "RelateStatement" | "IfElseStatement" => {
+            | "DeleteStatement" | "InsertStatement" | "RelateStatement" | "IfElseStatement"
+            | "ThrowStatement" => {
                 Expr::Subquery(Box::new(super::statement::lower_statement(node, self.text)))
             }
             "Block" => Expr::Block(self.block(node)),

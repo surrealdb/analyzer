@@ -12,8 +12,11 @@ DEFINE FIELD received_at ON webhook_event TYPE datetime DEFAULT time::now();
 -- Opaque by construction: the provider owns this shape.
 DEFINE FIELD payload ON webhook_event TYPE any;
 
--- Shapeless but at least known to be an object.
-DEFINE FIELD headers ON webhook_event FLEXIBLE TYPE object;
+-- Shapeless but at least known to be an object. `FLEXIBLE` only ever follows
+-- `TYPE object` on 3.2.3 — `FLEXIBLE TYPE object` is the clause order the
+-- published docs show, and the engine refuses it: `Parse error: FLEXIBLE
+-- must be specified after TYPE`.
+DEFINE FIELD headers ON webhook_event TYPE object FLEXIBLE;
 
 -- A table whose rows an external system owns, so the workspace declares no
 -- fields on it. `SELECT * FROM external_record` gives up here, and so must a

@@ -5,9 +5,14 @@
 
 | corpus | entries | result |
 | --- | --- | --- |
-| valid set (`crates/syntax/examples/conformance_corpus.json`) | 319 | 319 parse, 0 fail |
-| rejected set (`crates/syntax/examples/conformance_rejected.json`) | 11 | 11 refused, 0 wrongly accepted |
+| valid set (`crates/syntax/examples/conformance_corpus.json`) | 362 | 362 parse, 0 fail |
+| rejected set (`crates/syntax/examples/conformance_rejected.json`) | 18 | 18 refused, 0 wrongly accepted |
 | upstream `surrealql-tree-sitter` `test/corpus/*.txt` (head `22feaab`) | 396 | 396 parse |
+
+(319/11 was this file's count as of the RATELIMIT/PARALLEL/INSERT-order work;
+`THROW`-as-expression, the `SET` bracket target, `PATCH` as any expression,
+and `LIMIT`/`START`/`TIMEOUT` as expressions each added to the valid set
+without a doc update in between — 334/11 immediately before this round.)
 
 Both sets are extracted from SurrealDB's own test suites, except for eight
 entries (seven valid, one rejected) added here to pin the `ORDER BY count`
@@ -123,6 +128,9 @@ Three upstream corpus cases are forms SurrealDB 3.2.3 refuses outright:
 | `SHOW CHANGES FOR TABLE person LIMIT 10` | ``Unexpected token `LIMIT`, expected SINCE`` | E2021 |
 | `INSERT IGNORE RELATION INTO likes {…}` | ``Unexpected token `INTO`, expected Eof`` (``…`{`…`` without the optional `INTO`) | E4030 |
 | `SELECT … PARALLEL` and the six other statements that took the clause | ``Unexpected token `PARALLEL`, expected Eof`` | E8002, with a target |
+| `LIVE SELECT … ORDER BY`/`GROUP`/`LIMIT`/`START`/`SPLIT`/`OMIT`/`TIMEOUT`/`PARALLEL`/`EXPLAIN`/`FROM ONLY`/two tables | ``Unexpected token `ORDER`, expected Eof`` (and so on, one per clause) | E4009 |
+| `$x = 1;` with no `LET` | `` Parameter declarations without `let` are deprecated. `` | E8002, with a target |
+| `DEFINE INDEX i ON t FIELDS a COUNT` | `Cannot create a count index with fields` | E1033 |
 
 We used to refuse them too. For a language server that is the wrong trade: a
 parse error is fatal to the whole source, so refusing one statement silences
@@ -132,13 +140,18 @@ contract at the span that is actually wrong — **E2020** ("KILL takes a
 live-query uuid"), **E2021** ("SHOW SINCE takes a versionstamp or
 datetime") and **E4030** ("INSERT's RELATION and IGNORE modifiers are in the
 order the engine parses"), each quoting the engine's own error text in its
-help so the user sees what SurrealDB will say.
+help so the user sees what SurrealDB will say. The 2026-09-13 round adds
+**E4009** ("LIVE SELECT with unsupported clause") for every clause a live
+query takes past `WHERE`/`FETCH`, and **E1033** for a `COUNT` index that
+also names `FIELDS`.
 `crates/workspace/tests/engine_refused_syntax.rs` pins that every one of them
 fires, and that the correctly-spelled neighbour (`KILL u'…'`, `KILL $id`,
-`SHOW … SINCE …`, `INSERT RELATION IGNORE …`) stays silent.
+`SHOW … SINCE …`, `INSERT RELATION IGNORE …`, a live query with only
+`WHERE`/`FETCH`, a `COUNT` index with no `FIELDS`) stays silent.
 
-`PARALLEL` is the one entry in that table whose diagnostic is *conditional*:
-8002 is a version-compatibility code and, like every other check in
+`PARALLEL` and the bare `$x = 1;` parameter assignment are the two entries in
+that table whose diagnostic is *conditional*: both are 8002, a
+version-compatibility code, and like every other check in
 `analyzer/version.rs`, it is gated on a configured
 `analysis.surrealdb_version`. With no target set, `PARALLEL` parses and
 nothing is said — the same position `<future>`, `DEFINE SCOPE`/`TOKEN`,
@@ -271,3 +284,133 @@ neither keyword. The grammar takes both orders and **E4030** reports the
 order, spanning both keywords. Valid corpus 317 → 319:
 `INSERT RELATION IGNORE INTO likes {…}` and `INSERT RELATION INTO likes {…}`,
 both run on 3.2.3, ratchet the order the grammar must keep accepting.
+
+## 2026-09-13: LIVE SELECT's contract, and seven more engine-drift fixes
+
+`THROW`-as-expression, the bracketed `SET` target, `PATCH`-as-any-expression
+and `LIMIT`/`START`/`TIMEOUT`-as-expressions (each already in this file's
+commit history) were the first half of this pass. The rest:
+
+**1. `LIVE SELECT` grows the same clause set `SELECT` has, and 4009 owns the
+contract.** `LiveSelectStatement` used to admit only `WHERE`/`FETCH` after
+`FROM`; 3.2.3 refuses every one of `ORDER BY`, `GROUP`, `LIMIT`, `START`,
+`SPLIT`, `OMIT`, `TIMEOUT`, `PARALLEL`, `EXPLAIN` and `FROM ONLY` *while
+parsing* (``Unexpected token `ORDER`, expected Eof`` and so on, one per
+clause, verified live), and a comma-separated `FROM` stops at the comma. The
+grammar now parses all of them, `LiveSelectStmt` carries every field
+`SelectStmt` does, and `LiveSelectStmt::as_select` converts one into the
+other so `check_live_select` — which already existed for the `defineLive`
+string path — judges both spellings through one function. 4009 now fires
+for a real `LIVE SELECT`, not only a string literal passed to `defineLive`.
+
+**2. Prefix `NOT` never existed.** The grammar's `PrefixExpression` listed
+`NOT` beside `!`/`-`/`+` as a general prefix operator; 3.2.3 has no such
+thing — only the `not(...)` builtin, which is a `FunctionCall`, not a
+prefix. `RETURN NOT true;` is `` Unexpected token `true`, expected Eof ``
+live; `RETURN NOT (true);` and `RETURN not(true);` both still parse, as the
+same call. `NOT` is dropped from `PrefixExpression`'s operator choice
+entirely — no replacement needed, since the call form already covered every
+case that parses on the engine.
+
+**3. A bare `$x = 1;` (no `LET`) is 1.x/2.x syntax, removed in 3.0.** 3.2.3:
+`` Parameter declarations without `let` are deprecated. Replace with `let $x
+= ...` `` — a hard parse error that kills the whole file, unlike a runtime
+warning. The grammar still parses it as an ordinary equality expression
+(`Statement::Expr(Binary { op: Eq, lhs: Param, .. })`), and
+`version.rs::bare_param_assignment` fires 8002 when the statement *is*
+exactly that shape and the target is 3.0+; `RETURN $x = 1;` and `WHERE $x =
+1` are unaffected; they reach a different statement, not `Statement::Expr`.
+
+**4. A record range never parses — in `FOR` or anywhere else.** `FOR $x IN
+user:1..user:9 { … }` is `` Unexpected token `:`, expected { `` live, and
+parentheses do not help. This is not FOR-specific: `RETURN user:1..user:9;`,
+`SELECT * FROM user:1..user:9;` and `LET $r = user:1..user:9;` all fail the
+same way, because `user:1..` is always the start of that record id's own
+embedded range (`RecordIdRange`), which takes a plain id, never another
+whole `tb:id`. `Range`'s left operand is narrowed (`_rangeStart`, a
+`_baseValue` missing only `RecordId`) so a bare record id can no longer
+start a *general* range; the right side is untouched (`RETURN 1..user:9;`
+and `RETURN $a..user:9;` both run on 3.2.3), and `user:1..9` (the id's own
+embedded range) is unaffected everywhere, including as a `FOR` iterable
+(where it still fails at runtime — "Cannot execute statement using value" —
+not at parse time, since a range value is not iterable, an existing 2022
+concern).
+
+**5. `FLEXIBLE` only ever follows `TYPE`.** `DEFINE FIELD f ON t FLEXIBLE
+TYPE object;` — the clause order the published docs show — is `` Parse
+error: FLEXIBLE must be specified after TYPE `` on 3.2.3; only `TYPE object
+FLEXIBLE` runs. `TypeClause`'s `FLEXIBLE TYPE` alternative is removed.
+Two of the analyzer's own fixtures wrote the wrong order (a corpus schema
+file and two test schemas) and are fixed alongside the grammar.
+
+**6. Every `fn::` parameter needs an explicit type.** `DEFINE FUNCTION
+fn::greet($name) { … };` is `` Unexpected token ')', expected : `` live — a
+closure's parameter (`|$v| $v`) stays untyped, but `DEFINE FUNCTION`'s own
+list requires `: <kind>`. `_defineFunctionOptions` now takes
+`_typedParamDefinition` (`VariableName Colon Type`, mandatory) instead of
+the shared `ParamDefinition`, aliased to the same `ParamDefinition` node so
+lowering needs no second shape.
+
+**7. A `COUNT` index takes no `FIELDS`.** `DEFINE INDEX i ON t FIELDS a
+COUNT;` is `Cannot create a count index with fields` on 3.2.3 — a
+statement-level check in the engine's parser, not a context-free grammar
+rule (`FIELDS` and the index-kind clause are independent repeated clauses
+either could omit). The grammar still parses the combination and **E1033**
+names it (broadening that code's existing `DEFINE FIELD` contract — "a
+clause the definition accepts" — to `DEFINE INDEX` too, rather than minting
+a new number for the same shape of mistake).
+
+**8. `geometry<...>` is closed to seven names.** `geometry<pointt>` is
+`` Unexpected token 'an identifier', expected a geometry kind name `` live.
+`ParameterizedType` gets a geometry-specific alternative closed to `point`,
+`line`, `polygon`, `multipoint`, `multiline`, `multipolygon` and
+`collection` (plus a pipe-separated union of them — `geometry<point |
+line>` also runs on 3.2.3); `_kw_geometry` outranks the generic identifier
+by lexical precedence, so the closed form is always tried first and the
+generic `ParameterizedType` branch never sees `geometry<...>` at all. This
+closes a corresponding gap in `crates/workspace/src/schema.rs`'s
+`geometry_kind` (which already modeled the same seven names at the
+*semantic* level, for a shape the grammar had never restricted) — its
+`None` fallback is now unreachable through anything that parses, and is
+kept only as the belt to the grammar's suspenders.
+
+Valid corpus 334 → 362 (28 new entries: the eleven LIVE SELECT clause
+shapes, the bare parameter assignment, the correct `FLEXIBLE` order, a typed
+`fn::` parameter, a `COUNT` index with `FIELDS`, the seven geometry kinds
+plus one union, `NOT (…)`/`not(…)`, and the record-id-range shapes that must
+keep parsing). Rejected corpus 11 → 18 (seven: bare-idiom `NOT` twice, the
+record range in and out of `FOR`, the wrong `FLEXIBLE` order, an untyped
+`fn::` parameter, and an unknown geometry kind).
+
+### Where this grammar stands relative to the standalone `tree-sitter-surrealql`
+
+A separate, from-scratch rewrite at `github.com/…/tree-sitter-surrealql`
+(mirroring `@surrealdb/lezer` node names 1:1) was measured for a wholesale
+swap during this round. Rule/node-kind names overlap almost completely
+(233/233 of the standalone's named kinds already exist in the vendored
+grammar's `node-types.json`; 563/571 `grammar.js` rules in common), but
+dropping its `grammar.js`/`src/` into this crate and rebuilding broke 25 of
+115 lowering/grammar tests and **105 of 334 (31%) of the then-current valid
+corpus** — `KILL`, `NOT`, optional chaining, `?~`, `s'...'` strings,
+`PARALLEL` on several statements, `THROW`/`IF` as expressions, MTREE
+`DISTANCE`, `DEFINE EVENT ... ASYNC RETRY/MAXDEPTH`, `DEFINE ACCESS`/`DEFINE
+USER`, and `LIMIT`/`TIMEOUT`/`PATCH` as expressions all regressed — several
+of them work already landed on this branch. It also does not yet solve
+item 1 above: its `LiveSelectStatement` only takes `WHERE`/`FETCH`, and its
+`FROM` takes no `$param` source. The rejected corpus showed zero regressions
+either way (over-acceptance did not increase), which is the one clean
+result.
+
+**Not viable as a wholesale adoption right now.** The lineages are close in
+*shape* (hence the shared node-kind names above), but the standalone parser
+is materially behind on everyday constructs and does not close this task's
+own gap list. Where a standalone rule shape was usable as a reference (its
+`TypeClause` FLEXIBLE-either-order handling, informing item 5 above) it was
+read and adapted rather than invented from scratch, per the project's usual
+practice of citing engine/upstream evidence rather than guessing. A future
+migration would need `KILL`, `DEFINE ACCESS`/`USER` (+ `REMOVE`/`INFO`),
+`LIVE SELECT`'s full clause set, `PARALLEL` on every statement that takes
+it, `LIMIT`/`START`/`TIMEOUT`/`PATCH`/`THROW` as expressions, optional
+chaining, string-literal prefixes, MTREE options, and event
+`ASYNC`/`RETRY`/`MAXDEPTH` before it reaches current parity — before any new
+work that would justify the switch at all.

@@ -208,12 +208,10 @@ impl Collected {
                 self.block(&for_stmt.body);
             }
             Statement::Block(block) => self.block(block),
-            Statement::LiveSelect(live) => {
-                self.projections(&live.projections);
-                self.exprs(&live.from);
-                self.opt_expr(live.where_clause.as_ref());
-                self.idioms(&live.fetch);
-            }
+            // Every clause a SELECT has, including the ones the engine
+            // refuses on a live query and the grammar parses anyway so 4009
+            // can name them — their spans are bounds-checked like any other.
+            Statement::LiveSelect(live) => self.select(&live.as_select()),
             Statement::Kill(kill) => self.opt_expr(kill.id.as_ref()),
             Statement::Use(use_stmt) => {
                 self.opt_string("use namespace", use_stmt.namespace.as_ref());
