@@ -1457,6 +1457,31 @@ fn resolve_graph_chain(
         match &part.node {
             // A `[WHERE …]` filter narrows rows without changing the type.
             ast::IdiomPart::Where(_) => continue,
+            // `<~T` is usually a reference back-link, not a hop: it lands on
+            // `T` itself whenever something on `T` references back, and there
+            // is no relation to walk. Falling into the hop arm below is what
+            // left `SELECT <~comment AS cs FROM post` typed `any`.
+            //
+            // But `<~` also spells an ordinary relation hop when `T` is a
+            // `TYPE RELATION` table with `current` on its far side — the
+            // grammar aliases `<~` and `<-` to the same `LookupLeft` node, and
+            // nothing about a relation *edge* requires a `REFERENCE` field to
+            // prove the hop (`organization.employees COMPUTED <~employee_of`
+            // over `TYPE RELATION FROM account TO organization` has no such
+            // field; the corpus's own schema depends on this resolving). Try
+            // the reference-field proof first and only fall back to the
+            // ordinary hop when nothing on `T` actually references back.
+            ast::IdiomPart::Graph { step, dir } if step.reference => {
+                let [target] = step.targets.as_slice() else {
+                    return None;
+                };
+                current = if reference_back_step_kind(&current, &target.node, schema).is_some() {
+                    target.node.clone()
+                } else {
+                    graph_hop_target(&current, dir.node, &target.node, schema)?
+                };
+                stepped = true;
+            }
             ast::IdiomPart::Graph { .. } => {
                 let (dir, target) = single_graph_target(&part.node)?;
                 current = graph_hop_target(&current, dir, target, schema)?;
@@ -1512,18 +1537,24 @@ fn graph_hop_target(
 /// peeled first — stepping from `array<record<user>>` gives
 /// `array<record<follows>>`, not an array of arrays.
 ///
+/// A `<~T` reference step is resolved here too, by the same proof
+/// `DEFINE FIELD … COMPUTED <~T` has always used — the records of `T` whose
+/// own `REFERENCE` field links back. When nothing on `T` carries one, `<~T`
+/// falls back to [`graph_hop_target`] exactly as `<-T` would: a `TYPE
+/// RELATION` table's implicit `in`/`out` links back just as well, with no
+/// `REFERENCE` field to show for it.
+///
 /// `None` — prove-or-stay-silent — when the step names no single table (`?`,
-/// `->(a, b)`, unmodeled syntax, a `<~` reference step), when the receiver is
-/// not a record of exactly one table, or when the schema proves no such
-/// connection. The step's own findings come from [`super::graph`]; this
-/// resolves only the type.
+/// `->(a, b)`, unmodeled syntax), when the receiver is not a record of exactly
+/// one table, or when the schema proves no such connection. The step's own
+/// findings come from [`super::graph`]; this resolves only the type.
 pub(crate) fn graph_step_kind(
     current: &Kind,
     dir: ast::GraphDir,
     step: &ast::GraphStep,
     schema: &SchemaIndex,
 ) -> Option<Kind> {
-    if step.reference || step.wildcard || !step.unmodeled.is_empty() {
+    if step.wildcard || !step.unmodeled.is_empty() {
         return None;
     }
     let [target] = step.targets.as_slice() else {
@@ -1533,11 +1564,43 @@ pub(crate) fn graph_step_kind(
     let [source] = sources.as_slice() else {
         return None;
     };
+    // A `<~T` step is proven either as a record-reference back-link (`T`
+    // carries a `REFERENCE` field pointing here) or, when nothing does, as an
+    // ordinary relation hop (`T` is a `TYPE RELATION` table with `source` on
+    // its far side — see `resolve_graph_chain`'s identical fallback).
+    if step.reference {
+        if let Some(kind) =
+            reference_back_step_kind(&source.to_string(), target.node.as_str(), schema)
+        {
+            return Some(kind);
+        }
+    }
     let landed = graph_hop_target(&source.to_string(), dir, target.node.as_str(), schema)?;
     Some(Kind::Array(
         Box::new(Kind::Record(vec![landed.as_str().into()])),
         None,
     ))
+}
+
+/// The records of `target` whose own `REFERENCE` field links back to
+/// `self_table`: `array<record<target>>`, or `None` when `target` is not a
+/// defined table or nothing on it points back.
+///
+/// The shared core of the two places a `<~` is resolved — the `COMPUTED <~T`
+/// clause and a `<~T` written in a query expression. They were separate
+/// before, which is how the query-expression spelling came to be routed into
+/// the *graph* validator and reported as "not a relation table".
+pub(crate) fn reference_back_step_kind(
+    self_table: &str,
+    target: &str,
+    schema: &SchemaIndex,
+) -> Option<Kind> {
+    let target_table = schema.tables.get(target)?;
+    let points_back = target_table
+        .fields
+        .values()
+        .any(|field| field.reference && kind_targets_table(field.kind.as_ref(), self_table));
+    points_back.then(|| Kind::Array(Box::new(Kind::Record(vec![target.into()])), None))
 }
 
 /// A graph part's direction and single target table. Multi-target steps
@@ -1600,21 +1663,15 @@ pub(crate) fn reference_back_traversal_kind(
     schema: &SchemaIndex,
 ) -> Option<Kind> {
     let (target, indexed) = reference_back_target(idiom)?;
-    let target_name = target.node.as_str();
-    let target_table = schema.tables.get(target_name)?;
-    let points_back = target_table
-        .fields
-        .values()
-        .any(|field| field.reference && kind_targets_table(field.kind.as_ref(), self_table));
-    if !points_back {
-        return None;
+    let array = reference_back_step_kind(self_table, target.node.as_str(), schema)?;
+    if !indexed {
+        return Some(array);
     }
-    let element = Kind::Record(vec![target_name.into()]);
-    Some(if indexed {
-        element
-    } else {
-        Kind::Array(Box::new(element), None)
-    })
+    // `<~T[0]` selects ONE element out of the array.
+    match array {
+        Kind::Array(element, _) => Some(*element),
+        other => Some(other),
+    }
 }
 
 /// The *syntactic* half of [`reference_back_traversal_kind`]: the table a

@@ -189,6 +189,20 @@ const CASES: &[Case] = &[
         accepted: "DELETE ONLY u;",
         rejected: "UPDATE ONLY u SET x = 1;",
     },
+    // ---- `<~table` in a query expression is a reference back-link, not a graph hop
+    Case {
+        code: 3001,
+        engine: "`SELECT *, <~c AS cs FROM p:1` answers `[{ cs: [c:1], id: p:1, \
+                 … }]` — `<~comment` lands on `comment`'s own records, it does \
+                 not step onto a relation",
+        schema: "DEFINE TABLE post SCHEMAFULL;\n\
+                 DEFINE FIELD title ON post TYPE string;\n\
+                 DEFINE TABLE comment SCHEMAFULL;\n\
+                 DEFINE FIELD body ON comment TYPE string;\n\
+                 DEFINE FIELD post ON comment TYPE record<post> REFERENCE;\n",
+        accepted: "SELECT *, <~comment AS cs FROM post;",
+        rejected: "SELECT ->comment AS cs FROM post;",
+    },
 ];
 
 /// The query's analysis, with its own source id so the schema's findings are
