@@ -79,10 +79,12 @@ makes the two instantiations relate again and hides the bug.
 ### Added — the analyzer describes a project's types as data
 
 `surrealql_analyzer::describe(&project)` returns a `TypesDocument`: every table
-with its fields, relations and flags, every `fn::` signature, every
-`DEFINE PARAM`, and one entry per analyzed query carrying its per-statement
-response kinds and its parameters — all on upstream `surrealdb_types::Kind`,
-`serde`-serializable as it stands.
+— whether it is `SCHEMAFULL` and whether it is `DROP`, its relation spec, and
+each field's kind, whether it may be absent, whether it is `COMPUTED`,
+`READONLY`, has a `DEFAULT`, is a `REFERENCE`, and why its kind is incomplete
+when it is — every `fn::` signature, every `DEFINE PARAM`, and one entry per
+analyzed query carrying its per-statement response kinds and its parameters —
+all on upstream `surrealdb_types::Kind`, `serde`-serializable as it stands.
 
 The TypeScript emitter now renders *that*, rather than building strings
 straight out of an analysis. The reason is the next language: Rust's `query!`

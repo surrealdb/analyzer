@@ -19,6 +19,9 @@ fn field(name: &str, kind: Kind) -> FieldTypes {
         kind,
         computed: false,
         readonly: false,
+        has_default: false,
+        reference: false,
+        partial: Vec::new(),
     }
 }
 
@@ -39,6 +42,8 @@ fn main() {
                 field("nick", Kind::Either(vec![Kind::None, Kind::String])),
             ],
             relation: None,
+            schemafull: true,
+            drop_table: false,
         }],
         functions: Vec::new(),
         params: Vec::new(),

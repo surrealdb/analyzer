@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use surrealdb_types::{Kind, KindLiteral, Number, Value};
 use surrealql_analyzer_workspace::analysis::{AnalysisOutput, ParamInference, ValueDomain};
 use surrealql_analyzer_workspace::schema::SchemaIndex;
+use surrealql_analyzer_workspace::PartialReason;
 
 pub use surrealql_analyzer_workspace::schema::FieldStep;
 
@@ -73,6 +74,15 @@ pub struct TableTypes {
     pub fields: Vec<FieldTypes>,
     /// The `TYPE RELATION` edge spec, when the table is a relation.
     pub relation: Option<RelationTypes>,
+    /// `DEFINE TABLE ... SCHEMAFULL` — only declared fields are retained. A
+    /// `false` here (the default, `SCHEMALESS`) means a row may carry keys no
+    /// `DEFINE FIELD` describes, which a language whose emitter renders a
+    /// closed shape for every table needs to know: a TypeScript `interface`
+    /// with no index signature, for one, is a claim that no such key exists.
+    pub schemafull: bool,
+    /// `DEFINE TABLE ... DROP` — rows are never retained; a write to this
+    /// table is fire-and-forget; there is nothing to read back.
+    pub drop_table: bool,
 }
 
 /// The tables a relation's `in`/`out` links may point at. Empty means any.
@@ -99,12 +109,32 @@ pub struct FieldTypes {
     pub steps: Vec<FieldStep>,
     /// The declared kind, or [`Kind::Any`] for an untyped field.
     pub kind: Kind,
-    /// Whether the field's key may be absent — its kind admits `NONE`.
+    /// Whether the field's key may be absent — its kind admits `NONE`, or the
+    /// kind could not be resolved (see [`partial`](Self::partial)) and so
+    /// admits anything, absence included.
     pub optional: bool,
     /// `VALUE`/`COMPUTED` — the database writes this field, not the host.
     pub computed: bool,
     /// `READONLY` — writable only at creation.
     pub readonly: bool,
+    /// The field has a `DEFAULT` clause (or a `VALUE` that supplies one): a
+    /// write can omit this key and the database fills it in. An
+    /// insert/write-shape emitter (Rust's `query!`, Python's dataclass) needs
+    /// this to know a field is optional to *write* even when its read kind
+    /// does not admit `NONE`.
+    pub has_default: bool,
+    /// `REFERENCE` — the field's `record<...>` link is a reference, so a `<~`
+    /// back-traversal on the target table can resolve through it.
+    pub reference: bool,
+    /// Why [`kind`](Self::kind) is [`Kind::Any`] and not a real inferred type,
+    /// when that is the reason: empty for a field that is genuinely untyped
+    /// (no `TYPE` clause at all) as well as for one fully resolved. A
+    /// resolved-but-unresolvable field — a reference the analyzer could not
+    /// follow, a value only known at runtime, syntax it does not model — is
+    /// otherwise indistinguishable from an untyped one, and a consumer that
+    /// wants to tell "the schema says nothing" from "the schema said
+    /// something the analyzer could not read" needs this to do it.
+    pub partial: Vec<PartialReason>,
 }
 
 /// One `DEFINE FUNCTION`.
@@ -185,6 +215,8 @@ impl TypesDocument {
                     in_tables: relation.in_tables.clone(),
                     out_tables: relation.out_tables.clone(),
                 }),
+                schemafull: table.schemafull,
+                drop_table: table.drop_table,
             })
             .collect();
         let functions = schema
@@ -325,6 +357,9 @@ fn field_types(field: &surrealql_analyzer_workspace::schema::FieldDef) -> FieldT
         kind,
         computed: field.computed,
         readonly: field.readonly,
+        has_default: field.has_default,
+        reference: field.reference,
+        partial: field.partial.clone(),
     }
 }
 
@@ -372,9 +407,16 @@ fn value_literal(value: &Value) -> Option<KindLiteral> {
 
 /// Whether a kind admits `NONE` — the fact that decides, in every target
 /// language, whether the thing holding it may be absent.
+///
+/// `Kind::Any` counts too. It stands for two different things — a field with
+/// no `TYPE` clause at all, and one whose declared type the analyzer could
+/// not resolve (see [`FieldTypes::partial`]) — and neither is a promise that
+/// the key is always present. An untyped `DEFINE FIELD x` still lets a row
+/// omit `x` entirely, so rendering it as a required `x: unknown` would be a
+/// stronger claim than the schema makes.
 fn admits_none(kind: &Kind) -> bool {
     match kind {
-        Kind::None => true,
+        Kind::None | Kind::Any => true,
         Kind::Either(variants) => variants.iter().any(admits_none),
         _ => false,
     }
@@ -467,11 +509,16 @@ mod tests {
                     optional: true,
                     computed: false,
                     readonly: false,
+                    has_default: true,
+                    reference: false,
+                    partial: vec![PartialReason::Unresolved],
                 }],
                 relation: Some(RelationTypes {
                     in_tables: vec!["person".into()],
                     out_tables: vec!["team".into()],
                 }),
+                schemafull: true,
+                drop_table: false,
             }],
             functions: vec![FunctionTypes {
                 name: "fn::greet".into(),
@@ -531,5 +578,15 @@ mod tests {
         assert!(admits_none(&Kind::Either(vec![Kind::None, Kind::String])));
         assert!(!admits_none(&Kind::String));
         assert!(!admits_none(&Kind::Either(vec![Kind::String, Kind::Int])));
+    }
+
+    /// `Kind::Any` covers both a field with no `TYPE` clause and one whose
+    /// declared type the analyzer could not resolve. Neither promises the key
+    /// is always present, so both must admit `NONE` the same way an explicit
+    /// `option<T>` does — otherwise a genuinely absent field renders as a
+    /// required `x: unknown`.
+    #[test]
+    fn an_unresolved_or_untyped_field_admits_none() {
+        assert!(admits_none(&Kind::Any));
     }
 }

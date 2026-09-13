@@ -257,6 +257,16 @@ fn render_table(
         members.push(format!("  {}", render_member(&key, &node, used)));
     }
 
+    // `SCHEMAFULL` is the only mode where the declared fields are the whole
+    // row. Without it (the default, `SCHEMALESS`) a row may carry any key at
+    // all, so a closed `interface` — no other members allowed — is a claim
+    // the schema does not make. An index signature says so; every declared
+    // member's type is assignable to `unknown`, so it does not conflict with
+    // any of them.
+    if !table.schemafull {
+        members.push("  [key: string]: unknown;".to_string());
+    }
+
     format!(
         "export interface {} {{\n{}\n}}\n",
         names[&table.name],
@@ -323,7 +333,19 @@ fn response_tuple(statements: &[Option<Kind>], used: &mut BTreeSet<&'static str>
 }
 
 /// The named-parameter object for a query. `__hostN` substitutions are left
-/// out: they are filled by the template, not by the caller.
+/// out: they are filled by the template, not by the caller. A query whose
+/// text carries one or more `$__hostN` names therefore always gets
+/// `Record<string, never>` here, for every such row.
+///
+/// A row like that is reachable only through a preprocessor that constructs
+/// the call itself — `@surrealdb/analyzer-svelte`'s markup form binds each
+/// hole to its own `$__hostN` argument and never reads this `params` type at
+/// all. A plain `db.query(`...${x}...`)` call cannot reach the row: `query`
+/// is an ordinary function, not a tagged template, so JavaScript cooks the
+/// template literal — interpolating `x`'s runtime value — before `query` ever
+/// sees the text, and the cooked string never equals a key that still
+/// contains the literal `$__hostN` placeholder. Nothing is missing from this
+/// object because of that; there is no caller-supplied argument to describe.
 ///
 /// This is an object type, but **not** a [`TsContext::Property`] position:
 /// the `?` here answers "does the query need this argument at all" —
@@ -418,11 +440,24 @@ fn render_member(key: &str, node: &Node, used: &mut BTreeSet<&'static str>) -> S
 /// structure — a `DEFINE FIELD settings TYPE object` says nothing a reader can
 /// use, while its subfields say everything — and a leaf is rendered from its
 /// declared kind.
+///
+/// A node can carry **both** an `element` step and `fields`: `DEFINE FIELD
+/// a.b TYPE string` declares `a` as an object with a `b` member, and `DEFINE
+/// FIELD a[*].c TYPE int` declares that same `a` as an array whose elements
+/// have a `c` member. SurrealQL lets both declarations name the same path —
+/// the engine does not reject it — so neither fact can be dropped here, even
+/// though nothing can actually be both an object and an array at once. The
+/// two are rendered as a union rather than one silently winning, so `b` does
+/// not disappear with no trace the way it did when this returned the array
+/// branch unconditionally.
 fn render_node(node: &Node, used: &mut BTreeSet<&'static str>) -> String {
-    if let Some(element) = &node.element {
-        return format!("Array<{}>", render_node(element, used));
-    }
-    if !node.fields.is_empty() {
+    let array = node
+        .element
+        .as_ref()
+        .map(|element| format!("Array<{}>", render_node(element, used)));
+    let object = if node.fields.is_empty() {
+        None
+    } else {
         let members: Vec<String> = node
             .fields
             .iter()
@@ -433,11 +468,17 @@ fn render_node(node: &Node, used: &mut BTreeSet<&'static str>) -> String {
                     .map_or(rendered.clone(), ToString::to_string)
             })
             .collect();
-        return format!("{{ {} }}", members.join("; "));
+        Some(format!("{{ {} }}", members.join("; ")))
+    };
+    match (array, object) {
+        (Some(array), Some(object)) => format!("{array} | {object}"),
+        (Some(array), None) => array,
+        (None, Some(object)) => object,
+        (None, None) => node
+            .kind
+            .as_ref()
+            .map_or_else(|| "unknown".into(), |kind| property_text(kind, used)),
     }
-    node.kind
-        .as_ref()
-        .map_or_else(|| "unknown".into(), |kind| property_text(kind, used))
 }
 
 /// A kind in a value position: `option<string>` is `undefined | string`,
@@ -563,6 +604,9 @@ mod tests {
             optional,
             computed: false,
             readonly: false,
+            has_default: false,
+            reference: false,
+            partial: Vec::new(),
         }
     }
 
@@ -630,6 +674,8 @@ mod tests {
                 name: "person".into(),
                 fields: vec![field("name", Kind::String)],
                 relation: None,
+                schemafull: true,
+                drop_table: false,
             }],
             vec![query("SELECT name FROM person", vec![None], Vec::new())],
         ));
@@ -654,6 +700,8 @@ mod tests {
                     field("nick", Kind::Either(vec![Kind::None, Kind::String])),
                 ],
                 relation: None,
+                schemafull: true,
+                drop_table: false,
             }],
             Vec::new(),
         ));
@@ -670,6 +718,52 @@ mod tests {
         assert!(rendered.contains("export interface Tables {\n  person: Person;\n}"));
     }
 
+    /// A `SCHEMALESS` table's rows may carry keys no `DEFINE FIELD` names —
+    /// that is the whole point of `SCHEMALESS` — so a closed `interface` with
+    /// only the declared fields is a claim the schema does not make. An index
+    /// signature says so.
+    #[test]
+    fn a_schemaless_table_gets_an_index_signature() {
+        let rendered = render(&document(
+            vec![TableTypes {
+                name: "person".into(),
+                fields: vec![field("name", Kind::String)],
+                relation: None,
+                schemafull: false,
+                drop_table: false,
+            }],
+            Vec::new(),
+        ));
+
+        assert!(
+            rendered.contains(
+                "export interface Person {\n  \
+                 id: RecordId<\"person\">;\n  \
+                 name: string;\n  \
+                 [key: string]: unknown;\n}"
+            ),
+            "{rendered}"
+        );
+    }
+
+    /// A `SCHEMAFULL` table declares its whole row, so no index signature is
+    /// added — the closed interface is an honest claim.
+    #[test]
+    fn a_schemafull_table_gets_no_index_signature() {
+        let rendered = render(&document(
+            vec![TableTypes {
+                name: "person".into(),
+                fields: vec![field("name", Kind::String)],
+                relation: None,
+                schemafull: true,
+                drop_table: false,
+            }],
+            Vec::new(),
+        ));
+
+        assert!(!rendered.contains("[key: string]: unknown"), "{rendered}");
+    }
+
     /// A relation's `in`/`out` are not declared fields, but they are on every
     /// row the engine returns, and they are typed by the edge spec.
     #[test]
@@ -682,6 +776,8 @@ mod tests {
                     in_tables: vec!["person".into()],
                     out_tables: vec!["person".into()],
                 }),
+                schemafull: true,
+                drop_table: false,
             }],
             Vec::new(),
         ));
@@ -720,6 +816,8 @@ mod tests {
                     price,
                 ],
                 relation: None,
+                schemafull: true,
+                drop_table: false,
             }],
             Vec::new(),
         ));
@@ -731,6 +829,38 @@ mod tests {
         assert!(
             rendered.contains("  items: Array<{ price: Decimal }>;"),
             "{rendered}"
+        );
+    }
+
+    /// `DEFINE FIELD a.b TYPE string` and `DEFINE FIELD a[*].c TYPE int` can
+    /// both name `a` — the engine does not reject it — and the emitter must
+    /// not pick one and drop the other's members with no trace. `b` used to
+    /// vanish silently because `render_node` returned the array branch before
+    /// it ever looked at `fields`.
+    #[test]
+    fn a_field_and_element_step_on_the_same_path_both_survive() {
+        let mut object_member = field("a.b", Kind::String);
+        object_member.steps = vec![FieldStep::Field("a".into()), FieldStep::Field("b".into())];
+        let mut element_member = field("a.c", Kind::Int);
+        element_member.steps = vec![
+            FieldStep::Field("a".into()),
+            FieldStep::Element,
+            FieldStep::Field("c".into()),
+        ];
+        let rendered = render(&document(
+            vec![TableTypes {
+                name: "order".into(),
+                fields: vec![object_member, element_member],
+                relation: None,
+                schemafull: true,
+                drop_table: false,
+            }],
+            Vec::new(),
+        ));
+
+        assert!(
+            rendered.contains("  a: Array<{ c: number }> | { b: string };"),
+            "neither declaration's members are dropped: {rendered}"
         );
     }
 
@@ -911,6 +1041,8 @@ mod tests {
                 name: "person".into(),
                 fields: vec![field("tenure", Kind::Duration)],
                 relation: None,
+                schemafull: true,
+                drop_table: false,
             }],
             vec![query(
                 "SELECT uuid, Decimal FROM person",
@@ -961,6 +1093,8 @@ mod tests {
             name: name.into(),
             fields: Vec::new(),
             relation: None,
+            schemafull: true,
+            drop_table: false,
         };
         let names = interface_names(&[table("team_member"), table("teamMember"), table("tables")]);
 
@@ -981,6 +1115,8 @@ mod tests {
             name: name.into(),
             fields: Vec::new(),
             relation: None,
+            schemafull: true,
+            drop_table: false,
         };
         let names = interface_names(&[
             table("date"),
@@ -1027,6 +1163,8 @@ mod tests {
                 name: "date".into(),
                 fields: vec![field("at", Kind::Datetime)],
                 relation: None,
+                schemafull: true,
+                drop_table: false,
             }],
             Vec::new(),
         ));
@@ -1042,6 +1180,8 @@ mod tests {
                 name: "user-account".into(),
                 fields: vec![field("full name", Kind::String)],
                 relation: None,
+                schemafull: true,
+                drop_table: false,
             }],
             Vec::new(),
         ));
