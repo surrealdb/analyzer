@@ -111,16 +111,42 @@ type LoweredSource<'a> = (&'a ParsedSource, Vec<ast::Spanned<ast::Statement>>);
 /// symbol-incremental LSP path, which reuses cached `ParsedSource`s for the
 /// unchanged documents).
 fn lower_all<P: std::borrow::Borrow<ParsedSource>>(parsed_sources: &[P]) -> Vec<LoweredSource<'_>> {
+    lower_all_reporting_cutoffs(parsed_sources, &mut BTreeMap::new())
+}
+
+/// [`lower_all`], recording for each source where the nesting budget stopped
+/// the walk. A source that fitted contributes no entry.
+fn lower_all_reporting_cutoffs<'a, P: std::borrow::Borrow<ParsedSource>>(
+    parsed_sources: &'a [P],
+    cutoffs: &mut BTreeMap<SourceId, ByteRange>,
+) -> Vec<LoweredSource<'a>> {
     parsed_sources
         .iter()
         .map(|parsed| {
             let parsed = parsed.borrow();
-            (
-                parsed,
-                surrealql_analyzer_syntax::lower::lower_statements(parsed),
-            )
+            let (statements, cutoff) =
+                surrealql_analyzer_syntax::lower::lower_statements_reporting_cutoff(parsed);
+            if let Some(cutoff) = cutoff {
+                cutoffs.insert(parsed.source_id().clone(), cutoff);
+            }
+            (parsed, statements)
         })
         .collect()
+}
+
+/// The one finding a source that nests past the budget raises: everything
+/// under the cut-off was analyzed as `any`, so say so rather than let a type
+/// silently widen.
+fn nesting_cutoff_finding(source: &SourceId, span: ByteRange) -> Finding {
+    surrealql_analyzer_diagnostics::catalog::finding(
+        SourceSpan::new(source.clone(), span),
+        6003,
+        "expression nests deeper than the analyzer follows",
+    )
+    .with_help(format!(
+        "everything past {} levels of nesting is analyzed as `any`",
+        surrealql_analyzer_syntax::lower::MAX_NESTING_DEPTH
+    ))
 }
 
 /// Runs PRE-PASS 1/1b/1c/2 (and `fn::` guardedness) over the whole source set,
@@ -568,9 +594,13 @@ pub(crate) fn analyze_one_source(
     parsed: &ParsedSource,
     require_suppression_reasons: bool,
 ) -> OneSourceOutput {
-    let statements = surrealql_analyzer_syntax::lower::lower_statements(parsed);
+    let (statements, cutoff) =
+        surrealql_analyzer_syntax::lower::lower_statements_reporting_cutoff(parsed);
     let working = global.global_defined.clone();
     let mut diagnostics = Vec::new();
+    if let Some(span) = cutoff {
+        diagnostics.push(nesting_cutoff_finding(parsed.source_id(), span));
+    }
     let analysis =
         analyze_source_against(global, parsed, &statements, working, &mut diagnostics, None);
 
@@ -629,7 +659,8 @@ pub(crate) fn reanalyze_sources<P: std::borrow::Borrow<ParsedSource>>(
     affected: &BTreeSet<SourceId>,
     require_suppression_reasons: bool,
 ) -> BTreeMap<SourceId, OneSourceOutput> {
-    let sources = lower_all(parsed_sources);
+    let mut cutoffs = BTreeMap::new();
+    let sources = lower_all_reporting_cutoffs(parsed_sources, &mut cutoffs);
 
     // The whole 5009 finding set implied by the catalog, spanned in each
     // offending function's defining source. Each affected source below claims
@@ -658,6 +689,9 @@ pub(crate) fn reanalyze_sources<P: std::borrow::Borrow<ParsedSource>>(
         }
 
         let mut diagnostics = Vec::new();
+        if let Some(span) = cutoffs.get(parsed.source_id()) {
+            diagnostics.push(nesting_cutoff_finding(parsed.source_id(), *span));
+        }
         let analysis =
             analyze_source_against(global, parsed, statements, working, &mut diagnostics, None);
 
@@ -738,8 +772,15 @@ pub(crate) fn analyze_sources_with(
     // Lower every source once and run the order-independent pre-passes into the
     // reusable global catalog. Single-source re-analysis consumes the same
     // `build_global_catalog` output, so the two paths can never diverge.
-    let sources = lower_all(parsed_sources);
+    let mut cutoffs = BTreeMap::new();
+    let sources = lower_all_reporting_cutoffs(parsed_sources, &mut cutoffs);
     let global = build_global_catalog_from_lowered(&sources).with_target_version(target_version);
+
+    for (source, span) in &cutoffs {
+        output
+            .diagnostics
+            .push(nesting_cutoff_finding(source, *span));
+    }
 
     for (index, (parsed, statements)) in sources.iter().enumerate() {
         // The catalog this source is analyzed against: every OTHER source's

@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Fixed — robustness
+
+Six ways a small input could kill, hang, or mislead the analyzer. Every size
+below is a measured reproducer on a debug build.
+
+- **Deep nesting aborted the process.** `RETURN ((((…1…))))` 2 000 deep — a
+  4 KB file — died with `fatal runtime error: stack overflow`, SIGABRT, exit
+  134, and no diagnostic a host could render. So did 2 000 nested arrays,
+  `1 + 1 + …` × 2 000, `IF true { … }` × 1 000, and `… AND n > i` × 3 200.
+  The CST walks that run before lowering (syntax diagnostics, the
+  highlighter) now keep their own stack instead of the call stack, and
+  lowering stops at an explicit budget — 128 levels of nesting, 512 terms of
+  one left-deep operator chain (whose spine lowering now walks iteratively,
+  because generated SQL writes chains hundreds of terms long). Past the
+  budget the input raises **one** `6003` hint naming the cut-off and
+  everything below it is analyzed as `any`. 50 000 levels now parse, lower,
+  highlight and analyze.
+- **Nested object literals were exponential.** `RETURN {a:{a:…{a:1}…}}` — 110
+  bytes at depth 25 — took 46 s, and depth 30 never finished, because every
+  property's type was inferred twice: once for its kind and again for its
+  value, doubling the work per level. Each property is inferred once now.
+  Depth 25 is 3 ms; depth 40, which was 2^15 times that work, is 3 ms.
+- **`AND`/`OR` chains were superlinear.** A `WHERE` with 200 conjuncts took
+  9.7 s and 300 timed out. Two causes: lowering a chain to a guard re-ran the
+  constant folder over the whole accumulated left operand at every link
+  (O(n²)), and the checking walk then asked for that operand's *kind* at
+  every link (O(n³)) — a kind `AND`/`OR` never read, since they accept any
+  operand. 200 conjuncts is 53 ms; 500 is 0.3 s.
+- **One non-UTF-8 byte blinded the whole run.** A single stray byte anywhere
+  in the globs aborted with exit 2 and zero diagnostics for the other files.
+  That file is now skipped with one `S0001` naming the byte offset, and every
+  other source is analyzed. Decoding lossily instead would move every span
+  after the bad byte, so the file contributes nothing but the finding.
+- **Semantic lints spoke about statements that failed to parse.** `LIVE
+  SELECT count() FROM person GROUP ALL` raised `S0001` *and* `W4023` telling
+  the reader to add the `GROUP ALL` the statement already has: tree-sitter
+  parks the unreadable tail in a node *beside* a statement that otherwise
+  lowers cleanly, so the truncated statement was analyzed as if the tail were
+  not written. A finding in the same `;`-delimited statement as a syntax
+  error is now dropped; its well-formed neighbours keep theirs.
+- **One parse failure raised two `S0001`s.** `RELATE 'user:1' -> wrote ->
+  post:1;` reported the whole statement and the operand inside it. `ERROR`
+  nodes nest; only the innermost — the one that names the offending text —
+  is reported now.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

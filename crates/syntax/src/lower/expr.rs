@@ -27,10 +27,10 @@
 
 use tree_sitter::Node;
 
-use super::{is_broken, node_range, partial};
+use super::{is_broken, node_range, over_budget, partial, DepthGuard, MAX_OPERATOR_CHAIN};
 use crate::ast::{
     BinaryOp, Block, Call, Closure, Expr, GraphDir, GraphStep, Idiom, IdiomPart, Knn, Literal,
-    PrefixOp, Range, Spanned, TypeExpr,
+    PrefixOp, Range, Spanned, Statement, TypeExpr,
 };
 use crate::span::ByteRange;
 
@@ -81,6 +81,9 @@ impl Lowerer<'_> {
         if is_broken(node) {
             return self.spanned(node, Expr::Partial(partial(node)));
         }
+        let Some(_depth) = DepthGuard::enter() else {
+            return self.spanned(node, Expr::Partial(over_budget(node)));
+        };
 
         let expr = match node.kind() {
             // Wrappers the grammar puts around single expressions.
@@ -349,28 +352,70 @@ impl Lowerer<'_> {
         Expr::Object(fields)
     }
 
-    fn binary(&self, node: Node<'_>) -> Expr {
+    /// The `(lhs, operator, rhs)` a `BinaryExpression` node spells.
+    fn binary_operands<'tree>(
+        node: Node<'tree>,
+    ) -> Option<(Node<'tree>, Node<'tree>, Node<'tree>)> {
         let children = named_children(node);
-        let Some(op_index) = children.iter().position(|c| c.kind() == "Operator") else {
-            return Expr::Partial(partial(node));
-        };
-        let lhs = children[..op_index]
+        let op_index = children.iter().position(|c| c.kind() == "Operator")?;
+        let lhs = *children[..op_index]
             .iter()
             .rev()
-            .find(|c| c.kind() != "Operator");
-        let rhs = children[op_index + 1..]
+            .find(|c| c.kind() != "Operator")?;
+        let rhs = *children[op_index + 1..]
             .iter()
-            .find(|c| c.kind() != "Operator");
-        let (Some(&lhs), Some(&rhs)) = (lhs, rhs) else {
-            return Expr::Partial(partial(node));
-        };
-        let op_node = children[op_index];
+            .find(|c| c.kind() != "Operator")?;
+        Some((lhs, children[op_index], rhs))
+    }
 
-        Expr::Binary {
-            lhs: Box::new(self.expr(lhs)),
-            op: self.spanned(op_node, self.binary_op(op_node)),
-            rhs: Box::new(self.expr(rhs)),
+    /// Lowers a binary expression, walking a left-deep chain iteratively.
+    ///
+    /// `a AND b AND … AND z` parses as `((a AND b) AND …)`, so recursing the
+    /// left operand costs one stack frame — and one level of the nesting
+    /// budget — per term. Generated SQL writes chains hundreds of terms long,
+    /// which is ordinary input, not hostile input, so the spine is collected
+    /// in a loop and folded back up. Past [`MAX_OPERATOR_CHAIN`] terms the
+    /// chain is cut off like any other over-deep construct: the walks that
+    /// come after this one are still recursive per term.
+    fn binary(&self, node: Node<'_>) -> Expr {
+        let mut spine = Vec::new();
+        let mut current = node;
+        let leaf = loop {
+            let Some((lhs, op_node, rhs)) = Self::binary_operands(current) else {
+                break None;
+            };
+            if spine.len() >= MAX_OPERATOR_CHAIN {
+                break None;
+            }
+            spine.push((current, op_node, rhs));
+            if lhs.kind() == "BinaryExpression" && !is_broken(lhs) {
+                current = lhs;
+                continue;
+            }
+            break Some(lhs);
+        };
+
+        // `current` is the innermost node the loop reached: the one whose
+        // operands it could not read, the one that exhausted the chain
+        // budget, or the parent of the leaf.
+        let mut folded = match leaf {
+            Some(leaf) => self.expr(leaf),
+            None if spine.len() >= MAX_OPERATOR_CHAIN => {
+                self.spanned(current, Expr::Partial(over_budget(current)))
+            }
+            None => self.spanned(current, Expr::Partial(partial(current))),
+        };
+        for (chain_node, op_node, rhs) in spine.into_iter().rev() {
+            let expr = Expr::Binary {
+                lhs: Box::new(folded),
+                op: self.spanned(op_node, self.binary_op(op_node)),
+                rhs: Box::new(self.expr(rhs)),
+            };
+            folded = self.spanned(chain_node, expr);
         }
+        // The outermost fold spans `node`, which is the span the caller
+        // re-attaches.
+        folded.node
     }
 
     /// The operator an `Operator` node spells. Keyword operators may be
@@ -466,6 +511,9 @@ impl Lowerer<'_> {
     /// Structural type lowering: names, parameterized types (`array<string>`,
     /// with `option<T>` normalized to `Optional`), unions, and literal types.
     fn type_expr(&self, node: Node<'_>) -> Spanned<TypeExpr> {
+        let Some(_depth) = DepthGuard::enter() else {
+            return self.spanned(node, TypeExpr::Partial(over_budget(node)));
+        };
         let ty = match node.kind() {
             "TypeName" => TypeExpr::Name(self.spanned(node, self.node_text(node).to_string())),
             "Type" => match single_named_child(node) {
@@ -575,6 +623,11 @@ impl Lowerer<'_> {
     }
 
     fn block(&self, node: Node<'_>) -> Block {
+        let Some(_depth) = DepthGuard::enter() else {
+            return Block {
+                statements: vec![self.spanned(node, Statement::Partial(over_budget(node)))],
+            };
+        };
         let mut statements = Vec::new();
         for child in named_children(node) {
             if matches!(child.kind(), "BraceOpen" | "BraceClose") {
@@ -639,6 +692,11 @@ impl Lowerer<'_> {
     }
 
     fn idiom(&self, node: Node<'_>) -> Idiom {
+        let Some(_depth) = DepthGuard::enter() else {
+            return Idiom {
+                parts: vec![self.spanned(node, IdiomPart::Partial(over_budget(node)))],
+            };
+        };
         let mut parts: Vec<Spanned<IdiomPart>> = Vec::new();
 
         for child in named_children(node) {

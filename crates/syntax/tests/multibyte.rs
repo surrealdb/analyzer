@@ -194,14 +194,16 @@ fn diagnostics_over_multibyte_text_land_on_boundaries() {
         check_span(text, "diagnostic", diagnostic.span().range())
             .unwrap_or_else(|violation| panic!("{violation}\ninput: {text:?}"));
     }
-    // The statement ends before the comparison; the outermost ERROR covers
-    // the operator and the unterminated string, and a nested one covers
-    // the CJK text the stray quote left behind. Both slice cleanly.
+    // The statement ends before the comparison. tree-sitter nests an ERROR
+    // over the CJK text the stray quote left behind inside an ERROR over the
+    // whole comparison; one parse failure is one finding, and it is the
+    // innermost — the span that names the text — that stands. It slices
+    // cleanly.
     let texts: Vec<&str> = diagnostics
         .iter()
         .map(|d| slice(text, d.span().range()))
         .collect();
-    assert_eq!(texts, ["= '寿司", "寿司"]);
+    assert_eq!(texts, ["寿司"]);
 }
 
 /// Every byte-prefix of a multi-byte source that *is* a char boundary is a

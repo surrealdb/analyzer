@@ -18,7 +18,7 @@
 use tree_sitter::Node;
 
 use super::expr::{lower_expr, lower_idiom_node};
-use super::{is_broken, node_range, partial};
+use super::{is_broken, node_range, over_budget, partial, DepthGuard};
 use crate::ast::{
     AlterStmt, AssignOp, Assignment, BeginStmt, BreakStmt, CancelStmt, CommitStmt, ContinueStmt,
     CreateStmt, DataClause, DefineAnalyzer, DefineEvent, DefineField, DefineFunction, DefineIndex,
@@ -98,6 +98,13 @@ pub(crate) fn recover_statement(node: Node<'_>, text: &str, out: &mut Vec<Spanne
 /// salvaged — a stray sub-expression inside the broken statement is left to
 /// its `Partial`.
 fn salvage_statements(node: Node<'_>, text: &str, out: &mut Vec<Spanned<Statement>>) {
+    let Some(_depth) = DepthGuard::enter() else {
+        out.push(Spanned::new(
+            Statement::Partial(over_budget(node)),
+            node_range(node),
+        ));
+        return;
+    };
     if is_statement_node(node) && (!node.has_error() || is_recoverable_container(node)) {
         out.push(lower_statement(node, text));
         return;
@@ -115,6 +122,11 @@ fn salvage_statements(node: Node<'_>, text: &str, out: &mut Vec<Spanned<Statemen
 /// Internal to the crate; consumers reach statements through
 /// [`lower_statements`] or [`crate::lower::lower_first_statement`].
 pub(crate) fn lower_statement(node: Node<'_>, text: &str) -> Spanned<Statement> {
+    // Nesting is unbounded user input (`IF true { IF true { … } }` a thousand
+    // deep is a twelve-kilobyte file), and every arm below recurses.
+    let Some(_depth) = DepthGuard::enter() else {
+        return Spanned::new(Statement::Partial(over_budget(node)), node_range(node));
+    };
     // A broken subtree normally collapses the whole statement to `Partial`, so
     // analyzers never type a half-parsed clause. But a *container* statement —
     // one whose body is an independent statement list (a `DEFINE FUNCTION`
@@ -452,6 +464,9 @@ fn clause_idioms(clause: Node<'_>, text: &str) -> Vec<Spanned<Idiom>> {
 }
 
 fn collect_clause_idioms(node: Node<'_>, text: &str, out: &mut Vec<Spanned<Idiom>>) {
+    let Some(_depth) = DepthGuard::enter() else {
+        return;
+    };
     for child in named_children(node) {
         match child.kind() {
             "Ident" | "Path" | "Idiom" => {

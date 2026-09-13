@@ -634,6 +634,17 @@ fn check_binary(
     check_index_backed_operator(ctx, whole, lhs, op);
     constrain_comparison_params(ctx, op, lhs, rhs);
 
+    // `AND`/`OR` are truthiness operators: every kind is a legal operand, so
+    // every check below this point either guards on a different operator or
+    // (the 2004 verdict) answers "not violated" for them. Asking for the
+    // operand kinds anyway re-inferred the *whole* left operand, and a chain
+    // `a AND b AND … AND z` is left-nested, so that happened once per link
+    // over an ever-longer operand: a 200-conjunct `WHERE` took 9.7 seconds and
+    // 300 never finished. Generated SQL writes chains that long routinely.
+    if matches!(op, Op::And | Op::Or) {
+        return;
+    }
+
     let (Some(left), Some(right)) = (known_kind(ctx, lhs), known_kind(ctx, rhs)) else {
         return;
     };
