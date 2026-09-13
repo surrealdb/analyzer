@@ -5,6 +5,9 @@ on:
     branches: [main, master, redesign-v3-foundation]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
