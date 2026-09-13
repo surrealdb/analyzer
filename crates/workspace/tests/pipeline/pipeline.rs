@@ -762,3 +762,60 @@ RETURN 2;"
         .collect();
     assert_eq!(responses.len(), 2, "each top-level RETURN responds");
 }
+
+/// A `DEFINE FIELD … ON t` registered in a file before `t`'s own `DEFINE
+/// TABLE` implicitly creates `t` schemaless, so the `DEFINE TABLE` that
+/// follows fails as a redefinition (1022) — verified on 3.2.3. Neither
+/// statement's own per-source check can see this on its own (see the
+/// comment on `check_field_before_table_ordering`), so it is a whole-source-set
+/// scan.
+#[test]
+fn a_field_registered_before_its_table_across_files_is_1022_at_the_table() {
+    let mut workspace = Workspace::default();
+    workspace.add_virtual_source("a".into(), "DEFINE FIELD b ON t TYPE string;".into());
+    let table_source =
+        workspace.add_virtual_source("b".into(), "DEFINE TABLE t SCHEMAFULL;".into());
+
+    let output = analyze_workspace(&workspace);
+    let table_diagnostics = &output.sources[&table_source].diagnostics;
+    assert!(
+        table_diagnostics
+            .iter()
+            .any(|finding| finding.code().number() == 1022),
+        "expected 1022 on the DEFINE TABLE: {table_diagnostics:?}"
+    );
+}
+
+#[test]
+fn a_table_defined_before_its_fields_across_files_stays_silent() {
+    let mut workspace = Workspace::default();
+    let table_source =
+        workspace.add_virtual_source("a".into(), "DEFINE TABLE t SCHEMAFULL;".into());
+    workspace.add_virtual_source("b".into(), "DEFINE FIELD b ON t TYPE string;".into());
+
+    let output = analyze_workspace(&workspace);
+    let table_diagnostics = &output.sources[&table_source].diagnostics;
+    assert!(
+        table_diagnostics
+            .iter()
+            .all(|finding| finding.code().number() != 1022),
+        "the correct order must not fire 1022: {table_diagnostics:?}"
+    );
+}
+
+#[test]
+fn overwrite_excuses_a_table_defined_after_its_fields() {
+    let mut workspace = Workspace::default();
+    workspace.add_virtual_source("a".into(), "DEFINE FIELD b ON t TYPE string;".into());
+    let table_source =
+        workspace.add_virtual_source("b".into(), "DEFINE TABLE OVERWRITE t SCHEMAFULL;".into());
+
+    let output = analyze_workspace(&workspace);
+    let table_diagnostics = &output.sources[&table_source].diagnostics;
+    assert!(
+        table_diagnostics
+            .iter()
+            .all(|finding| finding.code().number() != 1022),
+        "OVERWRITE makes the replacement deliberate: {table_diagnostics:?}"
+    );
+}

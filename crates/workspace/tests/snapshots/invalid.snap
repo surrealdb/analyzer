@@ -282,6 +282,12 @@
     20  E1022
     27  E1033
 
+== invalid/76_cross_file_order_a.surql ==
+    12  E1001
+
+== invalid/76_cross_file_order_b.surql ==
+     4  E1022
+
 == invalid/80_live_select.surql ==
      9  E4009
     13  E4009

@@ -131,6 +131,21 @@ message quotes the engine text it predicts.
   `LET $ids = (SELECT ...); FOR $u IN $ids` is a fixed value by the time
   `FOR` sees it and is not flagged.
 
+- **1022 catches a cross-file ordering trap: a field registered before its
+  own table.** A `DEFINE FIELD … ON t` implicitly creates `t` schemaless
+  when nothing has defined it yet — silent, and correctly so, since that is
+  valid SurrealQL on its own. But when a real `DEFINE TABLE t` follows it
+  anywhere else in the workspace, plainly (no `OVERWRITE`/`IF NOT EXISTS`),
+  it fails the same way any other redefinition does: `The table 't' already
+  exists`. Neither statement's own per-source check can see this: the
+  field's table-exists check reads the incrementally-built schema, which is
+  right to say `t` doesn't exist *yet*; the table's redefinition check reads
+  the same incremental schema, which never actually recorded `t` there
+  either, because a field targeting a not-yet-defined table is silently
+  dropped rather than retried once the table appears. A new whole-source-set
+  scan, run once after the per-source walk, catches the pairing that neither
+  side can, and reports it at the `DEFINE TABLE`.
+
 ### Fixed — a watch could re-trigger itself forever
 
 `resolve_output` canonicalized the registry's *parent* to get the spelling the

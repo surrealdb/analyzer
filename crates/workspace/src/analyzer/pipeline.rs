@@ -779,6 +779,12 @@ pub(crate) fn analyze_sources_with(
     // Events must not trigger themselves: an event whose body writes a table
     // whose event writes back — or its own table — can fire again (5010).
     check_event_cycles(&output.schema, &mut output.diagnostics);
+    // A `DEFINE FIELD … ON t` registered before `t`'s own `DEFINE TABLE`
+    // auto-creates a schemaless `t`, so the `DEFINE TABLE` that follows fails
+    // as a redefinition (1022) — true whether the two statements are in the
+    // same file or different ones, which is why this is a whole-source-set
+    // scan rather than a per-statement check.
+    check_field_before_table_ordering(&sources, &mut output.diagnostics);
 
     // Suppression runs last so directives can silence every finding kind,
     // including the cross-source passes above.
@@ -1257,6 +1263,86 @@ fn check_event_cycles(schema: &SchemaIndex, diagnostics: &mut Vec<Finding>) {
                     format!("`{}` is written here ({fired})", write.table),
                 ),
             );
+        }
+    }
+}
+
+/// A `DEFINE FIELD … ON t` registered before any `DEFINE TABLE t` implicitly
+/// creates `t` schemaless — no error, and by design (`DEFINE FIELD b ON
+/// ghosttable TYPE string;` alone succeeds on 3.2.3 with nothing else in the
+/// namespace). But when a real `DEFINE TABLE t` follows it, plainly, the
+/// table already exists by the time that statement runs, and it fails the
+/// same way any other redefinition does: "The table 't' already exists".
+///
+/// This is invisible to the ordinary per-statement walk both ways: the
+/// field's own `ON t` check reads the *incrementally*-built schema, which
+/// does not yet contain `t` (so the field, correctly, is not treated as
+/// resolving against a real table there); and `DEFINE TABLE`'s own
+/// redefinition check ([`crate::analyzer::schema::define::table`]) reads the
+/// same incremental schema, which — because [`crate::schema::SchemaIndex::insert_field`]
+/// silently drops a field whose table does not exist yet — never actually
+/// recorded `t`, so the table looks fresh. Catching the real conflict needs
+/// the true source-and-statement order across the whole workspace, which
+/// neither per-statement check has: this is why it is a whole-source-set scan
+/// run once, after the ordered walk, rather than a rule inside either
+/// analyzer.
+///
+/// Reported at the `DEFINE TABLE` (1022) rather than the field: the field's
+/// own statement is exactly as valid alone as `DEFINE FIELD b ON ghosttable
+/// ...` is, and the table is where the engine's redefinition actually lands.
+fn check_field_before_table_ordering(
+    sources: &[LoweredSource<'_>],
+    diagnostics: &mut Vec<Finding>,
+) {
+    let mut tables_defined: BTreeSet<String> = BTreeSet::new();
+    let mut fields_seen_first: std::collections::BTreeMap<String, SourceSpan> =
+        std::collections::BTreeMap::new();
+
+    for (parsed, statements) in sources {
+        for stmt in statements {
+            match &stmt.node {
+                ast::Statement::Define(ast::DefineStmt::Field(def)) => {
+                    let table = def.table.node.clone();
+                    if !tables_defined.contains(&table) {
+                        fields_seen_first.entry(table).or_insert_with(|| {
+                            SourceSpan::new(parsed.source_id().clone(), def.path.span)
+                        });
+                    }
+                }
+                ast::Statement::Define(ast::DefineStmt::Table(def)) => {
+                    let table = def.name.node.clone();
+                    let is_first_explicit_definition = !tables_defined.contains(&table);
+                    if is_first_explicit_definition && !def.overwrite && !def.if_not_exists {
+                        if let Some(field_span) = fields_seen_first.get(&table) {
+                            diagnostics.push(
+                                surrealql_analyzer_diagnostics::catalog::finding(
+                                    SourceSpan::new(parsed.source_id().clone(), def.name.span),
+                                    1022,
+                                    format!(
+                                        "`{table}` is already defined; a `DEFINE FIELD … ON {table}` \
+                                         earlier in the workspace implicitly created it first, so \
+                                         SurrealDB rejects this DEFINE with \"The table '{table}' \
+                                         already exists\""
+                                    ),
+                                )
+                                .with_help(format!(
+                                    "move `DEFINE TABLE {table}` before its fields, or write \
+                                     `DEFINE TABLE OVERWRITE {table}`"
+                                ))
+                                .with_related(
+                                    field_span.clone(),
+                                    format!(
+                                        "a `DEFINE FIELD … ON {table}` here runs first, and \
+                                         auto-creates `{table}`"
+                                    ),
+                                ),
+                            );
+                        }
+                    }
+                    tables_defined.insert(table);
+                }
+                _ => {}
+            }
         }
     }
 }
