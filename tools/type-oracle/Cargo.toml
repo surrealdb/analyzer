@@ -1,0 +1,58 @@
+# A standalone workspace on purpose. The `surrealdb` embedded engine (`kv-mem`)
+# pulls `surrealdb-core` and ~2 GB of debug rlib into a target directory; that
+# must never land in `cargo test --workspace` at the repo root. The empty
+# `[workspace]` table below makes this directory its own workspace root, so the
+# root workspace neither builds nor locks any of it.
+[package]
+name = "surrealql-analyzer-type-oracle"
+version = "0.1.0"
+edition = "2021"
+authors = ["Drew Ridley"]
+license = "MIT OR Apache-2.0"
+description = "Checks the analyzer's inferred response kinds against the values SurrealDB actually returns"
+publish = false
+
+[workspace]
+
+[lib]
+name = "type_oracle"
+path = "src/lib.rs"
+
+[[bin]]
+name = "type-oracle"
+path = "src/main.rs"
+
+[dependencies]
+# The analyzer itself. Path dependencies so the oracle always checks the
+# working tree, never a published version.
+surrealql-analyzer-workspace = { path = "../../crates/workspace" }
+surrealql-analyzer-diagnostics = { path = "../../crates/diagnostics" }
+surrealql-analyzer-syntax = { path = "../../crates/syntax" }
+
+# The engine, embedded and in-process. `default-features = false` drops the
+# websocket protocol and TLS; `kv-mem` is the whole point.
+# Pinned exactly: the committed baseline records what THIS engine returns, and
+# `.github/workflows/ci.yml` checks out the matching `v3.2.3` language tests. An
+# engine bump is a deliberate edit whose baseline diff is the report.
+surrealdb = { version = "=3.2.3", default-features = false, features = ["kv-mem"] }
+# Must resolve to the same version the analyzer uses, or `Kind` and `Value`
+# would be two different types.
+surrealdb-types = "=3.2.3"
+
+semver = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+toml = "0.9"
+walkdir = "2"
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+doc_markdown = "warn"
+too_many_lines = "warn"
+map_unwrap_or = "warn"
+redundant_closure_for_method_calls = "warn"
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"
+explicit_iter_loop = "warn"
+unnested_or_patterns = "warn"
