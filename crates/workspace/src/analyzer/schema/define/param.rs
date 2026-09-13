@@ -14,7 +14,10 @@ pub(crate) fn analyze_define_param(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
         let existing = ctx
             .schema()
             .param(&stmt.name.node)
-            .map(|existing| existing.name_span.clone());
+            .map(|existing| existing.name_span.clone())
+            // Only a genuine predecessor in the canonical, schema-glob-first
+            // order redefines — see `table.rs`'s identical guard.
+            .filter(|existing| ctx.source_precedes(existing.source()));
         if let Some(existing) = existing {
             super::emit_duplicate_definition(
                 ctx,

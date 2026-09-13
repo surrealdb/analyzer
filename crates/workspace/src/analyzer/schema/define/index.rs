@@ -69,7 +69,10 @@ pub(crate) fn analyze_define_index(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     let existing = (!stmt.overwrite && !stmt.if_not_exists)
         .then(|| table.indexes.get(&stmt.name.node))
         .flatten()
-        .map(|existing| existing.name_span.clone());
+        .map(|existing| existing.name_span.clone())
+        // Only a genuine predecessor in the canonical, schema-glob-first
+        // order redefines — see `table.rs`'s identical guard.
+        .filter(|existing| ctx.source_precedes(existing.source()));
 
     if let Some(existing) = existing {
         super::emit_duplicate_definition(

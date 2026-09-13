@@ -399,7 +399,17 @@ fn check_field_definition(
         Some(table)
             if !stmt.overwrite
                 && !stmt.if_not_exists
-                && field_is_duplicate(table, &stmt.path.node, &field_key) =>
+                && field_is_duplicate(table, &stmt.path.node, &field_key)
+                // The additive pre-pass makes every OTHER source's field look
+                // already defined regardless of registration order — only a
+                // genuine predecessor (this same source, earlier, or a source
+                // that truly precedes it) is one this statement redefines;
+                // the other side of a cross-file pair reports it, once, from
+                // there. See `table.rs`'s identical guard.
+                && table
+                    .fields
+                    .get(&field_key)
+                    .is_some_and(|existing| ctx.source_precedes(existing.name_span.source())) =>
         {
             let mut finding = surrealql_analyzer_diagnostics::catalog::finding(
                 surrealql_analyzer_syntax::span::SourceSpan::new(

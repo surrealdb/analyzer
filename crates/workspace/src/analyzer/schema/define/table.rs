@@ -14,13 +14,20 @@ pub(crate) fn analyze_define_table(ctx: &mut AnalysisContext<'_>, stmt: &ast::De
     if !stmt.overwrite && !stmt.if_not_exists {
         if let Some(existing) = ctx.schema().table(&stmt.name.node) {
             let existing = existing.name_span.clone();
-            super::emit_duplicate_definition(
-                ctx,
-                stmt.name.span,
-                &format!("`{}`", stmt.name.node),
-                &format!("DEFINE TABLE OVERWRITE {}", stmt.name.node),
-                existing,
-            );
+            // The additive pre-pass makes every OTHER source look like it
+            // already defines `name`, regardless of registration order — only
+            // a genuine predecessor (this same source, earlier, or a source
+            // that truly precedes it) is one this statement redefines; the
+            // other side of a cross-file pair reports it, once, from there.
+            if ctx.source_precedes(existing.source()) {
+                super::emit_duplicate_definition(
+                    ctx,
+                    stmt.name.span,
+                    &format!("`{}`", stmt.name.node),
+                    &format!("DEFINE TABLE OVERWRITE {}", stmt.name.node),
+                    existing,
+                );
+            }
         }
     }
 

@@ -4,6 +4,8 @@
 //! facts, source text, diagnostics, and source/span helpers. Individual
 //! analyzers should return only what their construct evaluates to.
 
+use std::collections::BTreeMap;
+
 use surrealql_analyzer_diagnostics::{Finding, FindingCode, Severity};
 use surrealql_analyzer_syntax::source::SourceId;
 use surrealql_analyzer_syntax::span::SourceSpan;
@@ -27,6 +29,17 @@ pub struct AnalysisContext<'a> {
     /// single-statement entry points, which have no workspace) falls back to
     /// the incremental catalog alone.
     workspace_catalog: Option<&'a SchemaIndex>,
+    /// Each source's position in the canonical, schema-glob-first registration
+    /// order (see [`crate::analyzer::pipeline::GlobalCatalog::source_rank`]).
+    /// A definition duplicate-check asks the additive pre-pass "does this name
+    /// exist anywhere", and every OTHER source answers yes regardless of
+    /// whether it was registered before or after this one — so a second
+    /// signal is needed to tell a genuine predecessor from a source that only
+    /// LOOKS like one because the pre-pass is symmetric. `None` (unit tests,
+    /// single-statement entry points) means every source is treated as
+    /// incomparable, and only same-source ordering (already incremental)
+    /// applies.
+    source_rank: Option<&'a BTreeMap<SourceId, usize>>,
     source: SourceId,
     source_text: &'a str,
     diagnostics: &'a mut Vec<Finding>,
@@ -61,6 +74,7 @@ impl<'a> AnalysisContext<'a> {
         Self {
             schema,
             workspace_catalog: None,
+            source_rank: None,
             source,
             source_text,
             diagnostics,
@@ -87,6 +101,7 @@ impl<'a> AnalysisContext<'a> {
         Self {
             schema,
             workspace_catalog: None,
+            source_rank: None,
             source,
             source_text,
             diagnostics,
@@ -117,6 +132,35 @@ impl<'a> AnalysisContext<'a> {
     pub(crate) fn with_workspace_catalog(mut self, catalog: &'a SchemaIndex) -> Self {
         self.workspace_catalog = Some(catalog);
         self
+    }
+
+    /// Attaches the canonical source-registration-order map (see
+    /// [`source_rank`](Self::source_rank)).
+    pub(crate) fn with_source_rank(mut self, rank: &'a BTreeMap<SourceId, usize>) -> Self {
+        self.source_rank = Some(rank);
+        self
+    }
+
+    /// Whether `existing` — the source a same-named definition was found in —
+    /// genuinely precedes this context's own source in the canonical,
+    /// schema-glob-first registration order, rather than merely being *some
+    /// other* source. Same source always answers yes: within one source the
+    /// catalog accumulates statement by statement, so anything already found
+    /// there necessarily came from earlier in this same walk. With no rank
+    /// map attached (no workspace), every other source answers no — a
+    /// duplicate-definition check has nothing but incremental, same-source
+    /// evidence to go on.
+    pub(crate) fn source_precedes(&self, existing: &SourceId) -> bool {
+        if existing == &self.source {
+            return true;
+        }
+        let Some(rank) = self.source_rank else {
+            return false;
+        };
+        match (rank.get(existing), rank.get(&self.source)) {
+            (Some(existing_rank), Some(here_rank)) => existing_rank < here_rank,
+            _ => false,
+        }
     }
 
     /// Every table name known anywhere in the workspace, for "did you mean"
@@ -583,6 +627,7 @@ impl<'a> AnalysisContext<'a> {
         let mut child = AnalysisContext {
             schema: self.schema,
             workspace_catalog: self.workspace_catalog,
+            source_rank: self.source_rank,
             source: self.source.clone(),
             source_text: self.source_text,
             diagnostics: self.diagnostics,

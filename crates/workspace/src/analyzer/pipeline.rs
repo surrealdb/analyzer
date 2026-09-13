@@ -87,6 +87,12 @@ pub struct GlobalCatalog {
     /// like the rest of the catalog: every source is checked against the same
     /// engine, and the single-source re-analysis paths read it from here.
     pub(crate) target_version: Option<TargetVersion>,
+    /// Each source's position in the canonical registration order: every
+    /// schema-glob source, in discovery order, before every query-glob
+    /// source (see `crate::analyzer::context::AnalysisContext::source_precedes`
+    /// for why a duplicate-definition check needs this and cannot reuse
+    /// `global_defined`, which is symmetric on purpose).
+    pub(crate) source_rank: BTreeMap<SourceId, usize>,
 }
 
 impl GlobalCatalog {
@@ -151,6 +157,17 @@ fn build_global_defined(sources: &[LoweredSource<'_>]) -> SchemaIndex {
 }
 
 fn build_global_catalog_from_lowered(sources: &[LoweredSource<'_>]) -> GlobalCatalog {
+    // Canonical registration order, for the one thing the additive union
+    // below cannot answer: which of two sources defining the same name is the
+    // genuine predecessor. `sources` already lists every schema-glob source
+    // before every query-glob source (`Project::sources`), so a name's rank
+    // is simply its position here.
+    let source_rank: BTreeMap<SourceId, usize> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, (parsed, _))| (parsed.source_id().clone(), index))
+        .collect();
+
     let mut global_defined = build_global_defined(sources);
 
     // PRE-PASS 1b — global function return types. `apply_additive_define`
@@ -306,6 +323,7 @@ fn build_global_catalog_from_lowered(sources: &[LoweredSource<'_>]) -> GlobalCat
         global_param_defaults,
         implicit_tables,
         fn_guarded,
+        source_rank,
     }
 }
 
@@ -396,7 +414,13 @@ fn analyze_source_against(
     for table in &global.implicit_tables {
         working.insert_table(table.clone(), false);
     }
-    hoist_functions(parsed, statements, &mut working, diagnostics);
+    hoist_functions(
+        parsed,
+        statements,
+        &mut working,
+        diagnostics,
+        &global.source_rank,
+    );
 
     // Reuse the globally-computed function returns and untyped-field value
     // kinds (PRE-PASS 1b/1c).
@@ -434,6 +458,7 @@ fn analyze_source_against(
             // whole-workspace catalog, not `working`, which by construction
             // holds only what precedes this statement.
             .with_workspace_catalog(&global.global_defined)
+            .with_source_rank(&global.source_rank)
             .with_target_version(global.target_version);
             let kind = crate::analyzer::statement::analyze_lowered_statement(&mut ctx, lowered);
             // Syntax the configured target lacks (8003) or removed (8002), and
@@ -1272,6 +1297,7 @@ fn hoist_functions(
     statements: &[ast::Spanned<ast::Statement>],
     working: &mut SchemaIndex,
     diagnostics: &mut Vec<Finding>,
+    source_rank: &BTreeMap<SourceId, usize>,
 ) {
     // Within-source fn:: hoist: a body may call functions defined later
     // in the same file.
@@ -1282,9 +1308,12 @@ fn hoist_functions(
     // 1022 check (`schema::define::function`) finds only this source's entry
     // and concludes there is nothing to report. A `DEFINE TABLE` has no hoist,
     // so its foreign twin survives and 1022 fires — from BOTH sources, since
-    // each one's `working` holds the other's. Displacement is recorded here so
-    // a duplicated `fn::` reports the same way, and the hoist keeps displacing:
-    // what a body's call resolves against is unchanged.
+    // each one's `working` holds the other's, UNLESS `source_rank` says the
+    // foreign twin does not actually precede this source, in which case that
+    // OTHER source's own walk is the one that reports it. Displacement is
+    // recorded here so a duplicated `fn::` reports exactly once, the same way,
+    // and the hoist keeps displacing: what a body's call resolves against is
+    // unchanged.
     let mut displaced_functions = Vec::new();
     for stmt in statements {
         let Some(function) =
@@ -1296,10 +1325,13 @@ fn hoist_functions(
             // `OVERWRITE`/`IF NOT EXISTS` are deliberate redefinitions, exactly
             // as they are for the within-source case.
             if !def.overwrite && !def.if_not_exists {
-                if let Some(existing) = working
-                    .function(&def.name.node)
-                    .filter(|existing| existing.source != *parsed.source_id())
-                {
+                if let Some(existing) = working.function(&def.name.node).filter(|existing| {
+                    existing.source != *parsed.source_id()
+                        && source_rank
+                            .get(&existing.source)
+                            .zip(source_rank.get(parsed.source_id()))
+                            .is_some_and(|(existing_rank, here_rank)| existing_rank < here_rank)
+                }) {
                     displaced_functions.push((
                         def.name.node.clone(),
                         def.name.span,
